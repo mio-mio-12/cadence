@@ -1,0 +1,38 @@
+/build*/
+/.vs/
+/.vscode/
+/outputs/
+/diagnostics/
+/benchmark_runs/
+/pose_visual*/
+/saluki/
+/exported_files/
+*.user
+*.suo
+*.pdb
+*.obj
+*.ilk
+*.log
+*.cache
+*.c_dm
+*.iwtake
+*.mov
+*.mp4
+*.zip
+/imgui.ini
+/Cadence_v*.exe
+/cast_viewer.exe
+/Cadence Assets/settings/*
+!/Cadence Assets/settings/portable.flag
+/Cadence Assets/active_appearance.cfg*
+/Cadence Assets/diagnostics/
+/Cadence Assets/games/
+/Cadence Assets/custom_guns/
+/Cadence Assets/custom_players/
+/Cadence Assets/weapon_defaults/
+/Cadence Assets/attachment_setups/
+/Cadence Assets/visual_presets/
+/Cadence Assets/gameplay_presets/
+/Cadence Assets/day_night_presets/
+/Cadence Assets/crosshairs/
+/Cadence Assets/color_schemes/
