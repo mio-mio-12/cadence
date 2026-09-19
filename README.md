@@ -1,17 +1,18 @@
 Cast model/animation viewer and map loader
 
+cast exports must be done using OpenGL normal maps, not Saluki's default/DirectX. Make sure to change this in your exporter's settings.
+
 supported games:
 
-- Call of Duty 4: Modern Warfare
-- Call of Duty: Modern Warfare 2 (untested)
-- Call of Duty: Modern Warfare 3
-- Call of Duty: Black Ops
-- Call of Duty: Black Ops II
-- Call of Duty: Ghosts
-- Call of Duty: Advanced Warfare
-- Call of Duty: Infinite Warfare
-- Call of Duty: Modern Warfare Remastered
-- Call of Duty: Black Ops Cold War
-- Call of Duty: Mobile
-- Counter-Strike 2
-- Point Blank
+- cod4
+- mw2 (2009) (untested)
+- mw3 (2011)
+- bo1
+- bo2
+- ghosts
+- aw
+- iw
+- mwr
+- codm
+- cs2
+- pointblank
