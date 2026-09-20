@@ -7,12 +7,13 @@ in vec2 vScreen;out vec4 color;
 uniform sampler2D uSource,uDepth,uAo,uIsolated;
 uniform bool uForeground,uAffectViewmodel,uAoEnabled,uIsolation;
 uniform vec2 uTexel;
+uniform vec2 uViewmodelDepthRange;
 uniform float uNear,uFar,uFocus,uRange,uNearTransition,uFarTransition,uNearRadius,uFarRadius;
 uniform float uGamma,uBokeh,uThreshold,uHollow,uAnamorphic,uRotation,uAoIntensity,uAoPower;
 uniform int uSamples,uBlades,uMode;
 )GLSL" CADENCE_AO_FOG_GLSL R"GLSL(
 bool foreground(float raw){return uForeground&&raw<.0400001;}
-float depthAt(vec2 uv){float z=texture(uDepth,uv).r;if(foreground(z))z=clamp(z/.04,0,1);return 2*uNear*uFar/(uFar+uNear-(z*2-1)*(uFar-uNear));}
+float depthAt(vec2 uv){float z=texture(uDepth,uv).r;vec2 range=vec2(uNear,uFar);if(foreground(z)){z=clamp(z/.04,0,1);range=uViewmodelDepthRange;}return 2*range.x*range.y/(range.y+range.x-(z*2-1)*(range.y-range.x));}
 float coc(vec2 uv){if(!uAffectViewmodel&&foreground(texture(uDepth,uv).r))return 0;float z=depthAt(uv);return clamp((z-uFocus-uRange*.5)/uFarTransition,0,1)*uFarRadius-clamp((uFocus-uRange*.5-z)/uNearTransition,0,1)*uNearRadius;}
 vec3 source(vec2 uv){vec3 c=texture(uSource,uv).rgb;float ao=uAoEnabled?pow(clamp(1-(1-texture(uAo,uv).r)*uAoIntensity,0,1),uAoPower):1;c=c*ao+aoFogRestore(uv,ao);if(uIsolation)c+=texture(uIsolated,uv).rgb*(1-ao);return pow(max(c,vec3(0)),vec3(uGamma));}
 void main(){vec2 uv=vScreen*.5+.5;float centerCoc=coc(uv),centerDepth=depthAt(uv);bool centerFg=foreground(texture(uDepth,uv).r);

@@ -40,6 +40,7 @@ bool StageRenderer::renderHbao(const scene::Mat4& vp,bool foreground){
     const float px=std::sqrt(vp.v[0]*vp.v[0]+vp.v[4]*vp.v[4]+vp.v[8]*vp.v[8]),py=std::sqrt(vp.v[1]*vp.v[1]+vp.v[5]*vp.v[5]+vp.v[9]*vp.v[9]);
     glapi::Uniform2f(loc("uInvProjection"),1.f/std::max(.001f,px),1.f/std::max(.001f,py));
     glapi::Uniform1f(loc("uNear"),cameraNear_);glapi::Uniform1f(loc("uFar"),cameraFar_);
+    glapi::Uniform2f(loc("uViewmodelDepthRange"),firstPersonProjection_?foreground_depth::nearPlane:cameraNear_,firstPersonProjection_?foreground_depth::farPlane:cameraFar_);
     glapi::Uniform1f(loc("uRadius"),hbao_.radius);glapi::Uniform1f(loc("uBias"),hbao_.biasDegrees*scene::kPi/180.f);glapi::Uniform1f(loc("uFalloff"),hbao_.falloff);
     glapi::Uniform1f(loc("uMaxPixels"),hbao_.maxPixels);glapi::Uniform1f(loc("uSharpness"),hbao_.blurSharpness);
     glapi::Uniform1i(loc("uDirections"),hbao_.directions);glapi::Uniform1i(loc("uSteps"),hbao_.steps);glapi::Uniform1i(loc("uBlurRadius"),hbao_.blurRadius);

@@ -1,3 +1,4 @@
+#include "assets/LocalAssetPaths.h"
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
 #undef main
@@ -21,7 +22,7 @@ int main(int argc,char**argv){
  app.filmContrast=.1f;CHECK(loadVisualPreset(app,out/"before.castvisual"));CHECK(app.filmContrast==1.37f);app.transitionDuration=.1f;CHECK(loadGameplayPreset(app,out/"before.cadencegame"));CHECK(app.transitionDuration==.27f);
  {std::ofstream f(out/"legacy.cadencegame");f<<"CADENCEGAME 1\n.3 .2 0 0 40 1 1\n";}CHECK(loadGameplayPreset(app,out/"legacy.cadencegame"));CHECK(app.transitionDuration==.3f&&app.sourceAutoJump);
  std::cout<<"PASS preset full roundtrips, legacy gameplay, truncated visual/gameplay rejection, missing sky atomic failure\n";
- const auto root=std::filesystem::path("D:/Editing/COD Resource/3D Rip/saluki/exported_files");
+ const auto root=std::filesystem::path(cadence::local_assets::exportPath(""));
  int visualCount=0;for(const auto& file:std::filesystem::directory_iterator("Cadence Assets/visual_presets"))if(file.path().extension()==".castvisual"){std::ifstream in(file.path());VisualPresetResources resources;auto staged=std::make_unique<AppState>();copyVisualPresetSettings(*staged,app);CHECK(parseVisualPreset(*staged,in,resources));++visualCount;}
  CHECK(visualCount>0);std::cout<<"PASS parsed "<<visualCount<<" existing user visual presets without modifying originals\n";
  auto document=cast::Document::load(root/"bocw_sp/models/weapons/world/sniper rifles/sniper_standard/wpn_t9_sniper_standard_world/wpn_t9_sniper_standard_world_LOD0.cast");CHECK(document.valid());

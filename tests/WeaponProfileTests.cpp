@@ -43,6 +43,12 @@ int main(){int failures{};const auto expect=[&](bool value,const char* message){
   weapon::RigMount attachment;attachment.attachedModel=true;attachment.model="scope";attachment.parentTag="tag_scope";attachment.position={1,2,3};attachment.attachmentRotationDegrees={10,20,30};attachment.attachmentScale={1,2,1};profile.rigMounts.push_back(attachment);
   profile.rigModels = {"an94.cast", "holo.cast"};
   profile.gunPosition = {1.25f, -2.5f, 3.75f};
+  profile.separateAdsPosition=true;profile.adsGunPosition={-4,5,6};
+  expect(scene::length(weapon::gunPositionAt(profile,0)-profile.gunPosition)<.00001f,"hip position endpoint");
+  expect(scene::length(weapon::gunPositionAt(profile,1)-profile.adsGunPosition)<.00001f,"ADS position endpoint");
+  expect(scene::length(weapon::gunPositionAt(profile,.5f)-(profile.gunPosition+profile.adsGunPosition)*.5f)<.00001f,"ADS position halfway blend");
+  auto oldPosition=profile;oldPosition.separateAdsPosition=false;
+  expect(scene::length(weapon::gunPositionAt(oldPosition,1)-profile.gunPosition)<.00001f,"disabled ADS position preserves old behavior");
   profile.stats.fireTime = .08f;
   profile.stats.fullAuto = true;
   profile.stats.hideWeaponOnAds = true;
@@ -123,6 +129,7 @@ int main(){int failures{};const auto expect=[&](bool value,const char* message){
              std::abs(loaded.gunPosition.y + 2.5f) < .0001f &&
              std::abs(loaded.gunPosition.z - 3.75f) < .0001f,
          "gun position did not round trip");
+  expect(loaded.separateAdsPosition&&scene::length(loaded.adsGunPosition-profile.adsGunPosition)<.00001f,"ADS gun position did not round trip");
   expect(std::abs(loaded.stats.fireTime - .08f) < .0001f &&
              loaded.stats.fullAuto,
          "stats did not round trip");

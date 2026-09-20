@@ -1,3 +1,4 @@
+#include "assets/LocalAssetPaths.h"
 #include "cast/CastDocument.h"
 #include "scene/CastScene.h"
 
@@ -62,7 +63,7 @@ struct ClipPath { const char* weapon; const char* filename; };
 
 int main(int argc,char** argv) {
     std::cout<<std::unitbuf;
-    const std::filesystem::path exportRoot=argc>2?std::filesystem::u8path(argv[2]):std::filesystem::path{R"(D:\Editing\COD Resource\3D Rip\saluki\exported_files)"};
+    const std::filesystem::path exportRoot=argc>2?std::filesystem::u8path(argv[2]):std::filesystem::path{cadence::local_assets::exportPath("")};
     const std::filesystem::path output=argc>1?std::filesystem::u8path(argv[1]):std::filesystem::path{"cs2_retarget_diagnostics.csv"};
     const auto targetDocument=cast::Document::load(exportRoot/R"(bo2\models\viewhands\seal6\c_usa_mp_seal6_longsleeve_viewhands\c_usa_mp_seal6_longsleeve_viewhands_LOD0.cast)");
     const auto sourceDocument=cast::Document::load(exportRoot/R"(cs2\models\viewhands\viewhands_model.cast)");

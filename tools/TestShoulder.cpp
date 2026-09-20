@@ -1,3 +1,4 @@
+#include "assets/LocalAssetPaths.h"
 #include "cast/CastDocument.h"
 #include "scene/CastScene.h"
 #include <iostream>
@@ -6,15 +7,15 @@
 #include <vector>
 
 int main() {
-    std::string bo2Hands = "D:\\Editing\\COD Resource\\3D Rip\\saluki\\exported_files\\bo2\\models\\viewhands\\cordis\\c_mul_mp_cordis_assault_viewhands\\c_mul_mp_cordis_assault_viewhands_LOD0.cast";
-    std::string iw7Hands = "D:\\Editing\\COD Resource\\3D Rip\\saluki\\exported_files\\iw_sp\\models\\viewhands\\viewmodel_base_viewhands\\viewmodel_base_viewhands_LOD0.cast";
-    std::string mwHands = "D:\\Editing\\COD Resource\\3D Rip\\saluki\\exported_files\\mw\\models\\viewhands\\viewmodel_base_viewhands\\viewmodel_base_viewhands_LOD0.cast";
+    std::string bo2Hands = cadence::local_assets::exportPath("bo2/models/viewhands/cordis/c_mul_mp_cordis_assault_viewhands/c_mul_mp_cordis_assault_viewhands_LOD0.cast");
+    std::string iw7Hands = cadence::local_assets::exportPath("iw_sp/models/viewhands/viewmodel_base_viewhands/viewmodel_base_viewhands_LOD0.cast");
+    std::string mwHands = cadence::local_assets::exportPath("mw/models/viewhands/viewmodel_base_viewhands/viewmodel_base_viewhands_LOD0.cast");
 
     auto docBo2 = cast::Document::load(bo2Hands);
     auto docIw7 = cast::Document::load(iw7Hands);
     auto docMw = cast::Document::load(mwHands);
 
-    std::string animPath = "D:\\Editing\\COD Resource\\3D Rip\\saluki\\exported_files\\iw_sp\\animations\\vm\\vm_1887_ads_fire.cast";
+    std::string animPath = cadence::local_assets::exportPath("iw_sp/animations/vm/vm_1887_ads_fire.cast");
     auto docAnim = cast::Document::load(animPath);
     if (docAnim.valid() && docBo2.valid()) {
         auto scBo2 = scene::buildScene(docBo2);

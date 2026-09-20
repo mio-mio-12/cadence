@@ -1,3 +1,4 @@
+#include "assets/LocalAssetPaths.h"
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
 #undef main
@@ -9,7 +10,7 @@ int main(int argc,char**argv){
  CHECK(glfwInit());glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto*w=glfwCreateWindow(960,540,"Cadence validation",nullptr,nullptr);CHECK(w);glfwMakeContextCurrent(w);
  auto state=std::make_unique<AppState>();auto&a=*state;std::string error;CHECK(a.renderer.initialize(error));a.window=w;a.deferSceneUpload=true;
  if(argc>2&&std::string(argv[2])=="slide"){
-  const std::filesystem::path root="D:/Editing/COD Resource/3D Rip/saluki/exported_files";
+  const std::filesystem::path root=cadence::local_assets::exportPath("");
   auto actor=scene::buildScene(cast::Document::load(root/"bo2/models/playermodels/isa/c_usa_mp_isa_assault_fb/c_usa_mp_isa_assault_fb_LOD0.cast"),false);
   const std::string direction=argc>3?argv[3]:"l";
   auto doc=cast::Document::load(root/("bocw_sp/animations/pb/run/assault rifle/pb_rifle_run_slide_land_"+direction+".cast"));CHECK(doc.valid());scene::appendAnimations(doc,actor);CHECK(!actor.animations.empty());
@@ -30,7 +31,7 @@ int main(int argc,char**argv){
   }
   a.renderer.shutdown();state.reset();glfwDestroyWindow(w);glfwTerminate();return 0;
  }
- a.defaultSalukiDirectory="D:/Editing/COD Resource/3D Rip/saluki/exported_files";
+ a.defaultSalukiDirectory=cadence::local_assets::exportPath("");
  for(auto g:{"codm","bo2"})CHECK(assets::appendScan(a.defaultSalukiDirectory/g,g,a.assetCatalog,error));
  auto idx=[&](const char*name){for(std::size_t i=0;i<a.assetCatalog.entries.size();++i)if(a.assetCatalog.entries[i].name==name)return i;return a.assetCatalog.entries.size();};
  for(const char*hand:{"codm_viewhands_c_m_ghost_Default","c_usa_mp_isa_smg_viewhands_LOD0"}){

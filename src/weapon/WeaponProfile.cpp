@@ -123,6 +123,7 @@ const AnimationOffset* offsetFor(const Profile& profile,const std::string& anima
 bool save(const Profile& p,const std::filesystem::path& path,std::string& error){std::error_code ec;if(!path.parent_path().empty())std::filesystem::create_directories(path.parent_path(),ec);std::ofstream out(path,std::ios::trunc);if(!out){error="Could not create profile";return false;}out<<"IWWEAPON "<<p.version<<'\n'<<"name "<<std::quoted(p.name)<<'\n'<<"internal "<<std::quoted(p.internalName)<<'\n'<<"source "<<std::quoted(p.source)<<'\n'<<"archetype "<<archetypeName(p.archetype)<<'\n'<<"animation_prefix "<<std::quoted(p.animationPrefix)<<'\n'<<"view_model "<<std::quoted(p.viewModelName)<<'\n'<<"world_model "<<std::quoted(p.worldModelName)<<'\n'<<"hand_model "<<std::quoted(p.handModelName)<<'\n'<<"base_model "<<std::quoted(p.baseModel)<<'\n';for(const auto& model:p.rigModels)out<<"rig_model "<<std::quoted(model)<<'\n';
     out<<"scope_overlay "<<std::quoted(p.scopeOverlayImage)<<'\n'<<"recoil_curve "<<p.stats.recoil<<'\n'<<"recoil_intensity "<<p.stats.recoil.intensity<<'\n';
     out<<"gun_position "<<p.gunPosition.x<<' '<<p.gunPosition.y<<' '<<p.gunPosition.z<<'\n'
+       <<"ads_gun_position "<<p.separateAdsPosition<<' '<<p.adsGunPosition.x<<' '<<p.adsGunPosition.y<<' '<<p.adsGunPosition.z<<'\n'
        <<"material camo_luma "<<(p.materials.useBaseColorLumaMask?1:0)<<'\n'
        <<"material camo_invert "<<(p.materials.invertCamoMask?1:0)<<'\n'
        <<"material camo_alpha "<<p.materials.camoAlphaLow<<' '<<p.materials.camoAlphaHigh<<'\n'
@@ -195,6 +196,8 @@ bool load(const std::filesystem::path &path, Profile &p, std::string &error) {
     } else if (kind == "gun_position") {
       row >> result.gunPosition.x >> result.gunPosition.y >>
           result.gunPosition.z;
+    } else if (kind == "ads_gun_position") {
+      row >> result.separateAdsPosition >> result.adsGunPosition.x >> result.adsGunPosition.y >> result.adsGunPosition.z;
     } else if (kind == "lock_inspect_rig") {
       int value{};
       row >> value;

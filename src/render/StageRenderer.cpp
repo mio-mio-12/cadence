@@ -6,6 +6,7 @@
 #endif
 
 #include "render/StageRenderer.h"
+#include "render/ForegroundDepth.h"
 #include "render/DayNightSky.h"
 #include "render/MeshUniformCache.h"
 #include "render/HbaoShader.h"
@@ -46,6 +47,7 @@ layout(location=3) in uvec4 aBones;
 layout(location=4) in vec4 aWeights;
 layout(location=5) in vec4 aColor;
 uniform mat4 uViewProjection;
+uniform vec2 uForegroundClip;
 uniform float uOverlayExpand;
 uniform vec2 uOverlayViewport;
 uniform mat4 uModel;
@@ -85,6 +87,9 @@ void main() {
     vWorldPosition=world.xyz;
     vColor=aColor;
     gl_Position=uViewProjection*world;
+    // Only Z changes: authored pose, lens size, FOV and X/Y projection stay exact.
+    // World geometry never uses this close-range projection.
+    if(uForegroundClip.x>0.0){float n=uForegroundClip.x,f=uForegroundClip.y;gl_Position.z=((f+n)*gl_Position.w-2.0*f*n)/(f-n);}
     if(uOverlayExpand>0.0){vec2 d=(uViewProjection*vec4(vNormal,0)).xy;gl_Position.xy+=d/max(length(d),.00001)*uOverlayExpand*2.0/max(uOverlayViewport,vec2(1))*gl_Position.w;}
 }
 )GLSL";
@@ -548,12 +553,14 @@ layout(location=0) in vec3 aPosition;
 layout(location=1) in vec2 aTexCoord;
 layout(location=2) in vec4 aColor;
 uniform mat4 uViewProjection;
+uniform vec2 uForegroundClip;
 out vec2 vTexCoord;
 out vec4 vColor;
 void main(){
     vTexCoord = aTexCoord;
     vColor = aColor;
     gl_Position = uViewProjection * vec4(aPosition, 1.0);
+    if(uForegroundClip.x>0.0){float n=uForegroundClip.x,f=uForegroundClip.y;gl_Position.z=((f+n)*gl_Position.w-2.0*f*n)/(f-n);}
 }
 )GLSL";
 
@@ -660,6 +667,7 @@ const char* kPostFragment=R"GLSL(
 #define main cadencePostMain
 in vec2 vScreen;out vec4 color;uniform sampler2D uColor;uniform sampler2D uDepth;uniform sampler2D uBloomTexture;uniform sampler2D uLut;uniform vec2 uTexel;uniform bool uBloom;uniform float uBloomIntensity;uniform bool uLutEnabled;uniform float uLutSize;uniform float uLutIntensity;uniform float uDistortion;uniform bool uFilmEnabled;uniform float uFilmBrightness;uniform float uFilmContrast;uniform float uFilmDesaturation;uniform vec3 uFilmDarkTint;uniform vec3 uFilmMidTint;uniform vec3 uFilmLightTint;uniform bool uFilmMidTintEnabled;uniform bool uFilmInvert;uniform bool uVignetteEnabled;uniform float uVignetteIntensity;uniform float uVignetteRadius;uniform float uVignetteSoftness;uniform bool uAutoBlack;uniform float uAutoBlackIntensity;uniform bool uAutoWhite;uniform float uAutoWhiteIntensity;uniform float uCameraNear;uniform float uCameraFar;uniform int uDebugView;uniform float uDebugDepthNear;uniform float uDebugDepthFar;uniform bool uDebugDepthInvert;
 uniform sampler2D uHbao;uniform bool uHbaoEnabled,uHbaoPreview;uniform float uHbaoIntensity,uHbaoPower;
+uniform bool uSeparateForeground;uniform vec2 uViewmodelDepthRange;
 uniform sampler2D uAoIsolated,uDofFar,uDofNear;uniform bool uAoIsolationEnabled,uDofEnabled,uDofPreview;
 )GLSL" CADENCE_AO_FOG_GLSL R"GLSL(
 uniform int uTonemapping;
@@ -673,6 +681,7 @@ vec4 filteredDof(sampler2D image,vec2 uv){vec4 center=texture(image,uv);if(cente
 vec3 lut(vec3 c){float n=uLutSize,b=clamp(c.b,0,1)*(n-1),s0=floor(b),s1=min(n-1,s0+1);vec2 uv0=vec2((s0*n+clamp(c.r,0,1)*(n-1)+.5)/(n*n),(clamp(c.g,0,1)*(n-1)+.5)/n),uv1=vec2((s1*n+clamp(c.r,0,1)*(n-1)+.5)/(n*n),(clamp(c.g,0,1)*(n-1)+.5)/n);return mix(texture(uLut,uv0).rgb,texture(uLut,uv1).rgb,fract(b));}
 vec4 catmull(sampler2D tex,vec2 uv){vec2 p=uv/uTexel-.5,b=floor(p),f=fract(p);float fx2=f.x*f.x,fx3=fx2*f.x,fy2=f.y*f.y,fy3=fy2*f.y;vec4 wx=vec4(-.5*f.x+fx2-.5*fx3,1.0-2.5*fx2+1.5*fx3,.5*f.x+2.0*fx2-1.5*fx3,-.5*fx2+.5*fx3),wy=vec4(-.5*f.y+fy2-.5*fy3,1.0-2.5*fx2+1.5*fx3,.5*f.y+2.0*fx2-1.5*fx3,-.5*fx2+.5*fx3);vec4 result=vec4(0);for(int y=0;y<4;++y)for(int x=0;x<4;++x)result+=texture(tex,(b+vec2(x-1,y-1)+.5)*uTexel)*wx[x]*wy[y];return result;}
 float linearDepth(float depth){
+    if(uSeparateForeground&&depth<.0400001){depth=clamp(depth/.04,0.0,1.0);return uViewmodelDepthRange.x*uViewmodelDepthRange.y/max(.000001,uViewmodelDepthRange.y-depth*(uViewmodelDepthRange.y-uViewmodelDepthRange.x));}
     return uCameraNear*uCameraFar/max(0.0001,uCameraFar-depth*(uCameraFar-uCameraNear));
 }
 vec3 aces13(vec3 x){
@@ -1764,6 +1773,7 @@ void StageRenderer::render(const scene::CastScene& scene,const std::vector<scene
                            const std::vector<take::DollyCameraKeyframe>* campathOverlay,int selectedCampathNode,
                            const take::DollyCameraKeyframe* activeCameraSample) {
     if(!initialized_||!resizeTarget(width,height)||(msaaEnabled_&&!resizeMsaaTarget(width,height)))return;
+    foregroundDrawn_=showMainScene;
     GpuTimer::Scope gpuTiming(gpuTimer_);
     lastVisibleMapMeshes_=lastShadowCasterDraws_=lastFarShadowCasterDraws_=lastTotalDrawCalls_=0;
     const auto equipmentHidden=[&](const GpuMesh& mesh,const scene::CastScene& drawScene,const std::vector<scene::Mat4>& drawPose){
@@ -2003,6 +2013,8 @@ void StageRenderer::render(const scene::CastScene& scene,const std::vector<scene
 glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forward=scene::normalize(environmentForward_),right=scene::normalize(scene::cross(forward,environmentUp_)),up=scene::normalize(scene::cross(right,forward));glapi::Uniform1i(uniformLocation(environmentProgram_,"uMode"),environmentMode_);glapi::Uniform1i(uniformLocation(environmentProgram_,"uFlipVertical"),skyVerticalFlip_?1:0);glapi::Uniform3f(uniformLocation(environmentProgram_,"uForward"),forward.x,forward.y,forward.z);glapi::Uniform3f(uniformLocation(environmentProgram_,"uRightAxis"),right.x,right.y,right.z);glapi::Uniform3f(uniformLocation(environmentProgram_,"uUpAxis"),up.x,up.y,up.z);glapi::Uniform1f(uniformLocation(environmentProgram_,"uTanHalfFov"),std::tan(std::clamp(environmentFov_,1.0f,179.0f)*scene::kPi/360.0f));glapi::Uniform1f(uniformLocation(environmentProgram_,"uAspect"),std::max(0.01f,environmentAspect_));glapi::Uniform1f(uniformLocation(environmentProgram_,"uRotation"),environmentRotation_*scene::kPi/180.0f);glapi::Uniform1f(uniformLocation(environmentProgram_,"uIntensity"),environmentIntensity_);glapi::Uniform1f(uniformLocation(environmentProgram_,"uExposure"),environmentExposure_);glapi::Uniform1i(uniformLocation(environmentProgram_,"uFilmEnabled"),filmEnabled_?1:0);glapi::Uniform1f(uniformLocation(environmentProgram_,"uFilmBrightness"),filmBrightness_);glapi::Uniform1f(uniformLocation(environmentProgram_,"uFilmContrast"),filmContrast_);glapi::Uniform1f(uniformLocation(environmentProgram_,"uFilmDesaturation"),filmDesaturation_);glapi::Uniform3f(uniformLocation(environmentProgram_,"uFilmDarkTint"),filmDarkTint_.x,filmDarkTint_.y,filmDarkTint_.z);glapi::Uniform3f(uniformLocation(environmentProgram_,"uFilmLightTint"),filmLightTint_.x,filmLightTint_.y,filmLightTint_.z);glapi::Uniform1i(uniformLocation(environmentProgram_,"uFilmInvert"),filmInvert_?1:0);glapi::Uniform3f(uniformLocation(environmentProgram_,"uFogColor"),fogColor_.x,fogColor_.y,fogColor_.z);glapi::Uniform1f(uniformLocation(environmentProgram_,"uFogSkyAmount"),fogEnabled_?fogSkyAmount_:0.0f);for(int i=0;i<6;++i){const auto sourceName="uFaceSource"+std::to_string(i),rotationName="uFaceRotation"+std::to_string(i);glapi::Uniform1i(uniformLocation(environmentProgram_,sourceName.c_str()),skyFaceSources_[i]);glapi::Uniform1i(uniformLocation(environmentProgram_,rotationName.c_str()),skyFaceQuarterTurns_[i]);}const char* names[]={"uPanorama","uFront","uBack","uLeft","uRight","uUp","uDown"};glapi::ActiveTexture(glapi::Texture0+5);glBindTexture(GL_TEXTURE_2D,environmentTexture_);glapi::Uniform1i(uniformLocation(environmentProgram_,names[0]),5);for(int i=0;i<6;++i){glapi::ActiveTexture(glapi::Texture0+6+i);glBindTexture(GL_TEXTURE_2D,environmentFaces_[i]);glapi::Uniform1i(uniformLocation(environmentProgram_,names[i+1]),6+i);}glapi::BindVertexArray(lineVao_);glapi::DrawArrays(GL_TRIANGLES,0,3);glEnable(GL_DEPTH_TEST);}
     glapi::UseProgram(meshProgram_);setExtendedFilmUniforms(meshProgram_);glapi::Uniform1i(uniformLocation(meshProgram_,"uBloomEnabled"),0);
     glapi::UniformMatrix4fv(uniformLocation(meshProgram_,"uViewProjection"),1,GL_FALSE,viewProjection.data());
+    const int foregroundClipLoc=uniformLocation(meshProgram_,"uForegroundClip");
+    glapi::Uniform2f(foregroundClipLoc,0,0);
     glapi::Uniform1i(uniformLocation(meshProgram_,"uBones"),16);
     glapi::Uniform1i(uniformLocation(meshProgram_,"uBoneVisibility"),17);
     glapi::Uniform1i(uniformLocation(meshProgram_,"uAlbedo"),1);
@@ -2396,6 +2408,7 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
     // actors render first, then the view rig occupies only the nearest slice.
     // Unlike clearing depth, this preserves world depth for later debug lines.
     if(showMainScene){
+        if(firstPersonProjection_)glapi::Uniform2f(foregroundClipLoc,foreground_depth::nearPlane,foreground_depth::farPlane);
         uploadPose(scene,globalPose);
         lastTex1 = 0xFFFFFFFF; lastTex5 = 0xFFFFFFFF; lastTex6 = 0xFFFFFFFF; lastVao = 0; lastSurfaceProfile = -999;
         glDepthFunc(GL_LEQUAL);
@@ -2406,6 +2419,7 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
                     drawMesh(meshes_[i],scene,globalPose);
         glDepthRange(0.0,1.0);
         glDepthFunc(GL_LESS);
+        glapi::Uniform2f(foregroundClipLoc,0,0);
     }
 
     for(auto& scratch:overlayScratch_)scratch.clear();
@@ -2601,6 +2615,7 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
     const bool dofActive=dof_.enabled&&(debugView_==0||debugView_==1)&&!(hbao_.enabled&&hbao_.preview)&&renderDepthOfField(showMainScene,hbaoActive,aoIsolationActive);
     if(postProgram_&&(dofActive||hbaoActive||debugView_==7||bloomEnabled_||lutTexture_||filmEnabled_||vignetteEnabled_||autoBlackPoint_||autoWhitePoint_||std::abs(lensDistortion_)>0.00001f||tonemappingMode_>0)){
         glapi::UseProgram(postProgram_);glapi::Uniform1i(uniformLocation(postProgram_,"uDebugView"),debugView_);glapi::Uniform1f(uniformLocation(postProgram_,"uDebugDepthNear"),debugDepthNear_);glapi::Uniform1f(uniformLocation(postProgram_,"uDebugDepthFar"),debugDepthFar_);glapi::Uniform1i(uniformLocation(postProgram_,"uDebugDepthInvert"),debugDepthInvert_?1:0);
+        glapi::Uniform1i(uniformLocation(postProgram_,"uSeparateForeground"),firstPersonProjection_&&foregroundDrawn_);glapi::Uniform2f(uniformLocation(postProgram_,"uViewmodelDepthRange"),foreground_depth::nearPlane,foreground_depth::farPlane);
         glDisable(GL_DEPTH_TEST);glapi::BindVertexArray(lineVao_);
         if(bloomEnabled_&&kawaseProgram_&&bloomFramebuffer_){
             glapi::BindFramebuffer(glapi::Framebuffer,bloomFramebuffer_);glapi::UseProgram(kawaseProgram_);glapi::Uniform1i(uniformLocation(kawaseProgram_,"uSource"),0);glapi::Uniform1f(uniformLocation(kawaseProgram_,"uThresholdSoftness"),bloomSoftThreshold_);glapi::Uniform1f(uniformLocation(kawaseProgram_,"uSaturationBias"),bloomSaturationBias_);glapi::Uniform1f(uniformLocation(kawaseProgram_,"uAspect"),bloomAspect_);glapi::Uniform1f(uniformLocation(kawaseProgram_,"uRotation"),bloomRotation_*scene::kPi/180.0f);glapi::ActiveTexture(glapi::Texture0);glDisable(GL_BLEND);
@@ -2707,7 +2722,7 @@ bool StageRenderer::captureReShadeSwapchain(GLFWwindow* window, std::vector<std:
     return true;
 }
 
-bool StageRenderer::readDepthRgba(std::vector<std::uint8_t>& pixels,float projectionNear,float projectionFar,float rangeNear,float rangeFar,bool invert,std::string& error){error.clear();if(!framebuffer_||width_<=0||height_<=0){error="No rendered depth is available";return false;}projectionNear=std::max(0.0001f,projectionNear);projectionFar=std::max(projectionNear+0.001f,projectionFar);rangeNear=std::max(0.0f,rangeNear);rangeFar=std::max(rangeNear+0.001f,rangeFar);std::vector<float> depth(static_cast<std::size_t>(width_)*static_cast<std::size_t>(height_));glapi::BindFramebuffer(glapi::Framebuffer,framebuffer_);glPixelStorei(GL_PACK_ALIGNMENT,1);glReadPixels(0,0,width_,height_,GL_DEPTH_COMPONENT,GL_FLOAT,depth.data());glapi::BindFramebuffer(glapi::Framebuffer,0);pixels.resize(depth.size()*4);for(std::size_t i=0;i<depth.size();++i){float output{};if(depth[i]<1.0f){const double z=static_cast<double>(depth[i])*2.0-1.0,nearValue=projectionNear,farValue=projectionFar,linear=(2.0*nearValue*farValue)/std::max(0.0000001,farValue+nearValue-z*(farValue-nearValue));const double normalized=std::clamp((linear-rangeNear)/(rangeFar-rangeNear),0.0,1.0);output=static_cast<float>(1.0-normalized);}if(invert)output=1.0f-output;const auto value=static_cast<std::uint8_t>(std::round(output*255.0f));pixels[i*4]=pixels[i*4+1]=pixels[i*4+2]=value;pixels[i*4+3]=255;}return true;}
+bool StageRenderer::readDepthRgba(std::vector<std::uint8_t>& pixels,float projectionNear,float projectionFar,float rangeNear,float rangeFar,bool invert,std::string& error){error.clear();if(!framebuffer_||width_<=0||height_<=0){error="No rendered depth is available";return false;}projectionNear=std::max(0.0001f,projectionNear);projectionFar=std::max(projectionNear+0.001f,projectionFar);rangeNear=std::max(0.0f,rangeNear);rangeFar=std::max(rangeNear+0.001f,rangeFar);std::vector<float> depth(static_cast<std::size_t>(width_)*static_cast<std::size_t>(height_));glapi::BindFramebuffer(glapi::Framebuffer,framebuffer_);glPixelStorei(GL_PACK_ALIGNMENT,1);glReadPixels(0,0,width_,height_,GL_DEPTH_COMPONENT,GL_FLOAT,depth.data());glapi::BindFramebuffer(glapi::Framebuffer,0);pixels.resize(depth.size()*4);for(std::size_t i=0;i<depth.size();++i){float output{};if(depth[i]<1.0f){const double linear=foreground_depth::linearize(depth[i],projectionNear,projectionFar,foregroundDrawn_&&firstPersonProjection_,firstPersonProjection_);const double normalized=std::clamp((linear-rangeNear)/(rangeFar-rangeNear),0.0,1.0);output=static_cast<float>(1.0-normalized);}if(invert)output=1.0f-output;const auto value=static_cast<std::uint8_t>(std::round(output*255.0f));pixels[i*4]=pixels[i*4+1]=pixels[i*4+2]=value;pixels[i*4+3]=255;}return true;}
 
 bool StageRenderer::readDepthRawFloat(std::vector<float>& depths,float projectionNear,float projectionFar,float rangeNear,float rangeFar,bool invert,std::string& error){
     error.clear();if(!framebuffer_||width_<=0||height_<=0){error="No rendered depth is available";return false;}
@@ -2717,7 +2732,7 @@ bool StageRenderer::readDepthRawFloat(std::vector<float>& depths,float projectio
     for(std::size_t i=0;i<depths.size();++i){
         float output{};
         if(depths[i]<1.0f){
-            const double z=static_cast<double>(depths[i])*2.0-1.0,nearValue=projectionNear,farValue=projectionFar,linear=(2.0*nearValue*farValue)/std::max(0.0000001,farValue+nearValue-z*(farValue-nearValue));
+            const double linear=foreground_depth::linearize(depths[i],projectionNear,projectionFar,foregroundDrawn_&&firstPersonProjection_,firstPersonProjection_);
             const double normalized=std::clamp((linear-rangeNear)/(rangeFar-rangeNear),0.0,1.0);
             output=static_cast<float>(1.0-normalized);
         }
@@ -2744,7 +2759,7 @@ bool StageRenderer::saveDepthImage(const std::filesystem::path& path,int formatB
         std::vector<float> floatPixels(pixelCount);
         for(int y=0;y<height_;++y)for(int x=0;x<width_;++x){
             const std::size_t srcIdx=static_cast<std::size_t>(height_-1-y)*width_+x,dstIdx=static_cast<std::size_t>(y)*width_+x;
-            float output{};if(rawDepth[srcIdx]<1.0f){const double z=static_cast<double>(rawDepth[srcIdx])*2.0-1.0,linear=(2.0*projectionNear*projectionFar)/std::max(0.0000001,static_cast<double>(projectionFar)+projectionNear-z*(projectionFar-projectionNear));const double normalized=std::clamp((linear-rangeNear)/(rangeFar-rangeNear),0.0,1.0);output=static_cast<float>(1.0-normalized);}
+            float output{};if(rawDepth[srcIdx]<1.0f){const double linear=foreground_depth::linearize(rawDepth[srcIdx],projectionNear,projectionFar,foregroundDrawn_&&firstPersonProjection_,firstPersonProjection_);const double normalized=std::clamp((linear-rangeNear)/(rangeFar-rangeNear),0.0,1.0);output=static_cast<float>(1.0-normalized);}
             if(invert)output=1.0f-output;floatPixels[dstIdx]=output;
         }
         const auto stride=static_cast<UINT>(width_*sizeof(float)),byteCount=static_cast<UINT>(pixelCount*sizeof(float));
@@ -2759,7 +2774,7 @@ bool StageRenderer::saveDepthImage(const std::filesystem::path& path,int formatB
         std::vector<std::uint16_t> pixels16(pixelCount);
         for(int y=0;y<height_;++y)for(int x=0;x<width_;++x){
             const std::size_t srcIdx=static_cast<std::size_t>(height_-1-y)*width_+x,dstIdx=static_cast<std::size_t>(y)*width_+x;
-            float output{};if(rawDepth[srcIdx]<1.0f){const double z=static_cast<double>(rawDepth[srcIdx])*2.0-1.0,linear=(2.0*projectionNear*projectionFar)/std::max(0.0000001,static_cast<double>(projectionFar)+projectionNear-z*(projectionFar-projectionNear));const double normalized=std::clamp((linear-rangeNear)/(rangeFar-rangeNear),0.0,1.0);output=static_cast<float>(1.0-normalized);}
+            float output{};if(rawDepth[srcIdx]<1.0f){const double linear=foreground_depth::linearize(rawDepth[srcIdx],projectionNear,projectionFar,foregroundDrawn_&&firstPersonProjection_,firstPersonProjection_);const double normalized=std::clamp((linear-rangeNear)/(rangeFar-rangeNear),0.0,1.0);output=static_cast<float>(1.0-normalized);}
             if(invert)output=1.0f-output;pixels16[dstIdx]=static_cast<std::uint16_t>(std::clamp(std::round(output*65535.0f),0.0f,65535.0f));
         }
         const auto stride=static_cast<UINT>(width_*sizeof(std::uint16_t)),byteCount=static_cast<UINT>(pixelCount*sizeof(std::uint16_t));
@@ -2772,7 +2787,7 @@ bool StageRenderer::saveDepthImage(const std::filesystem::path& path,int formatB
     std::vector<std::uint8_t> pixels8(pixelCount);
     for(int y=0;y<height_;++y)for(int x=0;x<width_;++x){
         const std::size_t srcIdx=static_cast<std::size_t>(height_-1-y)*width_+x,dstIdx=static_cast<std::size_t>(y)*width_+x;
-        float output{};if(rawDepth[srcIdx]<1.0f){const double z=static_cast<double>(rawDepth[srcIdx])*2.0-1.0,linear=(2.0*projectionNear*projectionFar)/std::max(0.0000001,static_cast<double>(projectionFar)+projectionNear-z*(projectionFar-projectionNear));const double normalized=std::clamp((linear-rangeNear)/(rangeFar-rangeNear),0.0,1.0);output=static_cast<float>(1.0-normalized);}
+        float output{};if(rawDepth[srcIdx]<1.0f){const double linear=foreground_depth::linearize(rawDepth[srcIdx],projectionNear,projectionFar,foregroundDrawn_&&firstPersonProjection_,firstPersonProjection_);const double normalized=std::clamp((linear-rangeNear)/(rangeFar-rangeNear),0.0,1.0);output=static_cast<float>(1.0-normalized);}
         if(invert)output=1.0f-output;pixels8[dstIdx]=static_cast<std::uint8_t>(std::clamp(std::round(output*255.0f),0.0f,255.0f));
     }
     const auto stride=static_cast<UINT>(width_*sizeof(std::uint8_t)),byteCount=static_cast<UINT>(pixelCount*sizeof(std::uint8_t));
@@ -2825,6 +2840,7 @@ void StageRenderer::renderMuzzleFlash3D(scene::Vec3 position, float size, float 
     glBlendFunc(GL_SRC_ALPHA, GL_ONE);
 
     glapi::UseProgram(billboardProgram_);
+    glapi::Uniform2f(uniformLocation(billboardProgram_,"uForegroundClip"),firstPerson&&firstPersonProjection_?foreground_depth::nearPlane:0.f,foreground_depth::farPlane);
     glapi::UniformMatrix4fv(uniformLocation(billboardProgram_, "uViewProjection"), 1, GL_FALSE, viewProjection.data());
     glapi::Uniform1i(uniformLocation(billboardProgram_, "uTexture"), 0);
     glapi::ActiveTexture(glapi::Texture0);
@@ -2840,6 +2856,7 @@ void StageRenderer::renderMuzzleFlash3D(scene::Vec3 position, float size, float 
     glapi::BindBuffer(glapi::ArrayBuffer, billboardBuffer_);
     glapi::BufferData(glapi::ArrayBuffer, sizeof(verts), verts, glapi::DynamicDraw);
     glapi::DrawArrays(GL_TRIANGLES, 0, 6);
+    glapi::Uniform2f(uniformLocation(billboardProgram_,"uForegroundClip"),0,0);
 
     glDepthMask(GL_TRUE);
     glDepthFunc(GL_LESS);

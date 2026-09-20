@@ -1,3 +1,4 @@
+#include "assets/LocalAssetPaths.h"
 static bool testAds{},testFire{};
 #define glfwGetMouseButton cadenceTestMouse
 #define glfwGetKey cadenceTestKey
@@ -18,7 +19,7 @@ extern "C" int cadenceTestInputMode(GLFWwindow*,int){return GLFW_CURSOR_DISABLED
 #define CHECK(x) do{if(!(x)){std::cerr<<"FAIL "<<__LINE__<<" "<<#x<<" status="<<a.gameplayStatus<<"\n";return 1;}}while(false)
 int main(){
  if(!glfwInit())return 2;glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto*w=glfwCreateWindow(960,540,"PB integration",nullptr,nullptr);if(!w)return 3;glfwMakeContextCurrent(w);ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;
- auto state=std::make_unique<AppState>();auto&a=*state;std::string error;a.window=w;a.deferSceneUpload=true;CHECK(a.renderer.initialize(error));a.defaultSalukiDirectory="D:/Editing/COD Resource/3D Rip/saluki/exported_files";
+ auto state=std::make_unique<AppState>();auto&a=*state;std::string error;a.window=w;a.deferSceneUpload=true;CHECK(a.renderer.initialize(error));a.defaultSalukiDirectory=cadence::local_assets::exportPath("");
  for(auto game:{"pointblank","bo2"})CHECK(assets::appendScan(a.defaultSalukiDirectory/game,game,a.assetCatalog,error));
  auto idx=[&](std::string name){for(size_t i=0;i<a.assetCatalog.entries.size();++i)if(a.assetCatalog.entries[i].name==name)return i;return a.assetCatalog.entries.size();};
  std::filesystem::create_directories("diagnostics/pointblank_v136");std::ofstream report("diagnostics/pointblank_v136/integration.txt");

@@ -114,6 +114,7 @@ public:
     }
     [[nodiscard]] float surfaceNormalReflectionInfluence() const noexcept { return surfaceNormalReflectionInfluence_; }
     void setCameraPosition(scene::Vec3 pos) noexcept { cameraPosition_=pos; }
+    void setFirstPersonProjection(bool enabled) noexcept { firstPersonProjection_=enabled; }
     [[nodiscard]] scene::Vec3 cameraPosition() const noexcept { return cameraPosition_; }
     void setCampathAppearance(float thickness,scene::Vec3 splineColor,scene::Vec3 nodeColor,scene::Vec3 frustumColor,bool dashed=false,float dashLength=12.0f) noexcept { campathThickness_=thickness;campathSplineColor_=splineColor;campathNodeColor_=nodeColor;campathFrustumColor_=frustumColor;campathDashed_=dashed;campathDashLength_=dashLength; }
     void setMaterialParameters(float lensAlpha,scene::Vec3 lensTint,float lensCubemapIntensity,float specularIntensity,float specularSharpness,float specularIntensity2,float specularSharpness2,float lensSpecularIntensity,bool cubemapSpecular,float cubemapSpecularIntensity,float cubemapBlur,int shadingModel,bool iw3DualLobe,float awRoughnessScale,float awRoughnessBias,float awMetalness,float awSpecularLevel,float awDiffuseWrap,float awClearcoat,float awClearcoatRoughness,float awEnvironmentIntensity) noexcept { lensAlpha_=lensAlpha;lensTint_=lensTint;lensCubemapIntensity_=lensCubemapIntensity;specularIntensity_=specularIntensity;specularSharpness_=specularSharpness;specularIntensity2_=specularIntensity2;specularSharpness2_=specularSharpness2;lensSpecularIntensity_=lensSpecularIntensity;cubemapSpecular_=cubemapSpecular;cubemapSpecularIntensity_=cubemapSpecularIntensity;cubemapBlur_=cubemapBlur;shadingModel_=std::clamp(shadingModel,0,3);iw3DualLobe_=iw3DualLobe;awRoughnessScale_=awRoughnessScale;awRoughnessBias_=awRoughnessBias;awMetalness_=awMetalness;awSpecularLevel_=awSpecularLevel;awDiffuseWrap_=awDiffuseWrap;awClearcoat_=awClearcoat;awClearcoatRoughness_=awClearcoatRoughness;awEnvironmentIntensity_=awEnvironmentIntensity; }
@@ -424,6 +425,7 @@ private:
     std::array<int,6> skyFaceQuarterTurns_{};
     bool skyVerticalFlip_{};
     bool ignoreViewmodelTextureAlpha_{true},ignoreMapTextureAlpha_{};
+    bool firstPersonProjection_{},foregroundDrawn_{};
     bool viewmodelCapture_{};scene::Vec4 captureBackground_{0,1,0,1};
     float normalMapIntensity_{1.0f};
     float surfaceNormalReflectionInfluence_{1.0f};

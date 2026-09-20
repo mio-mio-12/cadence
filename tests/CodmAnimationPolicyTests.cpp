@@ -3,6 +3,15 @@
 #include <cmath>
 #define CHECK(v) do{if(!(v))std::abort();}while(false)
 int main(){
+ {
+  scene::CastScene sample;scene::Bone controller;controller.name="Bone_RightHand";controller.parent=-1;
+  sample.skeleton.bones.push_back(controller);sample.skeleton.boneByName[controller.name]=0;
+  scene::Animation shot;shot.durationFrames=2;scene::Track track;track.boneIndex=0;track.property=scene::TrackProperty::TranslationZ;track.frames={0,1,2};track.scalarValues={0,5,0};shot.tracks.push_back(track);sample.animations.push_back(shot);
+  auto base=sample.samplePose(0,0);base[0].v[12]=17;
+  auto peak=cadence::codm_actions::alignedHipBolt(sample,base,0,1,1);
+  CHECK(std::abs(peak[0].v[14]-5)<.0001f);CHECK(std::abs(peak[0].v[12]-17)<.0001f);
+  CHECK(cadence::codm_actions::alignedHipBolt(sample,base,0,1,0)[0].v==base[0].v);
+ }
  for(const auto& [name,slot]:std::initializer_list<std::pair<const char*,const char*>>{
   {"viewmodel_ar_bal27_ads_down.cast","ads_down"},{"viewmodel_ar_bal27_un_aiming_on.cast","ads_down"},
   {"viewmodel_ar_bal27_ads_idle.cast","ads_idle"},{"viewmodel_ar_bal27_reload_empty.cast","reload_empty"},

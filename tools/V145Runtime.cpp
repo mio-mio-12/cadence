@@ -1,10 +1,11 @@
+#include "assets/LocalAssetPaths.h"
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
 #undef main
 #define CHECK(x) do{if(!(x)){std::cerr<<"FAIL "<<__LINE__<<" "<<#x<<"\n";return 1;}}while(false)
 int main(){
  auto state=std::make_unique<AppState>();auto& a=*state;std::string error;
- const std::filesystem::path root="D:/Editing/COD Resource/3D Rip/saluki/exported_files";
+ const std::filesystem::path root=cadence::local_assets::exportPath("");
  CHECK(assets::appendScan(root/"codm","codm",a.assetCatalog,error));
  size_t paired=0,mounted=0;
  for(size_t i=0;i<a.assetCatalog.entries.size();++i){const auto& v=a.assetCatalog.entries[i];if(v.role!=assets::Role::ViewWeapon)continue;const auto wi=findWorldWeaponForViewWeapon(a,v);if(wi>=a.assetCatalog.entries.size())continue;++paired;

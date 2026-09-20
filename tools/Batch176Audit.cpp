@@ -1,3 +1,4 @@
+#include "assets/LocalAssetPaths.h"
 #define main cadenceApplicationMain
 #include "../src/app/main.cpp"
 #undef main
@@ -12,7 +13,7 @@ int main(int argc,char**argv){
  glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto*w=glfwCreateWindow(960,720,"Batch audit",nullptr,nullptr);if(!w)return 2;glfwMakeContextCurrent(w);
  ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;ImGui_ImplGlfw_InitForOpenGL(w,true);ImGui_ImplOpenGL3_Init("#version 330");
  auto state=std::make_unique<AppState>();auto& app=*state;app.window=w;std::string error;if(!app.renderer.initialize(error))return 3;
- app.defaultSalukiDirectory="D:/Editing/COD Resource/3D Rip/saluki/exported_files";
+ app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
  const auto root=app.defaultSalukiDirectory;
  const auto maxError=[](const auto&a,const auto&b){float e=0;if(a.size()!=b.size())return 1e20f;for(size_t i=0;i<a.size();++i)for(int j=0;j<16;++j)e=std::max(e,std::abs(a[i].v[j]-b[i].v[j]));return e;};
  if(argc<3||std::string(argv[2])=="codm"){

@@ -1,4 +1,5 @@
 #include "app/ReplayPresentation.h"
+#include "render/ForegroundDepth.h"
 #include "app/ReplayRecoil.h"
 #include "render/ReplaySmoke.h"
 #include "render/DepthOfField.h"
@@ -29,6 +30,16 @@ int main(){
   settings.recoil.duration=std::numeric_limits<float>::infinity();CHECK(std::isfinite(cadence::replay::recoilAt(recording,peak,0,settings).x));
  }
  const auto clips=cadence::replay::clipRange(.1f,200.f);CHECK(clips.nearPlane==.1f&&clips.farPlane==20000.f);
+ // Foreground optics must not consume map near/far precision; depth readback
+ // uses the actual first-person projection, including for replay captures.
+ for(double nearWorld:{.1,2.5,25.0})for(double farWorld:{10000.,1000000.}){
+  for(double distance:{.1,.5,2.,10.,100.,1000.}){
+   const double n=render::foreground_depth::nearPlane,f=render::foreground_depth::farPlane;
+   const double raw=(f-f*n/distance)/(f-n)*render::foreground_depth::slice;
+   CHECK(std::abs(render::foreground_depth::linearize(raw,nearWorld,farWorld,true,true)-distance)<.0001);
+  }
+  for(double raw:{.05,.5,.95})CHECK(render::foreground_depth::linearize(raw,nearWorld,farWorld,true,true)==render::foreground_depth::linearize(raw,nearWorld,farWorld,false,false));
+ }
  for(bool focused:{false,true})for(bool minimized:{false,true}){
   CHECK(!cadence::replay::pauseForInactiveWindow(focused,minimized,true));
   CHECK(cadence::replay::pauseForInactiveWindow(focused,minimized,false)==(!focused||minimized));

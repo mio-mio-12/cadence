@@ -3,7 +3,7 @@ std::optional<cadence::world_weapon::Fields> t6WorldWeaponFields(const assets::A
     using namespace cadence::world_weapon;
     static const auto index=[](){
         std::unordered_map<std::string,Fields> result;
-        const std::filesystem::path root=R"(D:\Editing\COD Resource\Resource\BO2 Res\Black Ops 2 Grand Resources\Black Ops 2 Grand Resources\T6-Data-Archive-main\MP\Weapons\WEAPONS)";
+        const std::filesystem::path root=cadence::portable::t6WeaponArchive();
         std::error_code error;
         for(std::filesystem::directory_iterator it(root,std::filesystem::directory_options::skip_permission_denied,error),end;it!=end;it.increment(error)){
             if(error){error.clear();continue;}if(!it->is_regular_file(error))continue;

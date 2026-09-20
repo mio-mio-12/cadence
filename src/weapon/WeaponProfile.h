@@ -111,6 +111,8 @@ struct Profile {
     // Camera-local offset for the complete first-person rig. The gameplay
     // camera is deliberately not moved with it.
     scene::Vec3 gunPosition{};
+    bool separateAdsPosition{};
+    scene::Vec3 adsGunPosition{};
     // Standard keys are idle, fire, ads_fire, reload, reload_empty,
     // ads_up/down, sprint_*, melee, rechamber, pullout, putaway and mantle.
     // Optional pairing keys append .from_primary/.from_sidearm or
@@ -151,6 +153,11 @@ inline void applyFamilyBehavior(Profile& target,const Profile& family){
 [[nodiscard]] std::optional<std::string> animationFor(const Profile& profile,const std::string& action,const std::string& pairing={});
 [[nodiscard]] std::vector<std::string> animationVariantsFor(const Profile& profile,const std::string& action,const std::string& pairing={});
 [[nodiscard]] const AnimationOffset* offsetFor(const Profile& profile,const std::string& animation);
+[[nodiscard]] inline scene::Vec3 gunPositionAt(const Profile& profile,float ads){
+    if(!profile.separateAdsPosition)return profile.gunPosition;
+    const float t=std::isfinite(ads)?std::clamp(ads,0.f,1.f):0.f;
+    return scene::lerp(profile.gunPosition,profile.adsGunPosition,t*t*(3.f-2.f*t));
+}
 bool save(const Profile& profile,const std::filesystem::path& path,std::string& error);
 bool load(const std::filesystem::path& path,Profile& profile,std::string& error);
 bool importLegacyWeaponFile(Profile& profile,const std::filesystem::path& path,std::string& error);

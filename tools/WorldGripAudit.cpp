@@ -1,3 +1,4 @@
+#include "assets/LocalAssetPaths.h"
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
 #undef main
@@ -5,7 +6,7 @@
 int main(int argc,char** argv){
  if(!glfwInit())return 1;glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto*w=glfwCreateWindow(800,600,"Grip audit",nullptr,nullptr);if(!w)return 2;glfwMakeContextCurrent(w);ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;
  auto s=std::make_unique<AppState>();auto&a=*s;a.window=w;a.deferSceneUpload=true;std::string error;if(!a.renderer.initialize(error))return 3;
- a.defaultSalukiDirectory="D:/Editing/COD Resource/3D Rip/saluki/exported_files";
+ a.defaultSalukiDirectory=cadence::local_assets::exportPath("");
  const auto out=std::filesystem::path("diagnostics/v158-world-grips");std::filesystem::create_directories(out);std::ofstream report(out/"audit.txt");
  const std::vector<std::string> games={"pointblank","bo2","bo2_sp","mw","mw3","ghosts","aw","iw_sp","mwr","bocw_sp","codm","cs2"};
  for(const auto&g:games){std::cout<<"scan "<<g<<"\n"<<std::flush;(void)assets::appendScan(a.defaultSalukiDirectory/g,g,a.assetCatalog,error);}

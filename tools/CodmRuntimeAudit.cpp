@@ -1,3 +1,5 @@
+#include "assets/LocalAssetPaths.h"
+#include "app/PortablePaths.h"
 #include "scene/CastScene.h"
 #include "scene/PointBlankWorld.h"
 #include "app/CodmAnimationPolicy.h"
@@ -9,12 +11,27 @@
 #include <fstream>
 using Clock=std::chrono::steady_clock;
 int main(int argc,char**argv){
- const std::filesystem::path root="D:/Editing/COD Resource/3D Rip/saluki/exported_files";
+ const std::filesystem::path root=cadence::local_assets::exportPath("");
  std::string error;
+ if(argc>1&&std::string(argv[1])=="motion"){
+  for(const char* stem:{"viewmodel_pistol_50gs","viewmodel_pistol_50gs_GirlsFrontline","viewmodel_pistol_mw11","viewmodel_special_baseversionmp7"}){
+   scene::CastScene s;if(!scene::codm::assemble(cast::Document::load(root/"codm/models"/(std::string(stem)+".cast")),cast::Document::load(root/"codm/models/codm_viewhands_C_M_Ghost_1P.cast"),s,error)){std::cout<<stem<<" ASSEMBLY FAILED "<<error<<'\n';continue;}
+   for(const char* slot:{"idle","fire","ads_fire","aiming_fire_s","reload"}){
+    const auto path=root/"codm/animations"/(std::string(stem)+"_"+slot+".cast");if(!std::filesystem::exists(path)){std::cout<<stem<<" "<<slot<<" MISSING\n";continue;}
+    const auto index=s.animations.size();scene::appendAnimations(cast::Document::load(path),s);if(index==s.animations.size()){std::cout<<stem<<" "<<slot<<" REJECTED\n";continue;}
+    const auto& a=s.animations[index];float scalarDelta=0,quatDelta=0,poseDelta=0;size_t varying=0;
+    for(const auto& t:a.tracks){float delta=0;for(float v:t.scalarValues)delta=std::max(delta,std::abs(v-t.scalarValues.front()));scalarDelta=std::max(scalarDelta,delta);for(auto q:t.rotationValues){const auto r=t.rotationValues.front();const float d=std::min(std::abs(q.x-r.x)+std::abs(q.y-r.y)+std::abs(q.z-r.z)+std::abs(q.w-r.w),std::abs(q.x+r.x)+std::abs(q.y+r.y)+std::abs(q.z+r.z)+std::abs(q.w+r.w));delta=std::max(delta,d);quatDelta=std::max(quatDelta,d);}varying+=delta>1e-6f;}
+    float alignedDelta=0;const auto first=s.samplePose(index,0);for(float frame=0;frame<=a.durationFrames;frame+=.25f){const auto p=s.samplePose(index,frame),aligned=cadence::codm_actions::alignedHipBolt(s,first,index,frame,1);for(size_t b=0;b<p.size();++b)for(int k=0;k<16;++k){poseDelta=std::max(poseDelta,std::abs(p[b].v[k]-first[b].v[k]));alignedDelta=std::max(alignedDelta,std::abs(aligned[b].v[k]-first[b].v[k]));}}
+    std::cout<<"carrierMotion="<<alignedDelta<<" muzzleExact="<<s.skeleton.boneByName.contains("Muzzle_point")<<" ";
+    std::cout<<stem<<" "<<slot<<" frames="<<a.durationFrames<<" tracks="<<a.tracks.size()<<" unmapped="<<a.unmappedCurveCount<<" varying="<<varying<<" scalarDelta="<<scalarDelta<<" quatDelta="<<quatDelta<<" poseDelta="<<poseDelta<<'\n';
+   }
+  }
+  return 0;
+ }
  if(argc>1&&std::string(argv[1])=="materials"){
   if(!glfwInit())return 2;glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto* w=glfwCreateWindow(1280,720,"CODM materials",nullptr,nullptr);if(!w)return 2;glfwMakeContextCurrent(w);
   render::StageRenderer renderer;if(!renderer.initialize(error)){std::cerr<<error;return 2;}
-  if(!renderer.setT6SkyboxIwi("C:/Program Files (x86)/Steam/steamapps/common/Call of Duty Black Ops II - redacted/Tools/skyboxes/city/sky.iwi",error)){std::cerr<<error;return 7;}
+  if(!renderer.setT6SkyboxIwi(cadence::portable::executableDirectory()/"skyboxes/city/sky.iwi",error)){std::cerr<<error;return 7;}
   renderer.setMaterialParameters(.5f,{.8f,.9f,1},1,.85f,209,.14f,6,1,true,.97f,.08f,1,true,1,0,0,1,0,0,.18f,1);
   std::filesystem::create_directories("diagnostics/v167");
   for(const char* name:{"viewmodel_special_raygun","viewmodel_ar_ak47","viewmodel_sniper_locus"}){

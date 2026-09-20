@@ -1,5 +1,6 @@
 #pragma once
 #include <filesystem>
+#include <cstdlib>
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -18,6 +19,10 @@ inline std::filesystem::path executableDirectory(){
 }
 inline bool enabled(const std::filesystem::path& directory=executableDirectory()){
     std::error_code ec;return std::filesystem::is_regular_file(directory/"Cadence Assets"/"settings"/"portable.flag",ec);
+}
+inline std::filesystem::path t6WeaponArchive(){
+    const char* configured=std::getenv("CADENCE_T6_WEAPON_ARCHIVE");
+    return configured&&*configured?std::filesystem::u8path(configured):executableDirectory()/"Cadence Assets"/"weapon_data"/"bo2";
 }
 inline std::filesystem::path ffmpegExecutable(){
     const auto bundled=executableDirectory()/"tools"/"ffmpeg.exe";

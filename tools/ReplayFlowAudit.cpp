@@ -1,3 +1,4 @@
+#include "assets/LocalAssetPaths.h"
 #define main cadenceApplicationMain
 #include "../src/app/main.cpp"
 #undef main
@@ -15,7 +16,7 @@ int main(int argc,char** argv){
     auto state=std::make_unique<AppState>();auto& app=*state;app.window=window;std::string error;
     if(!app.viewportAspectLocked||std::abs(app.viewportAspect-1.77f)>.0001f)return 57;
     if(!app.renderer.initialize(error))return 3;
-    app.defaultSalukiDirectory="D:/Editing/COD Resource/3D Rip/saluki/exported_files";
+    app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
     if(!assets::appendScan(app.defaultSalukiDirectory/"bo2","bo2",app.assetCatalog,error))return 4;
     for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto& a=app.assetCatalog.entries[i];
         if(a.name=="t6_wpn_ar_an94_view_LOD0")app.classPrimaryAsset=i;

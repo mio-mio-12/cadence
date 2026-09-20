@@ -1,3 +1,4 @@
+#include "assets/LocalAssetPaths.h"
 #include "render/StageRenderer.h"
 #include "../tests/ReferencePoseV131.h"
 #include <cstring>
@@ -9,8 +10,8 @@ int main(int argc,char** argv){
     CHECK(argc>1);const std::filesystem::path out=argv[1];std::filesystem::create_directories(out);
     CHECK(glfwInit());glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto* window=glfwCreateWindow(640,360,"v132 replay render regression",nullptr,nullptr);CHECK(window);glfwMakeContextCurrent(window);
     render::StageRenderer renderer;std::string error;CHECK(renderer.initialize(error));
-    auto rig=scene::buildScene(cast::Document::load("D:/Editing/COD Resource/3D Rip/saluki/exported_files/bo2/models/playermodels/isa/c_usa_mp_isa_assault_fb/c_usa_mp_isa_assault_fb_LOD0.cast"),false);CHECK(!rig.meshes.empty());CHECK(!rig.skeleton.bones.empty());
-    const std::filesystem::path root="D:/Editing/COD Resource/3D Rip/saluki/exported_files";
+    auto rig=scene::buildScene(cast::Document::load(cadence::local_assets::exportPath("bo2/models/playermodels/isa/c_usa_mp_isa_assault_fb/c_usa_mp_isa_assault_fb_LOD0.cast")),false);CHECK(!rig.meshes.empty());CHECK(!rig.skeleton.bones.empty());
+    const std::filesystem::path root=cadence::local_assets::exportPath("");
     for(const auto& path:{"bo2/animations/pb/combatrun/generic/pb_combatrun_forward_loop.cast","bo2/animations/pt/reload/rifle/pt_rifle_stand_reload_rearclip.cast","bocw_sp/animations/pb/run/assault rifle/pb_rifle_run_slide_land_l.cast"}){
         auto clip=cast::Document::load(root/path);CHECK(clip.valid());scene::appendAnimations(clip,rig);
     }

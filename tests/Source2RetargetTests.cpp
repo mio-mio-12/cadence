@@ -1,3 +1,4 @@
+#include "assets/LocalAssetPaths.h"
 #include "cast/CastDocument.h"
 #include "scene/CastScene.h"
 
@@ -79,7 +80,7 @@ struct Clip {const char* weapon;const char* file;};
 
 int main(int argc,char** argv){
     const std::filesystem::path root=argc>1?std::filesystem::u8path(argv[1]):
-        std::filesystem::path{R"(D:\Editing\COD Resource\3D Rip\saluki\exported_files)"};
+        std::filesystem::path{cadence::local_assets::exportPath("")};
     try {
         for(const auto weapon:{"ak47","awp","deagle","knife_karambit","knife_butterfly"}){
             const auto materialScene=scene::buildScene(load(root/"cs2"/"models"/"weapons"/weapon/(std::string(weapon)+"_model.cast")));

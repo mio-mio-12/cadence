@@ -10,8 +10,9 @@ uniform vec2 uTexel,uInvProjection,uBlurAxis;
 uniform float uNear,uFar,uRadius,uBias,uFalloff,uSharpness,uMaxPixels;
 uniform int uDirections,uSteps,uBlurRadius,uMode;
 uniform bool uForeground,uWeaponBackgroundHalo;
+uniform vec2 uViewmodelDepthRange;
 bool foreground(float raw){return uForeground&&raw<.0400001;}
-float depthAt(vec2 uv){float z=texture(uDepth,uv).r;if(foreground(z))z=clamp(z/.04,0.0,1.0);return 2.0*uNear*uFar/(uFar+uNear-(z*2.0-1.0)*(uFar-uNear));}
+float depthAt(vec2 uv){float z=texture(uDepth,uv).r;vec2 range=vec2(uNear,uFar);if(foreground(z)){z=clamp(z/.04,0.0,1.0);range=uViewmodelDepthRange;}return 2.0*range.x*range.y/(range.y+range.x-(z*2.0-1.0)*(range.y-range.x));}
 vec3 positionAt(vec2 uv){float z=depthAt(uv);return vec3((uv*2.0-1.0)*uInvProjection*z,-z);}
 bool outside(vec2 uv){return any(lessThan(uv,vec2(0)))||any(greaterThan(uv,vec2(1)));}
 void main(){

@@ -1,3 +1,4 @@
+#include "assets/LocalAssetPaths.h"
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
 #undef main
@@ -5,7 +6,7 @@
 int main(int argc,char** argv){
  if(!glfwInit())return 1;glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto* window=glfwCreateWindow(1280,720,"CODM bot audit",nullptr,nullptr);if(!window)return 1;glfwMakeContextCurrent(window);glfwSwapInterval(0);
  auto state=std::make_unique<AppState>();auto& app=*state;std::string error;
- app.defaultSalukiDirectory="D:/Editing/COD Resource/3D Rip/saluki/exported_files";
+ app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
  if(!app.renderer.initialize(error))return 2;
  app.window=window;
  const bool fullScene=argc>1;

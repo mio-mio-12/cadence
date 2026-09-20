@@ -1,3 +1,4 @@
+#include "assets/LocalAssetPaths.h"
 #include "app/LiveViewportRecorder.h"
 #include "scene/CastScene.h"
 #include "cast/CastDocument.h"
@@ -9,7 +10,7 @@
 #define CHECK(x) do{if(!(x)){std::cerr<<"FAIL "<<#x<<'\n';std::exit(1);}}while(false)
 int main(int argc,char**argv){
  if(argc>1&&std::string(argv[1])=="slide"){
-  const std::filesystem::path root="D:/Editing/COD Resource/3D Rip/saluki/exported_files";
+  const std::filesystem::path root=cadence::local_assets::exportPath("");
   auto actor=scene::buildScene(cast::Document::load(root/"bo2/models/playermodels/isa/c_usa_mp_isa_assault_fb/c_usa_mp_isa_assault_fb_LOD0.cast"),false);
   scene::appendAnimations(cast::Document::load(root/"bocw_sp/animations/pb/run/assault rifle/pb_rifle_run_slide_land_l.cast"),actor);auto adapter=actor.animations[0].coldWarWorldPose;CHECK(adapter);
   const auto dump=[](const scene::CastScene& s,std::vector<scene::Transform> local,const char* label){std::cout<<label<<'\n';for(auto name:{"j_wrist_ri","tag_weapon_right"}){auto i=s.skeleton.boneByCanonicalName.at(name);const auto b=s.skeleton.bones[i].restLocal;const auto a=local[i];std::cout<<name<<" bind p="<<b.position.x<<","<<b.position.y<<","<<b.position.z<<" anim p="<<a.position.x<<","<<a.position.y<<","<<a.position.z<<" bind q="<<b.rotation.x<<","<<b.rotation.y<<","<<b.rotation.z<<","<<b.rotation.w<<" anim q="<<a.rotation.x<<","<<a.rotation.y<<","<<a.rotation.z<<","<<a.rotation.w<<'\n';}};

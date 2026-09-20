@@ -1,3 +1,4 @@
+#include "assets/LocalAssetPaths.h"
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
 #undef main
@@ -6,7 +7,7 @@
 int main(){
  if(!glfwInit())return 2;glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto*w=glfwCreateWindow(960,540,"Point Blank knife integration",nullptr,nullptr);if(!w)return 3;glfwMakeContextCurrent(w);ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;
  auto state=std::make_unique<AppState>();auto&a=*state;std::string error;a.window=w;a.deferSceneUpload=true;CHECK(a.renderer.initialize(error));a.renderer.setViewmodelCapture(true,{.035f,.04f,.045f,1});a.renderer.setDebugView(1);
- a.defaultSalukiDirectory="D:/Editing/COD Resource/3D Rip/saluki/exported_files";
+ a.defaultSalukiDirectory=cadence::local_assets::exportPath("");
  for(auto game:{"pointblank","bo2","mw","mw3","ghosts","aw","iw_sp","mwr"})CHECK(assets::appendScan(a.defaultSalukiDirectory/game,game,a.assetCatalog,error));
  std::vector<size_t> hands,weapons;
  auto idx=[&](std::string n){for(size_t i=0;i<a.assetCatalog.entries.size();++i)if(lowerText(a.assetCatalog.entries[i].name)==lowerText(n))return i;return a.assetCatalog.entries.size();};

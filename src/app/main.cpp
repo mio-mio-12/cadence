@@ -240,7 +240,7 @@ struct AppState {
     bool playing{true};
     bool showGrid{true};
     std::optional<scene::glb::Map> loadedMap;
-    std::filesystem::path defaultMapDirectory{R"(C:\Users\Ein\Documents\1 cadence maps\default map)"};
+    std::filesystem::path defaultMapDirectory{};
     float mapImportScale{1.0f};
     bool mapLoadCodmSidecar{},mapAllowCollisionApproximation{};
     int mapCollisionSegments{16};
@@ -1201,7 +1201,7 @@ void saveDefaultMapDirectory(const std::filesystem::path& directory){
 }
 std::filesystem::path loadDefaultMapDirectory(){
     std::ifstream input(defaultMapDirectorySettingsPath());std::string value;
-    if(!input||!std::getline(input,value))return cadence::portable::enabled()?std::filesystem::path{}:std::filesystem::path{R"(C:\Users\Ein\Documents\1 cadence maps\default map)"};
+    if(!input||!std::getline(input,value))return {};
     return value=="<none>"?std::filesystem::path{}:std::filesystem::u8path(value);
 }
 std::optional<std::filesystem::path> firstDefaultMapFile(const std::filesystem::path& directory){
@@ -1756,7 +1756,7 @@ WeaponTiming loadT6WeaponTiming(const assets::Asset& weapon){
     WeaponTiming result=weapon::defaultsFor(weapon::inferArchetype(weapon.name));auto name=lowerText(weapon.name);const std::pair<std::string_view,std::string_view> aliases[]={{"b2023r","beretta93r"},{"fiveseven","fiveseven"},{"svu","svu"},{"scarh","scar"},{"x95l","tar21"},{"chicom","qcw05"},{"scorpion","evoskorpion"},{"type95","type95"}};
     if(cadence::portable::enabled())return result; // Optional developer archive is not part of the distribution.
     std::string internal;for(const auto& [model,file]:aliases)if(name.find(model)!=std::string::npos){internal=file;break;}if(internal.empty()){const auto keys=weapon.compatibilityKeys;for(auto it=keys.rbegin();it!=keys.rend();++it)if(*it!="ar"&&*it!="smg"&&*it!="lmg"&&*it!="sniper"&&*it!="pistol"&&*it!="shotty"){internal=*it;break;}}
-    const std::filesystem::path archive=R"(D:\Editing\COD Resource\Resource\BO2 Res\Black Ops 2 Grand Resources\Black Ops 2 Grand Resources\T6-Data-Archive-main\MP\Weapons\WEAPONS)";std::ifstream input(archive/(internal+"_mp"),std::ios::binary);std::string data((std::istreambuf_iterator<char>(input)),{});if(data.empty())return result;
+    const std::filesystem::path archive=cadence::portable::t6WeaponArchive();std::ifstream input(archive/(internal+"_mp"),std::ios::binary);std::string data((std::istreambuf_iterator<char>(input)),{});if(data.empty())return result;
     const auto textField=[&](std::string_view key){const auto marker="\\"+std::string(key)+"\\";const auto begin=data.find(marker);if(begin==std::string::npos)return std::string{};const auto valueBegin=begin+marker.size(),end=data.find('\\',valueBegin);return data.substr(valueBegin,end-valueBegin);};
     const auto field=[&](std::string_view key,float fallback){try{const auto value=textField(key);return value.empty()?fallback:std::stof(value);}catch(...){return fallback;}};
     result.fireTime=field("fireTime",result.fireTime);result.rechamberTime=field("rechamberTime",0);result.adsIn=field("adsTransInTime",result.adsIn);result.adsOut=field("adsTransOutTime",result.adsOut);result.dropTime=field("dropTime",result.dropTime);result.raiseTime=field("raiseTime",result.raiseTime);
@@ -3159,7 +3159,7 @@ if(persistentAdsLayer){std::vector<scene::PoseSlot> slots;if(hasBaseTransition){
             }
             // Weaponfile gun position is expressed in view-camera space and
             // moves the rendered rig without moving actorViewCamera.
-            profileOffset=scene::translation(app.weaponProfile.gunPosition)*profileOffset;
+            profileOffset=scene::translation(weapon::gunPositionAt(app.weaponProfile,app.adsCameraBlend))*profileOffset;
             app.viewmodelRigAnchor=bindToGameplayCamera*profileOffset;
             const auto boost=gameplay::view::motionTransform(app.boostFallback,app.boostFallbackElapsed,gameplay::iw::worldUnits(1.f));
             const auto slide=gameplay::view::motionTransform(app.slideFallback,app.slideFallbackElapsed,gameplay::iw::worldUnits(1.f),app.slideFallbackDirection,true);
@@ -7465,7 +7465,7 @@ ImGui::SliderFloat("Intensity##specB2",&app.alternateSpecularIntensity2,0.0f,4.0
 ImGui::EndDisabled();}
     if(visualSection==0&&ImGui::CollapsingHeader("Visual Presets",ImGuiTreeNodeFlags_DefaultOpen)){const auto presetSnapshot=visualPresets();const auto& presets=*presetSnapshot;const std::string preview=app.visualPresetIndex>=0&&app.visualPresetIndex<static_cast<int>(presets.size())?presets[static_cast<std::size_t>(app.visualPresetIndex)].stem().string():"Choose saved preset";if(ImGui::BeginCombo("Saved presets",preview.c_str())){for(std::size_t i=0;i<presets.size();++i)if(ImGui::Selectable(presets[i].stem().string().c_str(),app.visualPresetIndex==static_cast<int>(i))){app.visualPresetIndex=static_cast<int>(i);if(loadVisualPreset(app,presets[i]))app.status="Loaded visual preset "+presets[i].stem().string();else app.status="Could not read visual preset";}ImGui::EndCombo();}ImGui::InputTextWithHint("Preset name","new look",app.visualPresetName.data(),app.visualPresetName.size());ImGui::SameLine();if(ImGui::Button("Save preset")){std::string name=app.visualPresetName.data();for(auto& c:name)if(!std::isalnum(static_cast<unsigned char>(c))&&c!='-'&&c!='_')c='_';if(name.empty())name="visual_preset";const auto path=visualPresetDirectory()/(name+".castvisual");app.status=saveVisualPreset(app,path)?"Saved visual preset "+name:"Could not save visual preset";app.visualPresetIndex=-1;visualPresets(true);}}
     if(visualSection==3&&ImGui::CollapsingHeader("Environment / Sky",ImGuiTreeNodeFlags_DefaultOpen)){
-    static int bundledSky=-1;const std::filesystem::path legacyRoot=R"(C:\Program Files (x86)\Steam\steamapps\common\Call of Duty Black Ops II - redacted\Tools\skyboxes)";const auto localRoot=programDirectory()/"skyboxes";std::error_code skyEc;const auto root=(cadence::portable::enabled()||std::filesystem::is_directory(localRoot,skyEc))?localRoot:legacyRoot;const auto skySnapshot=uiFileLists().get(root,"|.iwi|",true);const auto& bundledT6Skies=*skySnapshot;if(bundledSky>=static_cast<int>(bundledT6Skies.size()))bundledSky=-1;const auto refreshBundledSkies=[&]{uiFileLists().get(root,"|.iwi|",true,true);};
+    static int bundledSky=-1;const auto root=programDirectory()/"skyboxes";const auto skySnapshot=uiFileLists().get(root,"|.iwi|",true);const auto& bundledT6Skies=*skySnapshot;if(bundledSky>=static_cast<int>(bundledT6Skies.size()))bundledSky=-1;const auto refreshBundledSkies=[&]{uiFileLists().get(root,"|.iwi|",true,true);};
     if(ImGui::ArrowButton("##sky_prev", ImGuiDir_Left)){
         if(!bundledT6Skies.empty()){
             bundledSky = (bundledSky <= 0) ? static_cast<int>(bundledT6Skies.size()) - 1 : bundledSky - 1;
@@ -8025,6 +8025,10 @@ bool equipNativeCodm(AppState& app,std::size_t weaponIndex){
     app.actionActive=false;app.actionOverlay=false;app.transitioning=false;
     selectViewmodelIdle(app,weapon);if(!app.deferSceneUpload)uploadMainScene(app);
     app.status="CODM: global fit 1.740741x, "+std::to_string(app.scene.animations.size())+" clips; "+(legacyHands?"runtime anatomical hand adapter":"native hand binding");
+    if(app.scene.animations.empty()){
+        app.status="CODM incomplete export: no weapon animation clips for "+weapon.name+". Camera-only clips cannot supply an idle pose; re-export the weapon animation set.";
+        app.scene.warnings.push_back(app.status);
+    }
     return true;
 }
 
@@ -8515,10 +8519,6 @@ void configureClassActor(AppState& app){
                     if (std::filesystem::is_regular_file(p1)) slideAnimPath = p1;
                     else if (std::filesystem::is_regular_file(p2)) slideAnimPath = p2;
                 }
-                if (slideAnimPath.empty()&&!cadence::portable::enabled()) {
-                    const auto defaultCandidate = std::filesystem::path(R"(D:\Editing\COD Resource\3D Rip\saluki\exported_files\ghosts\animations\mp\scripted\generic\mp_slide.cast)");
-                    if (std::filesystem::is_regular_file(defaultCandidate)) slideAnimPath = defaultCandidate;
-                }
                 if (!slideAnimPath.empty()) {
                     auto slideDoc = cast::Document::load(slideAnimPath);
                     if (slideDoc.valid()) {
@@ -8544,10 +8544,6 @@ void configureClassActor(AppState& app){
                     const auto p2 = root / "exported_files" / "ghosts" / "animations" / "mp" / "run" / "generic" / "mp_mantle_32_over_run.cast";
                     if(std::filesystem::is_regular_file(p1)) sprintMantlePath = p1;
                     else if(std::filesystem::is_regular_file(p2)) sprintMantlePath = p2;
-                }
-                if(sprintMantlePath.empty()&&!cadence::portable::enabled()){
-                    const auto defaultCandidate = std::filesystem::path(R"(D:\Editing\COD Resource\3D Rip\saluki\exported_files\ghosts\animations\mp\run\generic\mp_mantle_32_over_run.cast)");
-                    if(std::filesystem::is_regular_file(defaultCandidate)) sprintMantlePath = defaultCandidate;
                 }
                 if(!sprintMantlePath.empty()){
                     auto mantleDoc = cast::Document::load(sprintMantlePath);
@@ -11908,9 +11904,15 @@ ImGui::TreePop();}
 
     if(ImGui::TreeNodeEx("Gun position",ImGuiTreeNodeFlags_DefaultOpen)){
         bool positionChanged=false;
+        positionChanged|=ImGui::Checkbox("Separate ADS position",&app.weaponProfile.separateAdsPosition);
         positionChanged|=ImGui::DragFloat("Gun X",&app.weaponProfile.gunPosition.x,.05f,-1000.0f,1000.0f,"%+.2f");
         positionChanged|=ImGui::DragFloat("Gun Y",&app.weaponProfile.gunPosition.y,.05f,-1000.0f,1000.0f,"%+.2f");
         positionChanged|=ImGui::DragFloat("Gun Z",&app.weaponProfile.gunPosition.z,.05f,-1000.0f,1000.0f,"%+.2f");
+        if(app.weaponProfile.separateAdsPosition){
+            positionChanged|=ImGui::DragFloat("ADS X",&app.weaponProfile.adsGunPosition.x,.05f,-1000.f,1000.f,"%+.2f");
+            positionChanged|=ImGui::DragFloat("ADS Y",&app.weaponProfile.adsGunPosition.y,.05f,-1000.f,1000.f,"%+.2f");
+            positionChanged|=ImGui::DragFloat("ADS Z",&app.weaponProfile.adsGunPosition.z,.05f,-1000.f,1000.f,"%+.2f");
+        }
         if(positionChanged){app.weaponProfileDirty=true;if(app.activeClassSlot>=0&&app.classSlotRigs[app.activeClassSlot])app.classSlotRigs[app.activeClassSlot]->profile=app.weaponProfile;}
         uiHelp("Moves the complete viewmodel in camera-local space without moving the camera.");
         ImGui::TreePop();
@@ -13128,7 +13130,9 @@ auto available=ImGui::GetContentRegionAvail();
         view=scene::lookAtDirection(renderedCameraPosition,renderedCameraForward,renderedCameraUp);
         fovDegrees=gameplay::view::zoomFov(settings.fov,settings.adsFov,sniper?app.sniperZoomState.value:aim,sniper?app.cameraControls.zoomIntensity:1.f);
     }else app.actorShoulderCameraValid=false;
-    if(cadence::useViewmodelCamera(takeSample!=nullptr,app.takeFirstPersonView,app.viewmodelCamera,app.actorMode,app.actorThirdPerson,app.actorFreecamRetainViewmodel)&&(hasValidCameraBone||(!takeSample&&app.actorMode&&app.actorViewCameraValid))){
+    const bool viewmodelProjection=cadence::useViewmodelCamera(takeSample!=nullptr,app.takeFirstPersonView,app.viewmodelCamera,app.actorMode,app.actorThirdPerson,app.actorFreecamRetainViewmodel)&&(hasValidCameraBone||(!takeSample&&app.actorMode&&app.actorViewCameraValid));
+    app.renderer.setFirstPersonProjection(viewmodelProjection&&!app.navigationClickPlacement);
+    if(viewmodelProjection){
         auto camera=app.actorMode&&app.actorViewCameraValid&&!takeSample?app.actorViewCamera:(hasValidCameraBone?pose[cameraBone->second]:scene::Mat4::identity());
         scene::Vec3 origin{camera.v[12],camera.v[13],camera.v[14]};
         scene::Vec3 forward=scene::normalize(scene::Vec3{camera.v[0],camera.v[1],camera.v[2]}),up=scene::normalize(scene::Vec3{camera.v[8],camera.v[9],camera.v[10]}),lateral=scene::normalize(scene::cross(up,forward));

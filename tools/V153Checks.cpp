@@ -1,3 +1,4 @@
+#include "assets/LocalAssetPaths.h"
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
 #undef main
@@ -22,7 +23,7 @@ int main(){
  app.botLocomotionOverrides.clear();++app.botLocomotionOverrideRevision;
  CHECK(botLocomotionAnimation(actor,q,&app)==automatic);
  std::cout<<"Override cache: 1000 hits; replace/remove parity PASS\n";
- std::string error;app.defaultSalukiDirectory="D:/Editing/COD Resource/3D Rip/saluki/exported_files";
+ std::string error;app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
  for(auto game:{"pointblank","bo2"})CHECK(assets::appendScan(app.defaultSalukiDirectory/game,game,app.assetCatalog,error));
  auto asset=[&](const std::string& name)->const assets::Asset*{for(const auto& a:app.assetCatalog.entries)if(a.name==name)return &a;return nullptr;};
  const auto* body=asset("c_usa_mp_isa_smg_fb_LOD0");CHECK(body);

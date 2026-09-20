@@ -112,6 +112,10 @@ inline std::vector<scene::Mat4> alignedHipBolt(const scene::CastScene& s,const s
     // parent is static while the actual receiver moves below it during ADS.
     auto anchor=s.skeleton.boneByName.find("Muzzle_point");
     if(anchor==s.skeleton.boneByName.end())anchor=s.skeleton.boneByName.find("muzzle_point");
+    // Some native exports (50GS, including GirlsFrontline) omit unskinned
+    // sockets. Bone_RightHand is the weapon controller, NOT b_RightHand (palm).
+    // Retain authored motion when the optional muzzle helper is absent.
+    if(anchor==s.skeleton.boneByName.end())anchor=s.skeleton.boneByName.find("Bone_RightHand");
     if(anchor==s.skeleton.boneByName.end()||base.size()!=s.skeleton.bones.size())return base;
     const auto reference=s.samplePose(clip,0),motion=s.samplePose(clip,frame);
     const auto rigid=[](const scene::Mat4&m){scene::Vec3 p,scale;scene::Quat q;scene::decomposeAffine(m,p,q,scale);return scene::trs(p,q,{1,1,1});};

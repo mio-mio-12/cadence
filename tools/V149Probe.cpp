@@ -1,8 +1,9 @@
+#include "assets/LocalAssetPaths.h"
 #include "scene/PointBlankNative.h"
 #include <iostream>
 #include <filesystem>
 int main(){
- const std::filesystem::path root="D:/Editing/COD Resource/3D Rip/saluki/exported_files";
+ const std::filesystem::path root=cadence::local_assets::exportPath("");
  auto pb=scene::buildScene(cast::Document::load(root/"pointblank/models/playermodels/SWAT/playermode_SWAT_Male_fb/playermode_SWAT_Male_fb.cast"));
  for(auto name:{"Root","Pelvis","R Hand"}){auto b=pb.skeleton.boneByName.at(name);std::cout<<name<<" bind="<<pb.skeleton.bones[b].restGlobal.v[14]<<"\n";}
  for(auto&entry:std::filesystem::recursive_directory_iterator(root/"pointblank/animations/pb")){

@@ -1,3 +1,4 @@
+#include "assets/LocalAssetPaths.h"
 // Standalone reference collector. Never calls Cadence settings/profile writers.
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
@@ -70,7 +71,7 @@ int main(int argc,char** argv){using namespace gripref;
     auto* window=glfwCreateWindow(1380,900,"cadence weapon calibrator",nullptr,nullptr);if(!window)throw std::runtime_error("Window creation failed");glfwMakeContextCurrent(window);glfwSwapInterval(1);ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;ImGui::GetIO().LogFilename=nullptr;ImGui::StyleColorsDark();ImGui_ImplGlfw_InitForOpenGL(window,true);ImGui_ImplOpenGL3_Init("#version 330");
     const auto frameStart=[&](){glfwPollEvents();ImGui_ImplOpenGL3_NewFrame();ImGui_ImplGlfw_NewFrame();ImGui::NewFrame();};
     const auto frameEnd=[&](){ImGui::Render();int w,h;glfwGetFramebufferSize(window,&w,&h);glapi::BindFramebuffer(glapi::Framebuffer,0);glViewport(0,0,w,h);glClearColor(.07f,.08f,.1f,1);glClear(GL_COLOR_BUFFER_BIT);ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());glfwSwapBuffers(window);};
-    auto app=std::make_unique<AppState>();auto& a=*app;a.window=window;a.deferSceneUpload=true;a.defaultSalukiDirectory="D:/Editing/COD Resource/3D Rip/saluki/exported_files";std::string error;if(!a.renderer.initialize(error))throw std::runtime_error(error);
+    auto app=std::make_unique<AppState>();auto& a=*app;a.window=window;a.deferSceneUpload=true;a.defaultSalukiDirectory=cadence::local_assets::exportPath("");std::string error;if(!a.renderer.initialize(error))throw std::runtime_error(error);
     const std::vector<std::string> games={"bo2","pointblank","codm","mw","mw3","ghosts","aw","iw_sp","mwr","bocw_sp","bo2_sp","cs2"};
     for(const auto& game:games){if(!std::filesystem::exists(a.defaultSalukiDirectory/game))continue;frameStart();ImGui::Begin("Preparing reference poses");ImGui::Text("Loading %s...",game.c_str());ImGui::TextUnformatted("No Cadence settings are being changed.");ImGui::End();frameEnd();if(!assets::appendScan(a.defaultSalukiDirectory/game,game,a.assetCatalog,error))throw std::runtime_error(error);}
     auto find=[&](std::string game,assets::Role role,std::string needle){for(size_t i=0;i<a.assetCatalog.entries.size();++i){const auto& e=a.assetCatalog.entries[i];if(e.game==game&&e.role==role&&lowerText(e.name).find(lowerText(needle))!=std::string::npos)return i;}throw std::runtime_error("Required reference asset not found: "+needle);};

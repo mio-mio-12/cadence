@@ -1,3 +1,4 @@
+#include "assets/LocalAssetPaths.h"
 #include <iostream>
 #include <filesystem>
 #include <vector>
@@ -140,7 +141,7 @@ void verifyWeaponRig(const std::string& game,
 }
 
 int main() {
-    std::filesystem::path root = "D:/Editing/COD Resource/3D Rip/saluki/exported_files";
+    std::filesystem::path root = cadence::local_assets::exportPath("");
 
     // 1. BO2
     verifyWeaponRig("BO2",
