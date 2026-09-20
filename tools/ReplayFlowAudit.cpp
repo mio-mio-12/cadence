@@ -13,6 +13,7 @@ int main(int argc,char** argv){
     ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;
     ImGui_ImplGlfw_InitForOpenGL(window,true);ImGui_ImplOpenGL3_Init("#version 330");
     auto state=std::make_unique<AppState>();auto& app=*state;app.window=window;std::string error;
+    if(!app.viewportAspectLocked||std::abs(app.viewportAspect-1.77f)>.0001f)return 57;
     if(!app.renderer.initialize(error))return 3;
     app.defaultSalukiDirectory="D:/Editing/COD Resource/3D Rip/saluki/exported_files";
     if(!assets::appendScan(app.defaultSalukiDirectory/"bo2","bo2",app.assetCatalog,error))return 4;
@@ -24,6 +25,21 @@ int main(int argc,char** argv){
     loadBothClassSlots(app);
     while(app.pendingClassFuture){processPendingClassLoad(app);glfwPollEvents();std::this_thread::sleep_for(std::chrono::milliseconds(1));}
     if(!app.classGpuResident){std::cerr<<app.status;return 5;}
+    // The real trigger must select both the empty clip AND its own duration.
+    app.gameplayLogic=true;
+    const auto reloadTestTiming=app.weaponTiming;
+    app.weaponTiming.reloadTime=1.1f;app.weaponTiming.reloadEmptyTime=2.7f;app.weaponTiming.rechamberTime=6.f;
+    for(int variant=0;variant<3;++variant){
+        app.gameplayAction=scene::ActionRole::Reload;
+        app.gameplayReloadEmpty=variant==1;app.gameplayRechamber=variant==2;
+        triggerGameplayAction(app);
+        const float expected=variant==0?1.1f:variant==1?2.7f:6.f;
+        if(std::abs(app.actionDurationOverride-expected)>.0001f)return 50;
+        const auto clip=app.actionOverlay?app.actionAnimationIndex:app.animationIndex;
+        if(variant==1&&(!app.actionActive||clip>=app.scene.animations.size()||app.scene.animations[clip].sourceName.find("reload_empty")==std::string::npos))return 51;
+        stopGameplayAction(app);
+    }
+    app.weaponTiming=reloadTestTiming;app.gameplayReloadEmpty=false;app.gameplayRechamber=false;app.gameplayLogic=false;
     app.actorMode=true;app.actorThirdPerson=false;app.actorFreecamRetainViewmodel=false;
     app.actorPosition=app.actorRenderPosition={100,200,0};app.actorYaw=.3f;app.cameraPitch=0;
     app.cameraTarget={150,220,95};app.cameraDistance=350;app.cameraYaw=scene::kPi;app.cameraPitch=-.12f;
@@ -58,9 +74,22 @@ int main(int argc,char** argv){
     };
     std::ofstream report(output/"results.txt");
     for(int saved=0;saved<2;++saved){
-        if(saved){app.takePlaying=false;app.takePreview=false;
-            if(!take::load(output/"fresh.c_dm",app.recordedTake,error))return 8;
-            prewarmTakePlayback(app);
+        const auto liveClipCount=app.scene.animations.size();
+        const auto liveWeapon=app.selectedWeaponAsset;
+        if(saved){
+            // Exercise the same restore/prewarm path as the actual Load button.
+            app.actorCaptureRequested=true;app.freeCameraActive=true;
+            app.pendingModelKind=1;
+            if(openRecordedTake(app,output/"fresh.c_dm")||app.scene.animations.size()!=liveClipCount)return 61;
+            app.pendingModelKind=0;
+            if(!openRecordedTake(app,output/"fresh.c_dm"))return 8;
+            draw();if(!app.takePreview||!app.takeFirstPersonView||!checkCamera()||app.actorCaptureRequested)return 52;
+            draw(true);draw(false);draw(true);draw(false);
+            if(!app.takeFirstPersonView||!checkCamera())return 53;
+        }else{
+            // F2 must enter replay immediately, without first pressing Play.
+            draw(true);draw(false);
+            if(!app.takePreview||!app.takeFirstPersonView||!checkCamera())return 54;
         }
         toggleTakePlayback(app);draw();
         if(!app.takePreview||!app.takeFirstPersonView||!app.takePlaying||app.actorInputCaptured||app.actorCaptureRequested||!checkCamera())return 9;
@@ -80,7 +109,13 @@ int main(int argc,char** argv){
         draw();if(!checkCamera())return 16;
         app.actorThirdPerson=false;app.actorFreecamRetainViewmodel=false;app.navigationClickPlacement=false;
         report<<(saved?"saved-reopened":"fresh-recorded")<<": PASS Play Replay, both weapon slots, F2 twice, paused, scrub backwards, live flags isolated\n";report.flush();
-        app.takePreview=false;
+        app.cameraEditMode=true;app.freeCameraActive=true;app.actorThirdPerson=true;app.navigationClickPlacement=true;
+        returnToLiveGameplay(app);draw(false,true);
+        if(app.takePreview||app.takeFirstPersonView||app.cameraEditMode||app.freeCameraActive||app.actorThirdPerson||app.navigationClickPlacement||!app.viewmodelCamera)return 55;
+        if(saved&&(app.scene.animations.size()!=liveClipCount||app.selectedWeaponAsset!=liveWeapon||app.liveClassBeforeTake))return 60;
+        draw();
+        if(!app.renderer.saveColorPng(output/(saved?"loaded-return-live.png":"fresh-return-live.png"),error))return 56;
+        report<<"PASS immediate F2 and stop/return live first-person state restoration\n";report.flush();
     }
     // Current presentation controls must work on a paused, already-loaded demo.
     app.takePreview=true;app.takeFirstPersonView=true;app.takePlaying=false;app.takeTime=.55f;
@@ -191,5 +226,23 @@ int main(int argc,char** argv){
     app.cameraEditMode=true;app.freeCameraActive=true;app.takeFirstPersonView=false;app.freeCameraPosition={180,-180,140};app.freeCameraRotationDegrees={4.62f,133.36f,0};app.freeCameraFov=50;
     draw();if(!app.renderer.saveColorPng(output/"mw3-1887-side.png",error))return 45;
     report<<"PASS MW3 1887 production class world assembly and render\n";
+    // Exercise the real Class UI while hovering the moved third-weapon toggle.
+    returnToLiveGameplay(app);
+    for(int frame=0;frame<4;++frame){
+        ImGui_ImplOpenGL3_NewFrame();ImGui_ImplGlfw_NewFrame();
+        ImGui::GetIO().AddMousePosEvent(30,20);ImGui::NewFrame();
+        ImGui::SetNextWindowPos({0,0});ImGui::SetNextWindowSize({960,720});
+        ImGui::Begin("Class controls audit",nullptr,ImGuiWindowFlags_NoDecoration);
+        const auto thirdId=ImGui::GetID("Third weapon##enable_third_weapon");
+        drawCreateAClass(app);
+        if(frame==3&&ImGui::GetCurrentContext()->HoveredId!=thirdId)return 62;
+        ImGui::End();ImGui::Render();
+        if(ImGui::GetCurrentContext()->DebugDrawIdConflictsCount>0)return 58;
+        glViewport(0,0,960,720);glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());glFinish();
+        if(frame==3){std::vector<std::uint8_t> image(960*720*4);glReadPixels(0,0,960,720,GL_RGBA,GL_UNSIGNED_BYTE,image.data());
+            if(!app.renderer.savePixelsPng(output/"class-controls.png",960,720,image,error))return 59;}
+    }
+    report<<"PASS Class control hover without ID conflicts; default aspect lock 1.77; reload/empty/rechamber timings separated\n";report.flush();
     app.renderer.shutdown();ImGui_ImplOpenGL3_Shutdown();ImGui_ImplGlfw_Shutdown();ImGui::DestroyContext();glfwDestroyWindow(window);glfwTerminate();return 0;
 }

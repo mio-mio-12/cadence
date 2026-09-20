@@ -57,7 +57,8 @@ int main(int argc,char**argv){
  }
  std::set<std::string> suffixes;
  std::vector<std::string> models;for(const auto& f:std::filesystem::directory_iterator(root/"codm/models"))if(f.path().extension()==".cast")models.push_back(f.path().stem().string());
- std::filesystem::create_directories("diagnostics/v167");std::ofstream report("diagnostics/v167/codm_assets.txt");
+ const std::filesystem::path reportFolder=argc>2?argv[2]:"diagnostics/v167";
+ std::filesystem::create_directories(reportFolder);std::ofstream report(reportFolder/"codm_assets.txt");
  auto* original=std::cout.rdbuf(report.rdbuf());size_t weapons=0,missing=0;
  for(const auto& f:std::filesystem::directory_iterator(root/"codm/models")){
   const auto name=f.path().stem().string();if(f.path().extension()!=".cast")continue;
@@ -79,9 +80,9 @@ int main(int argc,char**argv){
   cadence::codm_actions::prepare(s);weapon::Profile p;cadence::codm_actions::populate(s,p,name);
   ++weapons;for(const char* slot:{"idle","fire","reload","pullout","putaway","ads_up","ads_down"})if(!p.animations.contains(slot))++missing;
   std::cout<<"ACTIONS "<<name<<" clips="<<s.animations.size();
-  for(const char*slot:{"idle","fire","reload","pullout","putaway","ads_up","ads_down"})std::cout<<" "<<slot<<"="<<(p.animations.contains(slot)?p.animations.at(slot):"MISSING");
+  for(const char*slot:{"idle","fire","ads_fire","reload","reload_empty","pullout","putaway","ads_up","ads_down","rechamber","ads_rechamber","sprint_in","sprint_loop","sprint_out","jump_takeoff","jump_land"})std::cout<<" "<<slot<<"="<<(p.animations.contains(slot)?p.animations.at(slot):"MISSING");
   std::cout<<"\n";
  }
  for(const auto&s:suffixes)std::cout<<"SUFFIX "<<s<<"\n";
- std::cout.rdbuf(original);std::cout<<"Audited "<<weapons<<" weapons; "<<missing<<" missing slots. Report: diagnostics/v167/codm_assets.txt\n";
+ std::cout.rdbuf(original);std::cout<<"Audited "<<weapons<<" weapons; "<<missing<<" missing slots. Report: "<<(reportFolder/"codm_assets.txt")<<"\n";
 }

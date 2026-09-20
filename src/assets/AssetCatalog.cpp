@@ -192,11 +192,16 @@ Role classifyModelPath(const std::filesystem::path& path,std::string_view stem){
     const auto name=lower(stem);
     if(gameFromPath(path)=="pointblank"&&!character::pointBlankIdentity(name).empty())
         return name.starts_with("playermode_")?Role::PlayerModel:Role::ViewHands;
-    // IW5 weapon_ exports are world meshes, including model_1887 names
-    // that otherwise resemble Source's generic *_model grammar.
-    if(gameFromPath(path)=="mw3"&&name.starts_with("weapon_")){
-        const bool attachment=contains(name,"_scope")||contains(name,"_silencer")||contains(name,"_clip")||contains(name,"_grip")||contains(name,"_optic")||contains(name,"_sight")||name.starts_with("weapon_acog")||name.starts_with("weapon_eotech")||name.starts_with("weapon_reflex")||contains(name,"_m203")||contains(name,"_m320");
-        return attachment?Role::WorldAttachment:Role::WorldWeapon;
+    // IW5 has both wpn_ and weapon_ world exports. Explicit view identity
+    // takes precedence, including flat exports outside the sorted folders.
+    if(gameFromPath(path)=="mw3"){
+        if(contains(name,"viewhands")||name.starts_with("viewmodel_hands"))return Role::ViewHands;
+        const bool view=name.starts_with("view_")||name.starts_with("viewmodel_")||contains(name,"_view_")||name.ends_with("_view")||contains(name,"_viewmodel_")||name.ends_with("_viewmodel")||contains(name,"_vm_")||name.ends_with("_vm");
+        const bool world=name.starts_with("wpn_")||name.starts_with("weapon_");
+        if(view||world){
+            const bool attachment=contains(name,"_scope")||contains(name,"_silencer")||contains(name,"_clip")||contains(name,"_grip")||contains(name,"_optic")||contains(name,"_sight")||contains(name,"_acog")||contains(name,"_eotech")||contains(name,"_reflex")||contains(name,"_reticle")||contains(name,"_magnifier")||contains(name,"_m203")||contains(name,"_m320")||contains(name,"_gp25")||contains(name,"_heartbeat");
+            return view?(attachment?Role::ViewAttachment:Role::ViewWeapon):(attachment?Role::WorldAttachment:Role::WorldWeapon);
+        }
     }
     // T9 magazines are exported alongside receivers under weapons/view, not
     // necessarily under attachments. Do not let the generic folder override

@@ -3,6 +3,15 @@
 #include <cmath>
 #define CHECK(v) do{if(!(v))std::abort();}while(false)
 int main(){
+ for(const auto& [name,slot]:std::initializer_list<std::pair<const char*,const char*>>{
+  {"viewmodel_ar_bal27_ads_down.cast","ads_down"},{"viewmodel_ar_bal27_un_aiming_on.cast","ads_down"},
+  {"viewmodel_ar_bal27_ads_idle.cast","ads_idle"},{"viewmodel_ar_bal27_reload_empty.cast","reload_empty"},
+  {"viewmodel_ar_bal27_reload_quick_empty.cast","reload_quick_empty"},{"viewmodel_special_m1887_aiming_bolt.cast","ads_rechamber"},
+  {"viewmodel_special_m1887_fire_bolt.cast","rechamber"},{"viewmodel_ar_bal27_jump_end.cast","jump_land"},
+  {"viewmodel_ar_bal27_jump_start.cast","jump_takeoff"},{"viewmodel_ar_bal27_aimingjump_end.cast","ads_jump_land"},
+  {"viewmodel_ar_bal27_sprint_to_walk.cast","sprint_out"},{"viewmodel_ar_bal27_walk_to_sprint.cast","sprint_in"},
+  {"viewmodel_ar_bal27_ads_down_abcdef0123456789.cast","ads_down"}})CHECK(cadence::codm_actions::slotForName(name)==slot);
+ for(const auto* name:{"viewmodel_ar_bal27_reload_camera.cast","viewmodel_ar_bal27_ads_up_camera_abcdef01.cast","viewmodel_ar_bal27_aiming_on_br.cast","viewmodel_ar_bal27_slide_start_mask.cast","viewmodel_ar_bal27_change_clip_long_e.cast","viewmodel_ar_bal27_advquick_melee1_hit.cast"})CHECK(cadence::codm_actions::slotForName(name).empty());
  CHECK(!cadence::codm_actions::useAdsBase(true,false,false));
  CHECK(cadence::codm_actions::useAdsBase(true,true,false));
  CHECK(cadence::codm_actions::useAdsBase(true,false,true));
@@ -40,6 +49,16 @@ int main(){
  weapon::Profile aliases;cadence::codm_actions::populate(s,aliases,s.codmNativeWeaponStem);
  for(auto slot:{"idle","fire","ads_fire","reload","reload_empty","pullout","putaway","sprint_loop","ads_up","ads_down"})CHECK(aliases.animations.contains(slot));
  CHECK(aliases.animations.at("ads_down")==prefix+"un_aiming_on.cast");
+ add("jump_start",12);add("jump_end",14);cadence::codm_actions::prepare(s);cadence::codm_actions::populate(s,aliases,s.codmNativeWeaponStem);
+ CHECK(aliases.animations.at("jump_takeoff")==prefix+"jump_start.cast");CHECK(aliases.animations.at("jump_land")==prefix+"jump_end.cast");
+ CHECK(s.animations.back().motion==scene::MotionRole::Land);
+ CHECK(s.animations[8].action==scene::ActionRole::Aim);
+ // New canonical exports replace stale aliases, but never a valid override.
+ s.animations.clear();add("ads_down",11);add("reload",40);add("reload_quick",20);add("reload_empty",55);add("change_clip_long_e",80);add("reload_camera",40);
+ weapon::Profile renamed;renamed.animations["ads_down"]=prefix+"un_aiming_on.cast";
+ cadence::codm_actions::populate(s,renamed,s.codmNativeWeaponStem);
+ CHECK(renamed.animations.at("ads_down")==prefix+"ads_down.cast");CHECK(renamed.animations.at("reload")==prefix+"reload.cast");CHECK(renamed.animations.at("reload_empty")==prefix+"reload_empty.cast");
+ renamed.animations["reload"]=prefix+"reload_quick.cast";cadence::codm_actions::populate(s,renamed,s.codmNativeWeaponStem);CHECK(renamed.animations.at("reload")==prefix+"reload_quick.cast");
  s.animations.clear();add("reload_76c672badfffaaba",20);
  CHECK(cadence::codm_actions::find(s,prefix,"reload")!=nullptr);
  add("reload_aaaaaaaa",20);CHECK(cadence::codm_actions::find(s,prefix,"reload")==nullptr);

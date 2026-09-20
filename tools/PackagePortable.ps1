@@ -33,8 +33,8 @@ Copy-Item -LiteralPath (Join-Path $FfmpegDirectory 'bin/ffmpeg.exe') -Destinatio
 Copy-Item -LiteralPath (Join-Path $FfmpegDirectory 'LICENSE') -Destination (Join-Path $destination 'tools/licenses/FFmpeg-GPLv3.txt')
 Copy-Item -LiteralPath (Join-Path $FfmpegDirectory 'README.txt') -Destination (Join-Path $destination 'tools/licenses/FFmpeg-build-and-source.txt')
 foreach($entry in @(
-    @('external/glfw/LICENSE.md','glfw.txt'),
-    @('external/imgui/LICENSE.txt','imgui.txt'),
+    @('build-ui/_deps/glfw-src/LICENSE.md','glfw.txt'),
+    @('build-ui/_deps/imgui-src/LICENSE.txt','imgui.txt'),
     @('external/cgltf/LICENSE','cgltf.txt'),
     @('external/libwebp/COPYING','libwebp.txt'),
     @('external/libwebp/PATENTS','libwebp-patents.txt'),

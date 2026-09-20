@@ -7,6 +7,12 @@
 namespace {bool expect(bool value,const char* message){if(!value)std::cerr<<"FAILED: "<<message<<'\n';return value;}}
 
 int main(){int failures{};
+    for(const auto* name:{"wpn_ak47_iw5_LOD0","wpn_model_1887_LOD0","weapon_model_1887_LOD0"})
+        failures+=!expect(assets::classifyModelPath("mw3/models/flat.cast",name)==assets::Role::WorldWeapon,"MW3 world prefixes work without sorted directories");
+    for(const auto* name:{"view_ak47_iw5_LOD0","viewmodel_model1887_iw5_LOD0","wpn_ak47_iw5_view_LOD0","wpn_ak47_iw5_viewmodel_LOD0"})
+        failures+=!expect(assets::classifyModelPath("mw3/models/flat.cast",name)==assets::Role::ViewWeapon,"MW3 explicit view names override world prefixes");
+    failures+=!expect(assets::classifyModelPath("mw3/models/flat.cast","wpn_ak47_scope_LOD0")==assets::Role::WorldAttachment,"MW3 wpn scope remains an attachment");
+    failures+=!expect(assets::classifyModelPath("mw3/models/flat.cast","viewmodel_base_viewhands_LOD0")==assets::Role::ViewHands,"MW3 hands remain hands");
     failures+=!expect(assets::character::pointBlankIdentity("playermode_REBEL_ViperRed_Shadow__fb")==assets::character::pointBlankIdentity("viewmodel_REBEL_ViperRed_Shadow__hands"),"PB exact variant identity including doubled separator");
     failures+=!expect(assets::character::pointBlankFaction("playermode_Hide_Gign_fb")=="CT-Force","PB Hide stays CT rather than COD GIGN");
     failures+=!expect(assets::character::pointBlankFaction("viewmodel_D-Fox_hands")=="Free Rebels","PB D-Fox team");

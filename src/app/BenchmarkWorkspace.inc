@@ -146,7 +146,7 @@ void issue(Workspace& b){
 void draw(AppState& owner){
     if(!workspace)workspace=std::make_unique<Workspace>();auto& b=*workspace;
     if(b.advancePending){b.advancePending=false;next(b,owner);}
-    ImGui::TextWrapped("Independent animation benchmark. Play/Replay is suspended and untouched. Cross-game compatibility is under test, not guaranteed. Raw clips do not certify gameplay action transitions.");
+    uiHelp("Independent animation benchmark. Play/Replay is suspended and untouched. Cross-game compatibility is under test, not guaranteed. Raw clips do not certify gameplay action transitions.");
     ImGui::BeginChild("Benchmark controls",ImVec2(370,0),ImGuiChildFlags_Borders);
     const bool active=!b.reportDir.empty()&&b.phase<2;
     ImGui::BeginDisabled(active||b.loading);if(ImGui::Button("Discover loaded games"))discover(b,owner);ImGui::EndDisabled();ImGui::SameLine();ImGui::Text("%zu games",b.selections.size());

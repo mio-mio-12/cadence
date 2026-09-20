@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.24)
 
 project(Cadence VERSION 0.9.0 LANGUAGES CXX)
 
+# Numbered builds remain runnable with only their adjacent asset folders.
+if(MSVC AND NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -93,10 +98,18 @@ if(CAST_BUILD_UI)
     set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(glfw SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/glfw")
+    FetchContent_Declare(glfw
+        GIT_REPOSITORY https://github.com/glfw/glfw.git
+        GIT_TAG 3.4
+        GIT_SHALLOW TRUE
+    )
     FetchContent_MakeAvailable(glfw)
 
-    FetchContent_Declare(imgui SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/imgui")
+    FetchContent_Declare(imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG v1.92.5
+        GIT_SHALLOW TRUE
+    )
     FetchContent_MakeAvailable(imgui)
 
     set(WEBP_BUILD_ANIM_UTILS OFF CACHE BOOL "" FORCE)
@@ -498,15 +511,25 @@ if(CAST_BUILD_UI)
     add_executable(Cadence_v169 EXCLUDE_FROM_ALL src/app/main.cpp)
     add_executable(Cadence_v170 EXCLUDE_FROM_ALL src/app/main.cpp)
     add_executable(Cadence_v171 EXCLUDE_FROM_ALL src/app/main.cpp)
-    add_executable(Cadence_v174 src/app/main.cpp)
+    add_executable(Cadence_v174 EXCLUDE_FROM_ALL src/app/main.cpp)
     target_compile_options(Cadence_v174 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
     target_link_libraries(Cadence_v174 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL)
-    add_custom_command(TARGET Cadence_v174 POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v174>/Cadence Assets"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v174>/skyboxes"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v174>/tools"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v174>/tools/ffmpeg.exe"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v174> ${CMAKE_SOURCE_DIR}/Cadence_v174.exe)
+    add_executable(Cadence_v175 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v175 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v175 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL)
+    add_executable(Cadence_v176 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v176 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v176 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL)
+    add_executable(Cadence_v177 src/app/main.cpp)
+    target_compile_options(Cadence_v177 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v177 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL)
+    add_custom_command(TARGET Cadence_v177 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v177>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v177>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v177>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v177>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v177>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v177> ${CMAKE_SOURCE_DIR}/Cadence_v177.exe)
     add_executable(Cadence_v173 EXCLUDE_FROM_ALL src/app/main.cpp)
     target_compile_options(Cadence_v173 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
     target_link_libraries(Cadence_v173 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL)
@@ -525,6 +548,9 @@ if(CAST_BUILD_UI)
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v171>/Cadence Assets"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v171> ${CMAKE_SOURCE_DIR}/Cadence_v171.exe)
     add_executable(loading_audit EXCLUDE_FROM_ALL tools/LoadingAudit.cpp)
+    add_executable(batch176_audit EXCLUDE_FROM_ALL tools/Batch176Audit.cpp)
+    target_compile_options(batch176_audit PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(batch176_audit PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
     add_executable(replay_flow_audit EXCLUDE_FROM_ALL tools/ReplayFlowAudit.cpp)
     target_compile_options(replay_flow_audit PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
     target_link_libraries(replay_flow_audit PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
@@ -909,6 +935,9 @@ if(CAST_BUILD_UI)
         target_link_libraries(Cadence_v172 PRIVATE comdlg32 shell32 ole32)
         target_link_libraries(Cadence_v173 PRIVATE comdlg32 shell32 ole32)
         target_link_libraries(Cadence_v174 PRIVATE comdlg32 shell32 ole32)
+        target_link_libraries(Cadence_v175 PRIVATE comdlg32 shell32 ole32)
+    target_link_libraries(Cadence_v176 PRIVATE comdlg32 shell32 ole32)
+    target_link_libraries(Cadence_v177 PRIVATE comdlg32 shell32 ole32)
         if(TARGET bot_team_selection_tests)
             target_link_libraries(bot_team_selection_tests PRIVATE comdlg32 shell32 ole32)
         endif()

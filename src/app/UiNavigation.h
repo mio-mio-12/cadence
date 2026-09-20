@@ -14,9 +14,5 @@ inline int uiCategory(const char* id,const char* const* labels,int count,int ini
     }
     ImGui::PopID();ImGui::Spacing();return selected;
 }
-inline void uiHelp(const char* text){
-    if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal|ImGuiHoveredFlags_AllowWhenDisabled)){
-        ImGui::BeginTooltip();ImGui::PushTextWrapPos(ImGui::GetFontSize()*28.f);
-        ImGui::TextUnformatted(text);ImGui::PopTextWrapPos();ImGui::EndTooltip();
-    }
-}
+// Keep call-site documentation, but do not put instructional prose in the UI.
+template<class... Args> inline void uiHelp(const char*,const Args&...){}

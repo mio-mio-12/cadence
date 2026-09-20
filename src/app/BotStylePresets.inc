@@ -15,5 +15,5 @@ void drawBotStylePresets(AppState& app){
   ImGui::EndCombo();
  }
  if(current)ImGui::TextWrapped("%s",current->description);
- ImGui::TextDisabled("Applies live to SP chances only; other bot settings stay unchanged.");
+ uiHelp("Applies live to SP chances only; other bot settings stay unchanged.");
 }
