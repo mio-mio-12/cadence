@@ -12,6 +12,8 @@ int main(){
     assert(std::abs(worldMovementFacing(0,{0,-100,0},scene::Direction::Right))<.0001f);
     assert(std::abs(worldMovementFacing(0,{-100,0,0},scene::Direction::Backward))<.0001f);
     assert(worldMovementFacing(.7f,{0,0,0},scene::Direction::Forward)==.7f);
+    assert(std::abs(worldMovementFacing(0,{-100,0,0},scene::Direction::Forward))<.0001f);
+    assert(std::abs(worldMovementFacing(0,{-100,100,0},scene::Direction::BackwardLeft))<.0001f);
     const auto facing=smoothWorldFacingOffset(0,scene::kPi*.5f,1.f/60);
     assert(facing>0&&facing<scene::kPi*.5f);
     assert(smoothWorldFacingOffset(.3f,1.f,0)==.3f);
@@ -67,4 +69,15 @@ int main(){
     add("pb_sprint_forward_rifle.cast",scene::MotionRole::Sprint);actor.animations.back().weapon=scene::WeaponClass::Rifle;
     assert(selectDirectionalWorldClip(actor,scene::MotionRole::Sprint,scene::Direction::Forward,"ghosts",scene::WeaponClass::Sniper)==1);
     assert(!selectDirectionalWorldClip(actor,scene::MotionRole::Sprint,scene::Direction::Forward,"ghosts",scene::WeaponClass::Knife));
+    actor.animations.clear();
+    for(const auto* name:{"pb_stand_alert.cast","pb_prone_crawl_back.cast","pb_combatrun_back_loop.cast","pb_combatrun_forward_loop.cast","pb_crouch_walk_back_pistol.cast"}){
+        scene::Animation a;scene::classifyAnimationName(name,a);a.tracks.push_back({});a.sourceGame="mw";actor.animations.push_back(a);
+    }
+    q={};q.domain=scene::AnimationDomain::PlayerBody;q.motion=scene::MotionRole::Run;q.stance=scene::Stance::Stand;q.weapon=scene::WeaponClass::Pistol;q.direction=scene::Direction::Backward;q.preferredGame="mw";
+    assert(selectGroundWorldLocomotion(actor,q)==2); // stance wins over weapon match
+    q.ads=true;q.motion=scene::MotionRole::Walk;
+    assert(selectGroundWorldLocomotion(actor,q)==2); // ADS never freezes legs
+    q.stance=scene::Stance::Crouch;assert(selectGroundWorldLocomotion(actor,q)==4);
+    q.stance=scene::Stance::Prone;q.motion=scene::MotionRole::Crawl;assert(selectGroundWorldLocomotion(actor,q)==1);
+    q.stance=scene::Stance::Stand;q.motion=scene::MotionRole::Idle;assert(selectGroundWorldLocomotion(actor,q)==0);
 }

@@ -606,7 +606,7 @@ void classifyAnimationName(std::string_view input,Animation& animation) {
     if(tokenIs(tokens,{"pb"}))animation.domain=AnimationDomain::PlayerBody;
     else if(tokenIs(tokens,{"pt"}))animation.domain=AnimationDomain::PlayerTorso;
     else if(name.starts_with("mp_")||tokenIs(tokens,{"mp"})){animation.domain=AnimationDomain::PlayerBody;}
-    else if(tokenIs(tokens,{"viewmodel","vm","va"})||name.starts_with("viewmodel")||containsAny(name,{"shoot1_","draw_","idle_","lookat01_","lookat02_","lookat03_","heavy_hit1_","light_hit1_","heavy_miss1_","light_miss1_"}))animation.domain=AnimationDomain::ViewModel;
+    else if(tokenIs(tokens,{"viewmodel","vm","va"})||name.starts_with("viewmodel")||name.starts_with("h1_wpn_")||containsAny(name,{"shoot1_","draw_","idle_","lookat01_","lookat02_","lookat03_","heavy_hit1_","light_hit1_","heavy_miss1_","light_miss1_"}))animation.domain=AnimationDomain::ViewModel;
 
     if(tokenContains(tokens,{"crouch","duck"})||(animation.domain==AnimationDomain::PlayerBody&&tokenIs(tokens,{"cr"})))animation.stance=Stance::Crouch;
     else if(tokenContains(tokens,{"prone","crawl"}))animation.stance=Stance::Prone;
@@ -1555,9 +1555,11 @@ std::size_t appendRigModel(const cast::Document& document,CastScene& scene,std::
                 // own zero root; tag_clip1 is packed into weapon-model space.
                 // They must not share a rest transform even though both curves
                 // participate in the same reload.
-                const auto measured=(partProfile.starts_with("t6_attach_mag_")||partProfile.starts_with("t6_attach_fastmag_"))&&partProfile.find("_view")!=std::string::npos?t6MagazineMount(weaponProfile):std::nullopt;
-                if(measured){
-                    bone.restLocal.position=*measured;
+                const bool t6Magazine=(partProfile.starts_with("t6_attach_mag_")||partProfile.starts_with("t6_attach_fastmag_"))&&partProfile.find("_view")!=std::string::npos;
+                // T6's missing attachment station is recovered from native
+                // reload contact at assembly time, never from a bolt guess.
+                if(t6Magazine){
+                    bone.restLocal.position=source.restLocal.position;
                 } else if(release!=scene.skeleton.boneByCanonicalName.end()){
                     Vec3 position,scale;Quat rotation;decomposeAffine(inverseAffine(scene.skeleton.bones[*socket].restGlobal)*scene.skeleton.bones[release->second].restGlobal,position,rotation,scale);bone.restLocal.position=position;
                 } else if(bolt!=scene.skeleton.boneByCanonicalName.end()){

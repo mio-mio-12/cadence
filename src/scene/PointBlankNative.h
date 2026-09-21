@@ -1,6 +1,7 @@
 #pragma once
 #include "scene/CastScene.h"
 #include "scene/PointBlankWorld.h"
+#include <limits>
 
 namespace scene::pointblank {
 inline bool animationPath(const cast::Document& d){for(auto& p:std::filesystem::path(d.sourceName()))if(p=="pointblank")return true;return false;}
@@ -38,12 +39,18 @@ inline bool exportedByPb2cast(const cast::Document& d){
   if(cast::nodeTypeName(n.identifier)=="Metadata"&&s&&s->stringValue=="pb2cast"&&up&&up->stringValue=="z")return true;
  }return false;
 }
-inline bool detachedPresentationMesh(const Mesh& mesh,const Skeleton& skeleton){
+inline bool detachedPresentationMesh(const Mesh& mesh,const Skeleton& skeleton,float detachedAbove=std::numeric_limits<float>::infinity()){
  // These exported accessories have no anatomical binding. Preserve properly
  // skinned clan patches (including both male outfits) and all body geometry.
- if(!mesh.name.starts_with("Model_Clan_")&&!mesh.name.starts_with("A_R_Kopassus_"))return false;
+ const bool knownAccessory=mesh.name.starts_with("Model_Clan_")||mesh.name.starts_with("A_R_Kopassus_")||
+  mesh.name.starts_with("A_R_Kopassus01_")||mesh.name.starts_with("A_R_Recon_")||
+  mesh.name.starts_with("A_B_Kopassus_")||mesh.name.starts_with("A_B_Recon_")||
+  mesh.name.starts_with("Bella_Equip_")||mesh.name.starts_with("Equipments_007_")||
+  mesh.name.starts_with("O_R_Tarantula_Ori_");
  if(!mesh.skinned||mesh.vertices.empty())return false;
- for(const auto& v:mesh.vertices){bool weighted=false;for(size_t k=0;k<v.weights.size();++k)if(v.weights[k]>0){weighted=true;if(v.bones[k]>=skeleton.bones.size()||skeleton.bones[v.bones[k]].name!="Root")return false;}if(!weighted)return false;}
+ for(const auto& v:mesh.vertices){bool weighted=false;for(size_t k=0;k<v.weights.size();++k)if(v.weights[k]>0){weighted=true;if(v.bones[k]>=skeleton.bones.size()||skeleton.bones[v.bones[k]].name!="Root")return false;}if(!weighted)return false;
+  if(!knownAccessory&&!(transformPoint(mesh.modelTransform,v.position).z>detachedAbove))return false;
+ }
  return true;
 }
 // pb2cast geometry is metre-scale, already Z-up. Do not rotate the export or
@@ -56,7 +63,15 @@ inline void normalize(CastScene& s){
  for(auto& b:s.skeleton.bones){b.restLocal.position=b.restLocal.position*100.f;b.absoluteTranslationOffset=b.absoluteTranslationOffset*100.f;for(int k:{12,13,14}){b.restGlobal.v[k]*=100.f;b.inverseBind.v[k]*=100.f;}}
  s.pointBlankNativeCentimetres=true;
  if(body(s.skeleton)){
-  std::erase_if(s.meshes,[&](const auto& m){if(!detachedPresentationMesh(m,s.skeleton))return false;s.warnings.push_back("Point Blank detached root-only accessory hidden: "+m.name);return true;});
+  // Parked cosmetic alternatives can be exported a body-height above the
+  // character, weighted only to Root. Do not hide heads by their filename.
+  float bottom=std::numeric_limits<float>::infinity(),top=-std::numeric_limits<float>::infinity();
+  for(const auto& m:s.meshes)if(m.skinned)for(const auto& v:m.vertices)for(size_t k=0;k<v.weights.size();++k)
+   if(v.weights[k]>0&&v.bones[k]<s.skeleton.bones.size()&&s.skeleton.bones[v.bones[k]].name!="Root"){
+    const float z=transformPoint(m.modelTransform,v.position).z;if(std::isfinite(z)){bottom=std::min(bottom,z);top=std::max(top,z);}break;
+   }
+  const float detachedAbove=std::isfinite(top)?top+std::max(10.f,(top-bottom)*.1f):std::numeric_limits<float>::infinity();
+  std::erase_if(s.meshes,[&](const auto& m){if(!detachedPresentationMesh(m,s.skeleton,detachedAbove))return false;s.warnings.push_back("Point Blank detached root-only accessory hidden: "+m.name);return true;});
   const auto rotation=fromEulerRadians({0,0,-kPi*.5f});const auto basis=trs({},rotation,{1,1,1});
   for(auto& m:s.meshes)for(auto& v:m.vertices){v.position=transformPoint(basis,v.position);v.normal=transformPoint(basis,v.normal);}
   for(auto& b:s.skeleton.bones){b.restGlobal=basis*b.restGlobal;b.inverseBind=inverseAffine(b.restGlobal);if(b.parent<0){b.restLocal.position=transformPoint(basis,b.restLocal.position);b.restLocal.rotation=multiply(rotation,b.restLocal.rotation);}}

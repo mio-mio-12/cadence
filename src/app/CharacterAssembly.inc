@@ -1,6 +1,6 @@
 // One part list for player previews, gameplay, benchmarks and bot instances.
 // Only invoked while assembling; there is no per-frame model parsing/fitting.
-std::vector<std::size_t> characterAssemblyParts(const AppState& app,const assets::Asset& body){
+std::vector<std::size_t> characterAssemblyParts(const AppState& app,const assets::Asset& body,bool forBot=false){
     using assets::character::Part;
     constexpr auto absent=static_cast<std::size_t>(-1);
     std::vector<std::size_t> result;
@@ -43,7 +43,8 @@ std::vector<std::size_t> characterAssemblyParts(const AppState& app,const assets
         }
         return best;
     };
-    const auto head=choose(Part::Head,setup.headAsset,"mp_head_cormack_lod0");add(head);if(head<app.assetCatalog.entries.size())headName=lowerText(app.assetCatalog.entries[head].name);
+    const auto headChoice=forBot&&setup.headAsset==static_cast<std::size_t>(-2)?absent:setup.headAsset;
+    const auto head=choose(Part::Head,headChoice,"mp_head_cormack_lod0");add(head);if(head<app.assetCatalog.entries.size())headName=lowerText(app.assetCatalog.entries[head].name);
     const auto pants=choose(Part::Pants,setup.pantsAsset,"mp_pants_m_01b_k_lod0");add(pants);if(pants<app.assetCatalog.entries.size())pantsName=lowerText(app.assetCatalog.entries[pants].name);
     add(choose(Part::Gloves,setup.glovesAsset,"mp_glove_03a_lod0"));
     add(choose(Part::Boots,setup.bootsAsset,"mp_boot_01a_lod0"));
@@ -51,11 +52,12 @@ std::vector<std::size_t> characterAssemblyParts(const AppState& app,const assets
     add(choose(Part::Exo,setup.exoAsset,"mp_exo_01a_lod0"));
     if(pantsName.find("_k_")!=std::string::npos||setup.kneepadAsset!=absent)add(choose(Part::Kneepads,setup.kneepadAsset,"mp_kneepad_03a_lod0"));
     if(pantsName.find("_s_")!=std::string::npos||setup.shinguardAsset!=absent)add(choose(Part::Shinguards,setup.shinguardAsset,"mp_shinguard_01a_lod0"));
-    add(choose(Part::Headgear,setup.helmetAsset,"mp_headgear_01a_cormack_lod0"));
+    if(head<app.assetCatalog.entries.size()||setup.helmetAsset!=absent)add(choose(Part::Headgear,setup.helmetAsset,"mp_headgear_01a_cormack_lod0"));
     if(setup.eyewearAsset!=absent)add(choose(Part::Eyewear,setup.eyewearAsset,""));
     for(auto index:setup.customModularParts)if(index<app.assetCatalog.entries.size()){
         const auto& a=app.assetCatalog.entries[index];const auto type=assets::character::awPart(a.name);
         if(type==Part::None||type==Part::Torso||!assets::character::genderCompatible(body.name,a.name))continue;
+        if(type==Part::Head&&headChoice==static_cast<std::size_t>(-2))continue;
         const bool duplicate=std::any_of(result.begin(),result.end(),[&](auto i){return assets::character::awPart(app.assetCatalog.entries[i].name)==type;});
         if(!duplicate)add(index);
     }

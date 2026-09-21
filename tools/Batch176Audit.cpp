@@ -15,6 +15,36 @@ int main(int argc,char**argv){
  auto state=std::make_unique<AppState>();auto& app=*state;app.window=w;std::string error;if(!app.renderer.initialize(error))return 3;
  app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
  const auto root=app.defaultSalukiDirectory;
+ if(argc>=3&&(std::string(argv[2])=="mwr"||std::string(argv[2])=="mw-view")){
+  const std::string game=std::string(argv[2])=="mwr"?"mwr":"mw";
+  check(assets::appendScan(root/game,game,app.assetCatalog,error),"scan "+game);
+  std::size_t hands=SIZE_MAX;
+  for(std::size_t i=0;i<app.assetCatalog.entries.size();++i)if(app.assetCatalog.entries[i].role==assets::Role::ViewHands&&(hands==SIZE_MAX||app.assetCatalog.entries[i].name=="viewhands_h1_usmc_desert_LOD0"))hands=i;
+  check(hands!=SIZE_MAX,"native "+game+" hands present");if(hands==SIZE_MAX)return 2;
+  app.deferSceneUpload=true;app.selectedBaseAsset=hands;
+  for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto asset=app.assetCatalog.entries[i];if(asset.role!=assets::Role::ViewWeapon)continue;
+   app.scene={};app.animationSources.clear();app.animationDocuments.clear();app.selectedWeaponAsset=i;app.equippedRigAssets.clear();
+   equipViewWeapon(app,i);log<<"MODEL "<<asset.name<<" prefix="<<animationPrefixForWeapon(asset)<<" clips="<<app.scene.animations.size()<<" bones="<<app.scene.skeleton.bones.size()<<std::endl;
+   for(const auto& warning:app.scene.warnings)log<<"WARNING "<<warning<<'\n';
+   const bool capture=asset.name.find("_wet")==std::string::npos;
+   if(capture)app.renderer.loadScene(app.scene,error);
+   for(const char* action:{"idle","fire","reload","reload_empty","ads_up","ads_down","rechamber","pullout","putaway","sprint_loop"}){
+    const auto selected=findViewmodelClip(app,action);log<<"ACTION "<<action;
+    if(!selected){log<<" MISSING\n";continue;}const auto& clip=app.scene.animations[*selected];log<<" "<<clip.sourceName<<" domain="<<int(clip.domain)<<" tracks="<<clip.tracks.size()<<" unmapped="<<clip.unmappedCurveCount<<"/"<<clip.sourceCurveCount<<'\n';
+    for(float fraction:{0.f,.5f,1.f}){const auto pose=app.scene.samplePose(*selected,clip.durationFrames*fraction);bool finite=true;for(const auto& matrix:pose)for(float v:matrix.v)finite&=std::isfinite(v);check(finite,asset.name+" finite "+action);}
+    if(capture&&(std::string(action)=="idle"||std::string(action)=="reload"||std::string(action)=="ads_up")){
+     auto pose=app.scene.samplePose(*selected,clip.durationFrames*.5f);
+     if(std::string(action)=="ads_up"){
+      if(const auto idle=findViewmodelClip(app,"idle")){app.animationIndex=*idle;app.animationFrame=0;app.assetFirstPerson=true;app.viewmodelCamera=true;app.actionActive=app.transitioning=false;app.runtimeLayers.clear();app.interruptPoseSource.clear();app.viewmodelAdsBaseAnimation=*selected;app.viewmodelAdsBaseFrame=float(clip.durationFrames);app.viewmodelAdsEngaged=true;app.viewmodelAdsExiting=false;app.viewmodelAdsTransitionElapsed=app.weaponTiming.adsIn;pose=evaluateCurrentPose(app);app.viewmodelAdsBaseAnimation=SIZE_MAX;app.viewmodelAdsEngaged=false;}
+     }
+     const auto camera=app.scene.skeleton.boneByCanonicalName.find("tag_camera");
+     if(camera!=app.scene.skeleton.boneByCanonicalName.end()){const auto& c=pose[camera->second];scene::Vec3 eye{c.v[12],c.v[13],c.v[14]},forward{c.v[0],c.v[1],c.v[2]},up{c.v[8],c.v[9],c.v[10]};app.renderer.setCameraPosition(eye);app.renderer.setDebugView(1);app.renderer.render(app.scene,pose,scene::perspective(65*scene::kPi/180,960.f/720,.1f,2000)*scene::lookAtDirection(eye,forward,up),960,720,false,false,false);app.renderer.saveColorPng(out/(asset.name+"_"+action+".png"),error);}
+    }
+   }
+   log.flush();
+  }
+  return failures?1:0;
+ }
  const auto maxError=[](const auto&a,const auto&b){float e=0;if(a.size()!=b.size())return 1e20f;for(size_t i=0;i<a.size();++i)for(int j=0;j<16;++j)e=std::max(e,std::abs(a[i].v[j]-b[i].v[j]));return e;};
  if(argc<3||std::string(argv[2])=="codm"){
  std::vector<std::string> codmStems;for(const auto& model:std::filesystem::directory_iterator(root/"codm/models"))if(model.path().extension()==".cast"&&model.path().stem().string().starts_with("viewmodel_"))codmStems.push_back(model.path().stem().string());
@@ -57,8 +87,9 @@ int main(int argc,char**argv){
   }
  }
  }
- if(argc>=3&&std::string(argv[2])=="mw3"){
-  check(assets::appendScan(root/"mw3","mw3",app.assetCatalog,error),"scan MW3 library");
+ if(argc>=3&&(std::string(argv[2])=="mw3"||(std::string(argv[2])=="worlds"&&argc>=4))){
+  const std::string game=std::string(argv[2])=="mw3"?"mw3":argv[3];
+  check(assets::appendScan(root/game,game,app.assetCatalog,error),"scan "+game+" library");
   std::size_t paired=0,unpaired=0;
   for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){
    const auto& a=app.assetCatalog.entries[i];if(a.role!=assets::Role::ViewWeapon)continue;
@@ -67,7 +98,7 @@ int main(int argc,char**argv){
    else {++unpaired;log<<"UNPAIRED "<<a.name<<'\n';}
   }
   log<<"TOTAL paired="<<paired<<" unpaired="<<unpaired<<std::endl;
-  for(const std::string gun:{"model_1887","ak47_iw5","fn_five_seven_iw5"}){
+  if(game=="mw3")for(const std::string gun:{"model_1887","ak47_iw5","fn_five_seven_iw5"}){
    auto view=std::find_if(app.assetCatalog.entries.begin(),app.assetCatalog.entries.end(),[&](const auto&a){return a.name=="viewmodel_"+gun+"_LOD0";});
    if(view==app.assetCatalog.entries.end()){check(false,"representative view exists "+gun);continue;}
    const auto world=findWorldWeaponForViewWeapon(app,*view);check(world<app.assetCatalog.entries.size(),"representative world found "+gun);if(world>=app.assetCatalog.entries.size())continue;

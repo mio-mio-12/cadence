@@ -1,6 +1,7 @@
 #pragma once
 #include "scene/ColdWarWorld.h"
 #include "scene/CodmWorldBody.h"
+#include "scene/WorldTorsoMask.h"
 #include <map>
 namespace scene::pointblank {
 inline bool body(const Skeleton& s){return s.boneByName.contains("Pelvis")&&s.boneByName.contains("L Thigh")&&s.boneByName.contains("R Thigh");}
@@ -15,8 +16,8 @@ inline std::string worldSemantic(std::string name){
 }
 inline void worldAliases(Skeleton& s){if(!body(s))return;for(size_t i=0;i<s.bones.size();++i)s.boneByCanonicalName[worldSemantic(s.bones[i].name)]=i;}
 inline void overlayTorso(const CastScene& actor,size_t clip,float frame,std::vector<Transform>& base){
-    if(clip>=actor.animations.size())return;const auto pose=actor.sampleLocalPose(clip,frame);
-    for(const auto& t:actor.animations[clip].tracks){const auto b=t.boneIndex;if(!t.ownsLayer||b>=base.size()||b>=pose.size())continue;switch(t.property){case TrackProperty::Rotation:base[b].rotation=pose[b].rotation;break;case TrackProperty::TranslationX:base[b].position.x=pose[b].position.x;break;case TrackProperty::TranslationY:base[b].position.y=pose[b].position.y;break;case TrackProperty::TranslationZ:base[b].position.z=pose[b].position.z;break;case TrackProperty::ScaleX:base[b].scale.x=pose[b].scale.x;break;case TrackProperty::ScaleY:base[b].scale.y=pose[b].scale.y;break;case TrackProperty::ScaleZ:base[b].scale.z=pose[b].scale.z;break;default:break;}}
+    if(clip>=actor.animations.size())return;const auto pose=actor.sampleLocalPose(clip,frame);const auto upper=worldTorsoMask(actor.skeleton);
+    for(const auto& t:actor.animations[clip].tracks){const auto b=t.boneIndex;if(!t.ownsLayer||b>=base.size()||b>=pose.size()||!upper[b])continue;switch(t.property){case TrackProperty::Rotation:base[b].rotation=pose[b].rotation;break;case TrackProperty::TranslationX:base[b].position.x=pose[b].position.x;break;case TrackProperty::TranslationY:base[b].position.y=pose[b].position.y;break;case TrackProperty::TranslationZ:base[b].position.z=pose[b].position.z;break;case TrackProperty::ScaleX:base[b].scale.x=pose[b].scale.x;break;case TrackProperty::ScaleY:base[b].scale.y=pose[b].scale.y;break;case TrackProperty::ScaleZ:base[b].scale.z=pose[b].scale.z;break;default:break;}}
 }
 inline void bridgeWorld(CastScene& target,size_t first,std::shared_ptr<const CastScene> source,size_t sourceFirst){
     auto semanticTarget=target.skeleton;

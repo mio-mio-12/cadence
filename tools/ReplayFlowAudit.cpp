@@ -45,6 +45,12 @@ int main(int argc,char** argv){
     app.actorPosition=app.actorRenderPosition={100,200,0};app.actorYaw=.3f;app.cameraPitch=0;
     app.cameraTarget={150,220,95};app.cameraDistance=350;app.cameraYaw=scene::kPi;app.cameraPitch=-.12f;
     app.actorCaptureRequested=app.actorInputCaptured=true;
+    // Nonzero distinct mounts must be preserved, not applied a second time.
+    for(int slot=0;slot<2;++slot)if(app.classSlotRigs[slot]){
+        auto& profile=app.classSlotRigs[slot]->profile;
+        profile.gunPosition={float(slot+1),2,3};profile.adsGunPosition={4,float(slot+5),6};profile.separateAdsPosition=true;
+        if(slot==app.activeClassSlot)app.weaponProfile=profile;
+    }
     toggleTakeRecording(app);
     for(int frame=1;frame<=60;++frame){
         if(frame==30)activateClassSlot(app,1);
@@ -109,6 +115,29 @@ int main(int argc,char** argv){
         app.actorThirdPerson=true;app.actorFreecamRetainViewmodel=true;app.navigationClickPlacement=true;
         draw();if(!checkCamera())return 16;
         app.actorThirdPerson=false;app.actorFreecamRetainViewmodel=false;app.navigationClickPlacement=false;
+        for(float time:{.5f,1.5f}){
+            app.takeTime=time;draw();
+            const auto originalProfile=app.weaponProfile;
+            auto& sample=app.recordedTake.samples[app.recordedTake.sampleIndex(time)];
+            const float originalAds=sample.camera.adsBlend;
+            for(float blend:{0.f,.5f,1.f}){
+                sample.camera.adsBlend=blend;draw();
+                const auto beforeMuzzle=app.lastMuzzleFlashPosition;
+                const auto cameraIndex=app.scene.skeleton.boneByCanonicalName.at("tag_camera");
+                const auto& camera=sample.pose[cameraIndex];
+                const scene::Vec3 lateral=scene::normalize(scene::Vec3{camera.v[4],camera.v[5],camera.v[6]});
+                app.weaponProfile.gunPosition=originalProfile.gunPosition+scene::Vec3{0,6,0};
+                app.weaponProfile.adsGunPosition=originalProfile.adsGunPosition+scene::Vec3{0,2,0};
+                app.weaponProfile.separateAdsPosition=true;
+                app.classSlotRigs[app.activeClassSlot]->profile=app.weaponProfile;draw();
+                const float weight=blend*blend*(3-2*blend);
+                if(scene::length(app.lastMuzzleFlashPosition-beforeMuzzle-lateral*(6-4*weight))>.001f||!checkCamera())return 70;
+                app.weaponProfile=originalProfile;app.classSlotRigs[app.activeClassSlot]->profile=originalProfile;draw();
+                if(scene::length(app.lastMuzzleFlashPosition-beforeMuzzle)>.001f)return 71;
+            }
+            sample.camera.adsBlend=originalAds;
+        }
+        report<<(saved?"saved-reopened":"fresh-recorded")<<": PASS both slot mounts with hip/mid/full ADS deltas and exact reversal\n";
         report<<(saved?"saved-reopened":"fresh-recorded")<<": PASS Play Replay, both weapon slots, F2 twice, paused, scrub backwards, live flags isolated\n";report.flush();
         app.cameraEditMode=true;app.freeCameraActive=true;app.actorThirdPerson=true;app.navigationClickPlacement=true;
         returnToLiveGameplay(app);draw(false,true);
@@ -129,8 +158,47 @@ int main(int argc,char** argv){
     const auto pixels=[&](){draw();std::vector<std::uint8_t> p;if(!app.renderer.readColorRgba(p,error))std::abort();return p;};
     app.debugMuzzleFlash=false;app.smokeTrailEnabled=false;app.projectileTrailEnabled=false;app.sniperTrailEnabled=false;
     const auto baseline=pixels();
+    // Editing the viewmodel mount is presentation-only, including on an
+    // already-paused replay. It must not move the world camera or world proxy.
+    const auto savedGunPosition=app.weaponProfile.gunPosition;
+    const auto savedAdsGunPosition=app.weaponProfile.adsGunPosition;
+    const auto savedSeparateAdsPosition=app.weaponProfile.separateAdsPosition;
+    const auto mountCameraPosition=app.lastRenderedCameraPosition;
+    const auto mountCameraRotation=app.lastRenderedCameraRotationDegrees;
+    app.weaponProfile.separateAdsPosition=false;
+    app.weaponProfile.gunPosition=savedGunPosition+scene::Vec3{0,8,0};
+    const auto syncMountProfile=[&](){app.weaponProfileDirty=true;if(app.activeClassSlot>=0&&app.classSlotRigs[app.activeClassSlot])app.classSlotRigs[app.activeClassSlot]->profile=app.weaponProfile;};
+    syncMountProfile();
+    const auto shiftedMount=pixels();
+    if(shiftedMount==baseline||shiftedMount!=pixels()||
+       scene::length(app.lastRenderedCameraPosition-mountCameraPosition)>.0001f||
+       scene::length(app.lastRenderedCameraRotationDegrees-mountCameraRotation)>.0001f){std::cerr<<"Mount edit unchanged="<<(shiftedMount==baseline)<<" camera translation="<<scene::length(app.lastRenderedCameraPosition-mountCameraPosition)<<" rotation="<<scene::length(app.lastRenderedCameraRotationDegrees-mountCameraRotation)<<'\n';return 61;}
+    if(!app.renderer.saveColorPng(output/"editable-gun-position.png",error))return 62;
+    app.takeTime=1.2f;pixels();app.takeTime=.55f;
+    if(shiftedMount!=pixels())return 63;
+    app.takeFirstPersonView=false;const auto freeShifted=pixels();
+    app.weaponProfile.gunPosition=savedGunPosition;
+    syncMountProfile();
+    if(freeShifted!=pixels())return 64;
+    app.weaponProfile.adsGunPosition=savedAdsGunPosition;
+    app.weaponProfile.separateAdsPosition=savedSeparateAdsPosition;
+    syncMountProfile();
+    app.takeFirstPersonView=true;
+    if(pixels()!=baseline)return 65;
+    report<<"PASS paused gun-position edits, repeated/seek pixels, unchanged camera, freecam exclusion and reversible mount\n";report.flush();
     app.debugMuzzleFlash=true;app.muzzleFlashDuration=.5f;app.muzzleFlashSize=2;app.muzzleFlashColor={1,.1f,.1f,1};
     const auto flash=pixels();if(flash==baseline)return 21;
+    const auto uneditedMuzzle=app.lastMuzzleFlashPosition;
+    if(!app.lastMuzzleFlashValid)return 66;
+    app.weaponProfile.gunPosition=savedGunPosition+scene::Vec3{0,8,0};
+    app.weaponProfile.separateAdsPosition=false;syncMountProfile();
+    const auto shiftedFlash=pixels();
+    const auto expectedMuzzleDelta=scene::normalize(side)*8.f;
+    if(shiftedFlash==flash||scene::length(app.lastMuzzleFlashPosition-uneditedMuzzle-expectedMuzzleDelta)>.001f)return 67;
+    if(!app.renderer.saveColorPng(output/"shifted-muzzle-flash.png",error))return 68;
+    app.weaponProfile.gunPosition=savedGunPosition;app.weaponProfile.separateAdsPosition=savedSeparateAdsPosition;syncMountProfile();
+    if(pixels()!=flash)return 69;
+    report<<"PASS muzzle follows edited first-person pose by expected camera-space displacement and reverses exactly\n";
     app.muzzleFlashSize=4;const auto flashBig=pixels();if(flash==flashBig)return 22;
     app.debugMuzzleFlash=false;app.smokeTrailEnabled=true;app.smokeTrailColor={.2f,1,.2f,1};app.smokeTrailStartWidth=20;app.smokeTrailEndWidth=50;
     const auto smoke=pixels();if(smoke==baseline||smoke!=pixels())return 23;
@@ -173,17 +241,20 @@ int main(int argc,char** argv){
     const auto freeRecoil=pixels();app.weaponTiming.recoil.intensity=0;if(freeRecoil!=pixels())return 50;
     app.cameraEditMode=false;app.freeCameraActive=false;app.takeFirstPersonView=true;app.weaponTiming.recoil.intensity=1;
     // Actual production ProRes pipes: all three passes at one tenth timescale.
+    app.weaponProfile.gunPosition=savedGunPosition+scene::Vec3{0,8,0};
+    app.weaponProfile.separateAdsPosition=false;syncMountProfile();
     app.exportWidth=320;app.exportHeight=240;app.exportFps=30;app.exportStart=.44f;app.exportEnd=.48f;
     app.exportFrame=0;app.exportFrameCount=12;app.exportBeautyPass=true;app.exportDepthPass=true;app.exportViewmodelPass=true;app.exportNavigationPass=false;
     app.exportCameraData=true;app.exportCaptureReShade=false;app.exportDepthFormat=1;
     const auto movie=output/("recoil-slow-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".mov");
     if(!startProResExport(app,movie))return 51;
     app.exportActive=true;app.takePlaying=false;app.takeTime=app.exportStart;
-    for(int i=0;i<12;++i){const float time=app.takeTime;app.exportActive=false;draw();const auto previewCamera=app.lastRenderedCameraRotationDegrees;app.exportActive=true;app.takeTime=time;draw();if(scene::length(app.lastRenderedCameraRotationDegrees-previewCamera)>.0001f)return 52;}
+    for(int i=0;i<12;++i){const float time=app.takeTime;app.exportActive=false;draw();const auto previewCamera=app.lastRenderedCameraRotationDegrees;const auto previewMuzzle=app.lastMuzzleFlashPosition;app.exportActive=true;app.takeTime=time;draw();if(scene::length(app.lastRenderedCameraRotationDegrees-previewCamera)>.0001f||scene::length(app.lastMuzzleFlashPosition-previewMuzzle)>.0001f)return 52;}
     if(app.exportActive||app.exportFrame!=12)return 53;
     app.takeTime=.55f;app.takePlaybackSpeed=1;app.weaponTiming=savedTiming;
+    app.weaponProfile.gunPosition=savedGunPosition;app.weaponProfile.separateAdsPosition=savedSeparateAdsPosition;syncMountProfile();
     if(!take::save(app.recordedTake,output/"after-recoil.c_dm",error)||read(output/"before-visual.c_dm")!=read(output/"after-recoil.c_dm"))return 54;
-    report<<"PASS recoil pixel/camera changes, paused repeat, slow-time and backward seek equality, freecam exclusion, unchanged take bytes; 12-frame 0.1x ProRes beauty/depth/viewmodel cameras match preview\n";report.flush();
+    report<<"PASS recoil pixel/camera changes, paused repeat, slow-time and backward seek equality, freecam exclusion, unchanged take bytes; 12-frame 0.1x ProRes beauty/depth/viewmodel with active mount edit: cameras and muzzle match preview\n";report.flush();
     for(int width:{940,330}){
         ImGui_ImplOpenGL3_NewFrame();ImGui_ImplGlfw_NewFrame();ImGui::NewFrame();
         ImGui::SetNextWindowPos({10,10});ImGui::SetNextWindowSize({float(width),170});

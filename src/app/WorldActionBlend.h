@@ -1,5 +1,6 @@
 #pragma once
 #include "scene/PoseEvaluationScratch.h"
+#include "scene/WorldTorsoMask.h"
 #include <optional>
 
 namespace cadence {
@@ -9,6 +10,8 @@ struct WorldActionBlend {
     using Channels=scene::pose_detail::Channels;
     std::vector<scene::Transform> last,from,layer;
     std::vector<Channels> previousMask,fadeMask,mask;
+    std::vector<bool> upperBody;
+    bool torsoOnly{};
     std::optional<std::size_t> clip;
     const scene::Bone* bones{};
     const scene::Animation* animations{};
@@ -23,10 +26,11 @@ struct WorldActionBlend {
         if(c.sy)target.scale.y=source.scale.y+(target.scale.y-source.scale.y)*t;
         if(c.sz)target.scale.z=source.scale.z+(target.scale.z-source.scale.z)*t;
     }
-    void apply(const scene::CastScene& actor,std::optional<std::size_t> next,float frame,float dt,float duration,std::vector<scene::Transform>& base){
+    void apply(const scene::CastScene& actor,std::optional<std::size_t> next,float frame,float dt,float duration,std::vector<scene::Transform>& base,bool onlyTorso=false){
         if(base.size()!=actor.skeleton.bones.size())return;
-        if(bones!=actor.skeleton.bones.data()||animations!=actor.animations.data()||last.size()!=base.size()||previousMask.size()!=base.size()){
+        if(bones!=actor.skeleton.bones.data()||animations!=actor.animations.data()||last.size()!=base.size()||previousMask.size()!=base.size()||torsoOnly!=onlyTorso){
             *this={};bones=actor.skeleton.bones.data();animations=actor.animations.data();last=base;previousMask.resize(base.size());
+            torsoOnly=onlyTorso;if(torsoOnly)upperBody=scene::worldTorsoMask(actor.skeleton);
         }
         if(next&&*next>=actor.animations.size())next.reset();
         mask.assign(base.size(),{});
@@ -34,7 +38,7 @@ struct WorldActionBlend {
             scene::pose_detail::markChannels(actor.animations[*next],actor.skeleton,mask);
             actor.sampleLocalPoseInto(*next,frame,layer);
             for(std::size_t i=0;i<base.size();++i){
-                if(actor.skeleton.bones[i].parent<0){mask[i]={};continue;}
+                if(actor.skeleton.bones[i].parent<0||(torsoOnly&&!upperBody[i])){mask[i]={};continue;}
                 blend(base[i],layer[i],mask[i],0.f);
             }
         }

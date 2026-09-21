@@ -69,6 +69,14 @@ int main(){
     check(step({},0,.05f,8,68)[1].position.x==100,"action exit finishes");
     step(0,0,0,0,60);step(0,10,.1f,0,60);
     const auto repeat=step(0,0,.016f,0,60);check(repeat[1].position.x==150,"repeated same-clip action starts from current pose");
+    rig.skeleton.boneByCanonicalName["j_spinelower"]=2;
+    rig.animations[0].tracks.push_back(rig.animations[0].tracks[0]);rig.animations[0].tracks.back().boneIndex=2;
+    cadence::WorldActionBlend torso;
+    std::vector<scene::Transform> locomotion(3);locomotion[1].position.x=73;locomotion[2].position.x=60;
+    torso.apply(rig,0,0,.016f,0,locomotion,true);
+    check(locomotion[1].position.x==73&&locomotion[2].position.x==150,"torso actions cannot override pelvis/legs even when exported with full-body tracks");
+    locomotion[1].position.x=81;torso.apply(rig,{},0,.016f,.1f,locomotion,true);
+    check(locomotion[1].position.x==81,"torso exit must preserve advancing locomotion too");
     if(!failures)std::cout<<"Visual mismatch regression tests passed.\n";
     return failures?1:0;
 }

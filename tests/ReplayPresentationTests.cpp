@@ -10,6 +10,22 @@
 int main(){
  using cadence::replay::presentationFov;
  {
+  weapon::Profile profile;profile.gunPosition={3,4,5};profile.adsGunPosition={8,9,10};profile.separateAdsPosition=true;
+  const auto reference=cadence::replay::MountReference::from(profile);
+  std::vector<scene::Mat4> original{scene::translation({100,200,300}),scene::translation({110,210,310})};
+  for(float ads:{0.f,.25f,.5f,1.f}){
+   auto pose=original;cadence::replay::applyMountEdit(pose,0,reference,profile,ads);
+   CHECK(pose[1].v==original[1].v); // Never double-apply a nonzero recorded mount.
+   auto edited=profile;edited.gunPosition.x+=8;edited.adsGunPosition.x+=4;
+   cadence::replay::applyMountEdit(pose,0,reference,edited,ads);
+   CHECK(pose[0].v==original[0].v);
+   const float expected=8-4*ads*ads*(3-2*ads);
+   CHECK(std::abs(pose[1].v[12]-original[1].v[12]-expected)<.0001f);
+   CHECK(pose[1].v[13]==original[1].v[13]);
+  }
+  auto pose=original;cadence::replay::applyMountEdit(pose,99,reference,profile,0);CHECK(pose[1].v==original[1].v);
+ }
+ {
   take::Take recording;recording.samples.resize(2);recording.samples[1].time=10;recording.shots.resize(1);recording.shots[0].time=1;
   weapon::Stats settings;settings.hipKickPitchMin=settings.hipKickPitchMax=2;settings.hipKickYawMin=settings.hipKickYawMax=0;settings.recoil.rollMin=settings.recoil.rollMax=0;
   const float peak=1+settings.recoil.duration*.12f;

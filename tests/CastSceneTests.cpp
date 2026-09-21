@@ -257,6 +257,7 @@ int main(){
         {"vm_bal27_first_time_pullout",scene::MotionRole::Unknown,scene::ActionRole::FirstRaise,scene::WeaponClass::Any,scene::Stance::Any,scene::Direction::Any,scene::AnimationDomain::ViewModel},
         {"viewmodel_ak47_first_time_pullout",scene::MotionRole::Unknown,scene::ActionRole::FirstRaise,scene::WeaponClass::Any,scene::Stance::Any,scene::Direction::Any,scene::AnimationDomain::ViewModel},
         {"va_fm4_reload",scene::MotionRole::Unknown,scene::ActionRole::Reload,scene::WeaponClass::Any,scene::Stance::Any,scene::Direction::Any,scene::AnimationDomain::ViewModel},
+        {"h1_wpn_pst_m9_reload",scene::MotionRole::Unknown,scene::ActionRole::Reload,scene::WeaponClass::Any,scene::Stance::Any,scene::Direction::Any,scene::AnimationDomain::ViewModel},
         {"pb_rpg_runjump_land",scene::MotionRole::Land,scene::ActionRole::None,scene::WeaponClass::Launcher,scene::Stance::Stand,scene::Direction::Any,scene::AnimationDomain::PlayerBody},
         {"pb_terrain_slide",scene::MotionRole::Slide,scene::ActionRole::None,scene::WeaponClass::Any,scene::Stance::Stand,scene::Direction::Any,scene::AnimationDomain::PlayerBody},
         {"pb_briefcase_crouch2prone",scene::MotionRole::Transition,scene::ActionRole::None,scene::WeaponClass::Briefcase,scene::Stance::Crouch,scene::Direction::Any,scene::AnimationDomain::PlayerBody}
@@ -638,6 +639,35 @@ int main(){
         failures+=!expect(hands.skeleton.boneByCanonicalName.at("j_gun")!=1&&hands.skeleton.boneByCanonicalName.at("j_gun_hand")==1,"T6 weapon root cannot merge with IW wrist-owned gun helper");
     }
     {
+        // Recover an arbitrary socket from contact motion, with no weapon-name
+        // knowledge. Stationary/degenerate data must not invent a replacement.
+        scene::CastScene contact;
+        for(const auto name:{"j_gun","j_wrist_le","tag_clip"}){scene::Bone b;b.name=name;b.parent=contact.skeleton.bones.empty()?-1:0;const auto i=contact.skeleton.bones.size();contact.skeleton.boneByName[name]=i;contact.skeleton.boneByCanonicalName[name]=i;contact.skeleton.bones.push_back(b);}
+        contact.rigParts.push_back({"t6_attach_mag_arbitrary_view",0,0,{2}});
+        scene::Animation motion;motion.sourceName="viewmodel_arbitrary_reload.cast";motion.durationFrames=60;
+        for(auto bone:{1u,2u})for(auto property:{scene::TrackProperty::TranslationX,scene::TrackProperty::TranslationY,scene::TrackProperty::TranslationZ,scene::TrackProperty::Rotation}){
+            scene::Track t;t.boneIndex=bone;t.property=property;t.mode=bone==2&&property!=scene::TrackProperty::Rotation?scene::TrackMode::Relative:scene::TrackMode::Absolute;motion.tracks.push_back(t);
+        }
+        const scene::Vec3 expectedMount{8,-2,-6},grip{4,3,2};
+        for(unsigned frame=0;frame<=60;++frame){const float f=float(frame);const auto q=scene::fromEulerRadians({std::sin(f*.13f),std::cos(f*.17f),f*.05f});const scene::Vec3 wrist{f*.5f,std::sin(f*.1f)*5,0};const auto mag=wrist+scene::transformPoint(scene::rotation(q),grip)-expectedMount;
+            for(auto& t:motion.tracks){t.frames.push_back(frame);if(t.property==scene::TrackProperty::Rotation)t.rotationValues.push_back(q);else{const auto p=t.boneIndex==1?wrist:mag;t.scalarValues.push_back(t.property==scene::TrackProperty::TranslationX?p.x:t.property==scene::TrackProperty::TranslationY?p.y:p.z);}}
+        }
+        contact.animations.push_back(motion);const auto fitted=scene::inferT6MagazineMount(contact);
+        failures+=!expect(fitted&&scene::length(fitted->position-expectedMount)<.01f,"native contact reconstructs an arbitrary missing magazine socket");
+        {
+            auto shortContact=contact;auto shortClip=motion;shortClip.durationFrames=16;
+            for(auto& t:shortClip.tracks)if(t.boneIndex==2&&t.property==scene::TrackProperty::TranslationX)t.scalarValues[16]+=1000;
+            shortContact.animations={shortClip};
+            failures+=!expect(!scene::inferT6MagazineMount(shortContact),"one short contact interval is insufficient");
+            shortContact.animations.push_back(shortClip);
+            failures+=!expect(!scene::inferT6MagazineMount(shortContact),"duplicating a clip is not independent contact evidence");
+            shortContact.animations.back().sourceName="viewmodel_arbitrary_reload_empty.cast";
+            const auto crossClip=scene::inferT6MagazineMount(shortContact);
+            failures+=!expect(crossClip&&scene::length(crossClip->position-expectedMount)<.01f,"two distinct tightly agreeing reload contacts recover socket");
+        }
+        if(fitted){const auto inverse=contact.skeleton.bones[2].inverseBind;scene::applyT6MagazineMount(contact,*fitted);const auto position=contact.skeleton.bones[2].restLocal.position;scene::applyT6MagazineMount(contact,*fitted);failures+=!expect(scene::length(contact.skeleton.bones[2].restLocal.position-position)<.0001f&&contact.skeleton.bones[2].inverseBind.v==inverse.v,"calibration is idempotent and preserves magazine inverse bind");}
+        contact.animations[0].tracks.clear();failures+=!expect(!scene::inferT6MagazineMount(contact),"stationary reload cannot fabricate a socket");
+        contact.rigParts[0].name="ak47_model";failures+=!expect(!scene::hasSeparateT6Magazine(contact)&&!scene::applyT6MagazineMount(contact,{}),"non-T6 assemblies are untouched");
         // These view-only stations must not inherit the receiver bolt offset.
         for(const auto name:{"t6_wpn_ar_an94_view_LOD0","t6_wpn_ar_scarh_view_LOD0","t6_wpn_sniper_ballista_view_LOD0"}){
             auto rig=scene::buildScene(cast::Document::parse(animatedTriangle("test_material","j_gun"),"receiver.cast"));
@@ -645,10 +675,10 @@ int main(){
             const auto mag=cast::Document::parse(animatedTriangle("test_material","tag_clip"),"mag.cast");
             scene::appendRigModel(mag,rig,"t6_attach_mag_test_view_LOD0");
             const auto& b=rig.skeleton.bones[rig.skeleton.boneByCanonicalName.at("tag_clip")];
-            failures+=!expect(scene::length(b.restLocal.position-*scene::t6MagazineMount(name))<.0001f,"measured T6 magazine station");
+            failures+=!expect(scene::length(b.restLocal.position)<.0001f,"T6 missing station does not use a weapon-specific offset");
             failures+=!expect(b.translationTracksAreDeltas,"mounted magazine keeps authored translation offsets");
         }
-        failures+=!expect(!scene::t6MagazineMount("t6_wpn_ar_an94_world_LOD0")&&!scene::t6MagazineMount("ak47_model")&&!scene::t6MagazineMount("t6_wpn_ar_other_view"),"magazine calibration excludes unmeasured assets and CS2");
+        failures+=!expect(!scene::inferT6MagazineMount(scene::CastScene{}),"magazine calibration rejects unavailable source data");
         const char i[2]={'i',0},v3[2]={'3','v'},v4[2]={'4','v'},f[2]={'f',0},b[2]={'b',0};
         auto makeFile=[](std::vector<Bytes> children){auto root=node(0x746F6F72,0,{},std::move(children));Bytes out;append(out,cast::Document::kMagic);append<std::uint32_t>(out,1);append<std::uint32_t>(out,1);append<std::uint32_t>(out,0);appendRaw(out,root.data(),root.size());return out;};
         auto gun=node(0x656E6F62,2,{stringProperty("n","j_gun"),numericProperty(i,"p",1,std::vector<std::uint32_t>{0xffffffffu})});
@@ -670,6 +700,7 @@ int main(){
         scene::appendRigModel(cast::Document::parse(animatedTriangle("test_material","tag_clip"),"mag.cast"),rig,"t6_attach_mag_an94_view_LOD0");
         scene::Animation idle;idle.name="idle";idle.sourceName="viewmodel_an94_idle.cast";rig.animations.push_back(idle);
         const auto installed=rig.skeleton.boneByCanonicalName.at("tag_clip");
+        scene::applyT6MagazineMount(rig,{{11.3625f,-2.75643f,-3.8091f},0,2,true});
         auto blended=rig.samplePose(rig.animations.size()-1,0);blended[installed].v[12]=-100;
         const auto gunBefore=blended[0];
         scene::restoreT6MagazineAfterReload(rig,blended,rig.animations.size()-1,0);

@@ -77,6 +77,19 @@ int main(){
   CHECK(scene::codm::worldSemantic("b_RightHand__bind_abc")=="b_RightHand__bind_abc");
  }
  scene::Skeleton accessoryRig;accessoryRig.bones.resize(2);accessoryRig.bones[0].name="Root";accessoryRig.bones[1].name="Spine3";
+ {
+  scene::Mesh parked;parked.name="Arbitrary_Hair";parked.skinned=true;parked.vertices.resize(2);
+  for(auto& v:parked.vertices){v.position={0,0,250};v.bones={0,0,0,0};v.weights={1,0,0,0};}
+  CHECK(scene::pointblank::detachedPresentationMesh(parked,accessoryRig,200));
+  for(const char* name:{"A_R_Kopassus01_175","A_R_Recon_195","A_B_Kopassus_210","A_B_Recon_210","Bella_Equip_185","Equipments_007_162","O_R_Tarantula_Ori_160"}){
+   auto prop=parked;prop.name=name;CHECK(scene::pointblank::detachedPresentationMesh(prop,accessoryRig));
+   prop.vertices[0].bones[0]=1;CHECK(!scene::pointblank::detachedPresentationMesh(prop,accessoryRig));
+  }
+  parked.vertices[1].position.z=180;CHECK(!scene::pointblank::detachedPresentationMesh(parked,accessoryRig,200));
+  parked.vertices[1].position.z=250;parked.vertices[1].bones[0]=1;CHECK(!scene::pointblank::detachedPresentationMesh(parked,accessoryRig,200));
+  parked.vertices[1].bones[0]=0;CHECK(!scene::pointblank::detachedPresentationMesh(parked,accessoryRig));
+  parked.modelTransform=scene::translation({0,0,-100});CHECK(!scene::pointblank::detachedPresentationMesh(parked,accessoryRig,200));
+ }
  scene::Mesh accessory;accessory.name="Model_Clan_176";accessory.skinned=true;accessory.vertices.resize(1);accessory.vertices[0].weights={1,0,0,0};accessory.vertices[0].bones={0,0,0,0};CHECK(scene::pointblank::detachedPresentationMesh(accessory,accessoryRig));accessory.vertices[0].bones[0]=1;CHECK(!scene::pointblank::detachedPresentationMesh(accessory,accessoryRig));accessory.vertices[0].bones[0]=0;accessory.name="Model_Head_142";CHECK(!scene::pointblank::detachedPresentationMesh(accessory,accessoryRig));
  {
   auto source=std::make_shared<scene::CastScene>();scene::Bone root;root.name="tag_origin";root.restGlobal=scene::Mat4::identity();root.inverseBind=scene::Mat4::identity();source->skeleton.bones.push_back(root);source->skeleton.boneByCanonicalName[root.name]=0;scene::Animation death;death.durationFrames=100;death.framerate=30;source->animations.push_back(death);

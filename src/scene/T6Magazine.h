@@ -1,16 +1,12 @@
 #pragma once
-#include "scene/Math3D.h"
+#include "scene/CastScene.h"
 #include <optional>
 #include <string_view>
 
 namespace scene {
-// Reconstructed in exported model units from magazine/hand contact across
-// native reload frames, not the release or bolt position. See V75_MAGAZINES.md.
-// Intentionally limited to measured view assets; never applies to CS2/worlds.
-inline std::optional<Vec3> t6MagazineMount(std::string_view model) {
-    if(model.starts_with("t6_wpn_ar_an94_view"))return Vec3{11.3625f,-2.75643f,-3.8091f};
-    if(model.starts_with("t6_wpn_ar_scarh_view"))return Vec3{9.305f,0.13041f,-0.77438f};
-    if(model.starts_with("t6_wpn_sniper_ballista_view"))return Vec3{14.7413f,0.0f,-1.0f};
-    return std::nullopt;
-}
+struct T6MagazineCalibration { Vec3 position{}; float residual{}; std::size_t supportingWindows{}; bool incomingSocket{}; };
+// Native, unretargeted reloads only. No weapon-specific offsets or file I/O.
+std::optional<T6MagazineCalibration> inferT6MagazineMount(const CastScene& native);
+bool applyT6MagazineMount(CastScene& target,const T6MagazineCalibration& mount);
+bool hasSeparateT6Magazine(const CastScene& scene);
 }

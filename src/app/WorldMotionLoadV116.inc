@@ -1,6 +1,7 @@
 void appendSupplementalWorldMotion(AppState& app,scene::CastScene& actor){
-    if(app.defaultSalukiDirectory.empty())return;
-    const auto root=salukiExportRoot(app.defaultSalukiDirectory);
+    const auto root=app.defaultSalukiDirectory.empty()
+        ?std::filesystem::path{}
+        :salukiExportRoot(app.defaultSalukiDirectory);
     const auto append=[&](const std::string& game,const std::filesystem::path& relative,scene::MotionRole motion){
         const auto filename=lowerText(relative.filename().string());
         for(const auto& clip:actor.animations)if(lowerText(clip.sourceName)==filename)return;

@@ -42,5 +42,32 @@ int main() {
     require(!cache.find("bo2", changedName));
     auto changedLayout = skeleton("tag_origin", 1.0f);
     require(!cache.find("bo2", changedLayout));
+    // Cached retargeted tracks must never leak between superficially similar rigs.
+    auto changed = first.skeleton;
+    changed.bones[0].parent = 0;
+    require(!cache.find("bo2", changed));
+    changed = first.skeleton;
+    changed.bones[0].restLocal.position.y += 1;
+    require(!cache.find("bo2", changed));
+    changed = first.skeleton;
+    changed.bones[0].restLocal.rotation.x += .1f;
+    require(!cache.find("bo2", changed));
+    changed = first.skeleton;
+    changed.bones[0].restLocal.scale.z *= 2;
+    require(!cache.find("bo2", changed));
+    changed = first.skeleton;
+    changed.bones[0].translationTracksAreDeltas = !changed.bones[0].translationTracksAreDeltas;
+    require(!cache.find("bo2", changed));
+    changed = first.skeleton;
+    changed.bones.push_back(changed.bones.front());
+    require(!cache.find("bo2", changed));
+    second.animations[0].sourceGame = "modified";
+    second.warnings[0] = "modified";
+    scene::CastScene third;
+    cadence::prepared_animation::RequestCache::append(*prepared, third);
+    require(third.animations[0].sourceGame == "bo2");
+    require(third.warnings[0] == "prepared warning");
+    cache.clear();
+    require(cache.size() == 0 && !cache.find("bo2", first.skeleton));
     return 0;
 }

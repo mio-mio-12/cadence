@@ -49,7 +49,8 @@ void drawPlayermodelAssembler(AppState& app){
         const auto& options=choices.parts[static_cast<std::size_t>(part)];if(options.empty())return;
         std::size_t visible=slot;
         if(slot==automatic){for(auto i:resolved)if(std::find(options.begin(),options.end(),i)!=options.end()){visible=i;break;}}
-        const auto preview=visible<app.assetCatalog.entries.size()?assets::character::displayName(app.assetCatalog.entries[visible].name):(slot==none?"None":"Auto");
+        const auto noneLabel=part==Part::Head?"No head":"None";
+        const auto preview=visible<app.assetCatalog.entries.size()?assets::character::displayName(app.assetCatalog.entries[visible].name):(slot==none?noneLabel:"Auto");
         ImGui::PushID(label);
         const auto cycle=[&](int direction){auto it=std::find(options.begin(),options.end(),visible);auto n=it==options.end()?(direction<0?0:-1):static_cast<int>(it-options.begin());n=(n+direction+static_cast<int>(options.size()))%static_cast<int>(options.size());slot=options[n];changed=true;};
         if(ImGui::ArrowButton("previous",ImGuiDir_Left))cycle(-1);ImGui::SameLine();
@@ -61,7 +62,7 @@ void drawPlayermodelAssembler(AppState& app){
             filter.Draw("Search");
             if(part!=Part::Torso){
                 if(ImGui::Selectable("Auto",slot==automatic)){slot=automatic;changed=true;}
-                if(ImGui::Selectable("None",slot==none)){slot=none;changed=true;}
+                if(ImGui::Selectable(noneLabel,slot==none)){slot=none;changed=true;}
             }
             ImGui::BeginChild("choices",{0,240});
             for(auto i:options){const auto& a=app.assetCatalog.entries[i];if(!filter.PassFilter(a.name.c_str()))continue;

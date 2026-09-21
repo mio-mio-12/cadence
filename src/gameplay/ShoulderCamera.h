@@ -37,4 +37,7 @@ inline scene::Vec3 shoulderUp(scene::Vec3 forward,float rollDegrees){
     return scene::normalize(up*std::cos(r)+lateral*std::sin(r));
 }
 inline float zoomFov(float hip,float ads,float amount,float intensity){return std::clamp(hip+(ads-hip)*std::clamp(amount,0.f,1.f)*std::clamp(intensity,0.f,2.f),1.f,179.f);}
+inline float scopeFov(float transitionFov,float weaponAdsFov,bool scopeVisible){
+    return scopeVisible?std::clamp(std::isfinite(weaponAdsFov)?weaponAdsFov:30.f,1.f,179.f):transitionFov;
+}
 }

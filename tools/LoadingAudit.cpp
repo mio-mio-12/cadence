@@ -15,7 +15,7 @@ int main(int argc,char** argv){
     auto state=std::make_unique<AppState>();auto& app=*state;std::string error;
     app.window=window;app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
     if(!app.renderer.initialize(error))return 3;
-    for(const auto* game:{"bo2","bo2_sp","codm","pointblank","bocw_sp"}){
+    for(const auto* game:{"bo2","bo2_sp","mw3","codm","pointblank","bocw_sp"}){
         if(std::filesystem::exists(app.defaultSalukiDirectory/game)&&!assets::appendScan(app.defaultSalukiDirectory/game,game,app.assetCatalog,error))return 4;
     }
     std::size_t secondary=static_cast<std::size_t>(-1);
@@ -43,7 +43,7 @@ int main(int argc,char** argv){
     std::optional<std::uint64_t> expectedHash;
     const auto read=[](const std::filesystem::path& path){std::ifstream in(path,std::ios::binary);return std::string(std::istreambuf_iterator<char>(in),{});};
     for(int round=0;round<4;++round){
-        app.botGame="bo2";app.botTeamSide=1;app.enemyBotCount=5;app.botAnimationGame="bo2";app.botSystemMode=1;
+        app.botGame=argc>3?argv[3]:"bo2";app.botTeamSide=1;app.enemyBotCount=5;app.botAnimationGame="bo2";app.botSystemMode=1;
         const bool reference=round==0||round==3;
         const auto start=std::chrono::steady_clock::now();
         if(reference)rebuildBotActorsReference(app);else rebuildBotActors(app);

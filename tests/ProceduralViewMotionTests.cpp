@@ -31,6 +31,11 @@ int main(){int failures=0;auto check=[&](bool b){if(!b)++failures;};
     check(gameplay::view::zoomDuration(0,.25f)==.25f&&gameplay::view::zoomDuration(.8f,.25f)==.8f);
     zoom={};zoom.update(true,.2f,gameplay::view::zoomDuration(.8f,.25f),curve,curve);check(std::abs(zoom.value-.25f)<.00001f);
     check(gameplay::view::zoomFov(90,30,zoom.value,0)==90&&gameplay::view::zoomFov(90,30,1,1)==30&&gameplay::view::zoomFov(90,30,1,2)==1);
+    for(float intensity:{0.f,.3f,1.f,2.f})for(float progress:{0.f,.2f,.9f,1.f})for(float ads:{12.f,25.f,47.f}){
+        const float transition=gameplay::view::zoomFov(90,ads,progress,intensity);
+        check(gameplay::view::scopeFov(transition,ads,true)==ads);
+        check(gameplay::view::scopeFov(transition,ads,false)==transition);
+    }
     zoom.update(false,0,.4f,curve,curve);check(std::abs(zoom.value-.25f)<.00001f);
     zoom.update(false,.4f,.4f,curve,curve);check(zoom.value==0);
     gameplay::view::ShoulderCameraSettings shoulder;

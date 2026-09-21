@@ -8,6 +8,30 @@
 int main() {
     auto state = std::make_unique<AppState>();
     auto& app = *state;
+    {
+        scene::CastScene fixture;fixture.skeleton.bones.emplace_back();
+        int stage=0;
+        for(const auto suffix:{"reload_intro.cast","reload_loop.cast","reload_out.cast"}){
+            scene::Animation clip;clip.sourceName=std::string("viewmodel_test_")+suffix;clip.durationFrames=1;clip.framerate=30;clip.looping=stage==1;
+            scene::Track track;track.property=scene::TrackProperty::TranslationX;track.frames={0,1};track.scalarValues={float(stage),float(stage+1)};clip.tracks.push_back(track);fixture.animations.push_back(clip);++stage;
+        }
+        CHECK(cadence::iw_reload::prepare(fixture,"viewmodel_test_"));
+        CHECK(fixture.animations.back().durationFrames==3&&fixture.animations[1].looping);
+        for(float frame:{0.f,.5f,1.f,1.5f,2.f,2.5f,3.f})CHECK(std::abs(fixture.sampleLocalPose(3,frame)[0].position.x-frame)<.0001f);
+        CHECK(!cadence::iw_reload::prepare(fixture,"viewmodel_test_"));
+        CHECK(!cadence::iw_reload::prepare(fixture,"viewmodel_missing_"));
+    }
+    for(const auto& [game,model,prefix]:std::vector<std::tuple<std::string,std::string,std::string>>{
+        {"mw","viewmodel_remington700_mp_LOD0","viewmodel_remington_"},
+        {"mwr","wpn_h1_pst_m9_vm_wet_camo_LOD0","h1_wpn_pst_m9_"},
+        {"mwr","viewmodel_ak47_LOD0","h1_wpn_asl_ak47_"},
+        {"mwr","wpn_h1_melee_staff_vm_LOD0","h1_wpn_melee_tribal_staff_"},
+        {"mwr","wpn_h1_lau_rpg7_vm_LOD0","h1_wpn_lau_rpg_"}}){
+        assets::Asset asset;asset.game=game;asset.name=model;
+        CHECK(animationPrefixForWeapon(asset)==prefix);
+        CHECK(animationSourceMatchesWeapon(prefix+"idle.cast",asset));
+        if(game=="mwr")CHECK(!animationSourceMatchesWeapon("h1_wpn_pst_usp_idle.cast",asset));
+    }
     const auto add = [&](const std::string& game, const std::string& name, assets::Role role) {
         assets::Asset a;
         a.game = game; a.name = name; a.role = role;
@@ -107,5 +131,46 @@ int main() {
     torso.vertices.resize(1);torso.vertices[0].position={0,0,90};boots.vertices.resize(1);boots.vertices[0].position={0,0,0};weaponMesh.vertices.resize(1);weaponMesh.vertices[0].position={0,0,-200};weaponMesh.attachmentIndex=0;
     assembly.meshes={torso,boots,weaponMesh};scene::refreshCharacterBounds(assembly);
     CHECK(assembly.bounds.minimum.z==0);CHECK(assembly.bounds.maximum.z==90);
-    std::cout << "Team assembly and character-to-hands exact/missing/variant matching passed\n";
+    // Missing weapon-family locomotion must never fall back to clip zero's
+    // mantle (the visible frozen-pose/gliding regression).
+    scene::CastScene locomotion;
+    const auto addClip=[&](const char* name){scene::Animation c;c.sourceName=name;c.sourceGame="bo2";scene::classifyAnimationName(name,c);scene::Track t;t.frames={0,20};t.scalarValues={0,10};c.tracks.push_back(t);c.durationFrames=20;locomotion.animations.push_back(c);};
+    addClip("mp_mantle_over_high.cast");addClip("pb_stand_alert.cast");addClip("pb_combatrun_forward_loop.cast");
+    for(int weapon=0;weapon<=int(scene::WeaponClass::RC);++weapon)for(auto motion:{scene::MotionRole::Idle,scene::MotionRole::Walk,scene::MotionRole::Run,scene::MotionRole::Sprint}){
+        resetBotLocomotionCache();scene::AnimationQuery q;q.domain=scene::AnimationDomain::PlayerBody;q.motion=motion;q.stance=scene::Stance::Stand;q.weapon=scene::WeaponClass(weapon);q.direction=scene::Direction::Forward;
+        const auto clip=botLocomotionAnimation(locomotion,q,&app);
+        CHECK(clip);CHECK(*clip==(motion==scene::MotionRole::Idle?1:2));
+    }
+    scene::AnimationQuery missing;missing.domain=scene::AnimationDomain::PlayerBody;missing.motion=scene::MotionRole::Run;missing.stance=scene::Stance::Prone;
+    CHECK(!botLocomotionAnimation(locomotion,missing,&app));
+    app.botLocomotionOverrides[{"bo2",scene::MotionRole::Run,scene::Stance::Stand,scene::Direction::Forward,scene::WeaponClass::Knife}]="mp_mantle_over_high.cast";++app.botLocomotionOverrideRevision;
+    missing.stance=scene::Stance::Stand;missing.weapon=scene::WeaponClass::Knife;missing.direction=scene::Direction::Forward;
+    CHECK(botLocomotionAnimation(locomotion,missing,&app)==2);
+    app.assetCatalog.entries.clear();
+    const auto mwView=add("mw","viewmodel_m40a3_mp_LOD0",assets::Role::ViewWeapon);
+    add("mw3","weapon_m40a3_LOD0",assets::Role::WorldWeapon);
+    const auto mwWorld=add("mw","weapon_m40a3_LOD0",assets::Role::WorldWeapon);
+    CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[mwView])==mwWorld);
+    const auto gold=add("mw","viewmodel_desert_eagle_gold_mp_LOD0",assets::Role::ViewWeapon);
+    add("mw","weapon_desert_eagle_silver_LOD0",assets::Role::WorldWeapon);
+    CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[gold])==std::size_t(-1));
+    const auto goldWorld=add("mw","weapon_desert_eagle_gold_LOD0",assets::Role::WorldWeapon);
+    CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[gold])==goldWorld);
+    const auto wet=add("mwr","wpn_h1_pst_m9_vm_wet_camo_LOD0",assets::Role::ViewWeapon);
+    add("mwr","wpn_h1_pst_m9_npc_camo_LOD0",assets::Role::WorldWeapon);
+    CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[wet])==std::size_t(-1));
+    const auto wetWorld=add("mwr","wpn_h1_pst_m9_npc_wet_camo_LOD0",assets::Role::WorldWeapon);
+    CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[wet])==wetWorld);
+    std::cout << "Team assembly, character matching, safe locomotion and scoped world names passed\n";
+    for(const auto& names:std::vector<std::pair<std::string,std::string>>{{"kriss","kriss_v"},{"lsat","lsat_iw6"},{"mk14_ebr","mk14_ebr_iw6"},{"mk14","mk14_iw6"},{"rm_22_ar","rm_22"},{"magum_iw6","magnum_iw6"},{"vbr_pdw","vbr"}}){
+        app.assetCatalog.entries.clear();
+        const auto view=add("ghosts","viewmodel_"+names.first+"_gold_LOD0",assets::Role::ViewWeapon);
+        add("ghosts","weapon_"+names.second+"_camo_LOD0",assets::Role::WorldWeapon);
+        add("mw3","weapon_"+names.second+"_gold_LOD0",assets::Role::WorldWeapon);
+        CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[view])==std::size_t(-1));
+        const auto world=add("ghosts","weapon_"+names.second+"_gold_LOD0",assets::Role::WorldWeapon);
+        CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[view])==world);
+        app.assetCatalog.entries[view].name="viewmodel_"+names.first+"_special_gold_LOD0";
+        CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[view])==std::size_t(-1));
+    }
 }

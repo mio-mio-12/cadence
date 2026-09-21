@@ -46,6 +46,7 @@
 #include "gameplay/SprintMotion.h"
 #include "render/StageRenderer.h"
 #include "scene/CastScene.h"
+#include "scene/T6Magazine.h"
 #include "scene/ColdWarLegacyBridge.h"
 #include "scene/CodmNative.h"
 #include "scene/CodmLegacyAdapter.h"
@@ -74,6 +75,7 @@
 #include "BotAnimationQueryKey.h"
 #include "Bo2LoadoutDefaults.h"
 #include "PreparedAnimationLibrary.h"
+#include "IwReloadSequence.h"
 #include "CatalogRemap.h"
 #include "BotDeathPolicy.h"
 #include "gameplay/BotActionPlayback.h"
@@ -233,6 +235,12 @@ struct AppState {
     float transitionDuration{0.18f};
     float activeTransitionDuration{0.18f};
     std::vector<scene::Mat4> interruptPoseSource;
+    // YY v4 keeps the outgoing authored motion alive. The captured pose is
+    // only the continuity offset, not a frozen animation used for the return.
+    std::size_t yyLiveAnimation{SIZE_MAX};
+    float yyLiveFrame{},yyLiveRate{1.f};
+    bool yyLiveLoop{};
+    std::vector<scene::Mat4> yyLiveReference;
     float interruptPoseElapsed{},interruptPoseDuration{};
     scene::Mat4 viewmodelRigAnchor{scene::Mat4::identity()};
     bool viewmodelRigAnchorValid{},interruptPoseCameraRelative{};
@@ -321,6 +329,7 @@ struct AppState {
     bool takePreview{};
     bool takeFirstPersonView{};
     int takePlaybackSlot{-1};
+    std::array<cadence::replay::MountReference,3> takeMountReferences{};
     bool takeLoop{};
     float takeTime{};
     float takeAccumulator{};
@@ -1103,7 +1112,7 @@ std::string lowerText(std::string value);
 std::vector<std::string> viewmodelKeys(const assets::Asset& weapon);
 std::string animationPrefixForWeapon(const assets::Asset& weapon);
 std::filesystem::path cadenceAssetsDirectory();
-bool auditedWeaponGame(std::string game){game=lowerText(game);return game=="bo2"||game=="aw"||game=="ghosts";}
+bool auditedWeaponGame(std::string game){game=lowerText(game);return game=="bo2"||game=="aw"||game=="ghosts"||game=="mwr"||game=="mw";}
 void tagAnimationGame(scene::CastScene& target,std::size_t first,const std::filesystem::path& path){const auto game=gameFromExportPath(path);for(std::size_t i=first;i<target.animations.size();++i)target.animations[i].sourceGame=game;}
 
 std::filesystem::path settingsFilePath(){
@@ -1492,6 +1501,7 @@ bool animationSourceMatchesWeapon(const std::filesystem::path& path,const assets
         return !family.empty()&&filename.starts_with("vm_"+family+"_t9_");
     }
     const auto prefix=animationPrefixForWeapon(weapon);
+    if(lowerText(weapon.game)=="mwr")return !prefix.empty()&&filename.starts_with(prefix);
     const auto keys=viewmodelKeys(weapon);
     if(!prefix.empty()&&filename.starts_with(prefix))return true;
     for(const auto& key:keys){
@@ -1512,6 +1522,7 @@ void reloadAnimationSources(AppState& app,const assets::Asset* weaponFilter=null
         for(std::size_t i=before;i<app.scene.animations.size();++i)mapped+=app.scene.animations[i].tracks.size();}
     cadence::codm_actions::prepare(app.scene);
     cadence::pointblank_actions::prepare(app.scene);
+    if(weaponFilter&&lowerText(weaponFilter->game)=="mw")cadence::iw_reload::prepare(app.scene,animationPrefixForWeapon(*weaponFilter));
     restoreWeaponAnimationFiles(app);
     app.animationIndex=0;if(!previousSource.empty())for(std::size_t i=0;i<app.scene.animations.size();++i)if(app.scene.animations[i].sourceName==previousSource){app.animationIndex=i;break;}
     app.previousAnimationIndex=app.animationIndex;app.animationFrame=previousSource.empty()?0:previousFrame;app.previousAnimationFrame=app.animationFrame;app.transitioning=false;app.actionActive=false;app.actionOverlay=false;app.actionFrame=app.actionElapsed=0;
@@ -1897,6 +1908,7 @@ std::string animationPrefixForWeapon(const assets::Asset& weapon){
         if(base.starts_with("g36c")||base.starts_with("g36csd")||base=="g36")return "viewmodel_g36_";
         if(base.starts_with("m14sd")||base=="m14")return "viewmodel_m14_";
         if(base.starts_with("rpg7")||base=="rpg")return "viewmodel_rpg_";
+        if(base=="remington700"||base=="r700")return "viewmodel_remington_";
         if(base.starts_with("skorpionsd")||base=="skorpion")return "viewmodel_skorpion_";
         if(base.starts_with("winchester")||base.starts_with("winchest")||base.starts_with("w1200"))return "viewmodel_winchester_";
         if(base.find("benelli")!=std::string::npos||base.find("super_90")!=std::string::npos)return "viewmodel_benellim4_";
@@ -1911,6 +1923,14 @@ std::string animationPrefixForWeapon(const assets::Asset& weapon){
         if(!base.empty())return "viewmodel_"+base+"_";
     }
     if(game=="mwr"||name.starts_with("wpn_h1_")||name.starts_with("h1_wpn_")){
+        if(name=="viewmodel_ak47")return "h1_wpn_asl_ak47_";
+        auto family=name;
+        if(family.starts_with("wpn_h1_"))family.erase(0,7);
+        else if(family.starts_with("h1_wpn_"))family.erase(0,7);
+        if(const auto vm=family.find("_vm");vm!=std::string::npos)family.resize(vm);
+        for(const auto& alias:std::vector<std::pair<std::string,std::string>>{{"lau_rpg7","lau_rpg"},{"grenade_frag","grn_m67"},{"grenade_smoke","grn_smoke"},{"grenade_flash","grn_m84"},{"claymore","eqp_claymore"},{"c4","eqp_c4"},{"briefcase_bomb","eqp_briefcase_bomb"},{"airsupport","eqp_airsupport"},{"melee_staff","melee_tribal_staff"}})
+            if(family==alias.first)return "h1_wpn_"+alias.second+"_";
+        if(family.starts_with("melee_")&&family!=name)return "h1_wpn_"+family+"_";
         if(name.starts_with("wpn_h1_")){
             std::vector<std::string> parts;std::size_t start=0;
             while(start<name.size()){auto next=name.find('_',start);parts.push_back(name.substr(start,next==std::string::npos?std::string::npos:next-start));if(next==std::string::npos)break;start=next+1;}
@@ -2458,7 +2478,8 @@ void installIwSharedSprint(AppState& app,const assets::Asset& weaponAsset){
 }
 
 void restoreDefaultAttachmentSetup(AppState& app,const assets::Asset& asset);
-void finishRigMerge(AppState& app,const assets::Asset* weaponFilter=nullptr){reloadAnimationSources(app,weaponFilter);if(weaponFilter)installIwSharedSprint(app,*weaponFilter);
+#include "T6MagazineCalibration.inc"
+void finishRigMerge(AppState& app,const assets::Asset* weaponFilter=nullptr){calibrateT6Magazine(app,weaponFilter);reloadAnimationSources(app,weaponFilter);if(weaponFilter)installIwSharedSprint(app,*weaponFilter);
     if(weaponFilter)restoreDefaultAttachmentSetup(app,*weaponFilter);
     app.scene.dualWield=false;
     if(app.weaponProfile.archetype==weapon::Archetype::DualWield){const auto mw3=app.scene.skeleton.boneByName.contains("dual_left_j_gun");if(mw3||app.scene.skeleton.boneByName.contains("j_gun1")||!app.scene.pointBlankWeaponStem.empty()){std::string error;cadence::dual::prepare(app.scene,app.weaponProfile,weaponFilter?animationPrefixForWeapon(*weaponFilter):app.weaponProfile.animationPrefix,mw3,error);}}
@@ -3242,7 +3263,23 @@ if(persistentAdsLayer){std::vector<scene::PoseSlot> slots;if(hasBaseTransition){
     }
     if(app.interruptPoseDuration>0&&app.interruptPoseElapsed<app.interruptPoseDuration&&app.interruptPoseSource.size()==pose.size()){
         float alpha=std::clamp(app.interruptPoseElapsed/app.interruptPoseDuration,0.0f,1.0f);alpha=alpha*alpha*(3.0f-2.0f*alpha);
-        for(std::size_t i=0;i<pose.size();++i){const auto source=app.interruptPoseCameraRelative&&app.viewmodelRigAnchorValid?app.viewmodelRigAnchor*app.interruptPoseSource[i]:app.interruptPoseSource[i];if(app.scene.codmNativeCentimetres||app.scene.pointBlankNativeCentimetres){pose[i]=cadence::codm_actions::blendAffine(source,pose[i],alpha);continue;}scene::Vec3 fromPosition,toPosition,fromScale,toScale;scene::Quat fromRotation,toRotation;scene::decomposeAffine(source,fromPosition,fromRotation,fromScale);scene::decomposeAffine(pose[i],toPosition,toRotation,toScale);pose[i]=scene::trs(scene::lerp(fromPosition,toPosition,alpha),scene::slerp(fromRotation,toRotation,alpha),scene::lerp(fromScale,toScale,alpha));}
+        const auto live=app.yyLiveAnimation<app.scene.animations.size()&&app.yyLiveReference.size()==pose.size()?app.scene.samplePose(app.yyLiveAnimation,app.yyLiveFrame):std::vector<scene::Mat4>{};
+        for(std::size_t i=0;i<pose.size();++i){
+            auto localSource=app.interruptPoseSource[i];
+            if(live.size()==pose.size()){
+                scene::Vec3 p0,p1,p,s0,s1,s;scene::Quat q0,q1,q;
+                scene::decomposeAffine(app.yyLiveReference[i],p0,q0,s0);scene::decomposeAffine(live[i],p1,q1,s1);scene::decomposeAffine(localSource,p,q,s);
+                // Preserve the visible layered pose at the seam while carrying
+                // forward the outgoing clip's translation/rotation. No reverse,
+                // frame clamp, repeated notifications, or action timer involved.
+                const auto delta=scene::rotation(q1)*scene::inverseAffine(scene::rotation(q0));
+                scene::Vec3 unusedP,unusedS;scene::Quat advanced;
+                scene::decomposeAffine(delta*scene::rotation(q),unusedP,advanced,unusedS);
+                localSource=scene::trs(p+(p1-p0),advanced,s);
+            }
+            const auto source=app.interruptPoseCameraRelative&&app.viewmodelRigAnchorValid?app.viewmodelRigAnchor*localSource:localSource;
+            if(app.scene.codmNativeCentimetres||app.scene.pointBlankNativeCentimetres){pose[i]=cadence::codm_actions::blendAffine(source,pose[i],alpha);continue;}scene::Vec3 fromPosition,toPosition,fromScale,toScale;scene::Quat fromRotation,toRotation;scene::decomposeAffine(source,fromPosition,fromRotation,fromScale);scene::decomposeAffine(pose[i],toPosition,toRotation,toScale);pose[i]=scene::trs(scene::lerp(fromPosition,toPosition,alpha),scene::slerp(fromRotation,toRotation,alpha),scene::lerp(fromScale,toScale,alpha));
+        }
     }
     if(app.weaponProfile.lockInspectGrip&&isViewmodelRig(app)&&!pose.empty()){
         const bool isInspectPlaying=(app.actionActive&&app.activeAction==scene::ActionRole::Gesture)||(app.animationIndex<app.scene.animations.size()&&lowerText(app.scene.animations[app.animationIndex].sourceName).find("inspect")!=std::string::npos);
@@ -3301,6 +3338,33 @@ if(persistentAdsLayer){std::vector<scene::PoseSlot> slots;if(hasBaseTransition){
 
 void beginInterruptPoseBlend(AppState& app,float duration){
     app.interruptPoseSource=evaluateCurrentPose(app);app.interruptPoseCameraRelative=app.actorMode&&isViewmodelRig(app)&&app.viewmodelRigAnchorValid;if(app.interruptPoseCameraRelative){const auto inverseAnchor=scene::inverseAffine(app.viewmodelRigAnchor);for(auto& bone:app.interruptPoseSource)bone=inverseAnchor*bone;}app.interruptPoseElapsed=0;app.interruptPoseDuration=std::max(0.001f,duration);
+    app.yyLiveAnimation=SIZE_MAX;app.yyLiveReference.clear();
+}
+
+void beginYyV4LiveBlend(AppState& app,float duration,bool carryTail=true){
+    std::size_t clip=app.actionActive&&app.actionOverlay?app.actionAnimationIndex:app.animationIndex;
+    float frame=app.actionActive&&app.actionOverlay?app.actionFrame:app.animationFrame;
+    float rate=1.f;bool loop=!app.actionActive;
+    if(clip<app.scene.animations.size()&&app.actionActive&&app.actionDurationOverride>0)
+        rate=app.scene.animations[clip].durationFrames/(std::max(1.f,app.scene.animations[clip].framerate)*app.actionDurationOverride);
+    // During rapid YYY/YYYY, carry the visible outgoing clip, not the idle
+    // underneath it. Each interruption replaces one bounded tail.
+    if(carryTail&&app.yyLiveAnimation<app.scene.animations.size()&&app.interruptPoseDuration>0&&app.interruptPoseElapsed<app.interruptPoseDuration*.5f){
+        clip=app.yyLiveAnimation;frame=app.yyLiveFrame;rate=app.yyLiveRate;loop=app.yyLiveLoop;
+    }
+    beginInterruptPoseBlend(app,duration);
+    if(clip>=app.scene.animations.size())return;
+    app.yyLiveAnimation=clip;app.yyLiveFrame=frame;app.yyLiveRate=rate;app.yyLiveLoop=loop;
+    app.yyLiveReference=app.scene.samplePose(clip,frame);
+}
+
+void advanceYyV4LiveBlend(AppState& app,float delta){
+    if(app.interruptPoseDuration<=0||app.interruptPoseElapsed>=app.interruptPoseDuration||app.yyLiveAnimation>=app.scene.animations.size())return;
+    const auto& clip=app.scene.animations[app.yyLiveAnimation];
+    app.yyLiveFrame+=std::max(0.f,delta)*clip.framerate*app.yyLiveRate;
+    const float end=static_cast<float>(clip.durationFrames);
+    if(app.yyLiveLoop&&clip.looping&&end>0)app.yyLiveFrame=std::fmod(app.yyLiveFrame,end);
+    else app.yyLiveFrame=std::min(app.yyLiveFrame,end);
 }
 
 float authoredClipDuration(const AppState& app,std::size_t animation){
@@ -3352,6 +3416,8 @@ std::vector<scene::Mat4> evaluateHiddenWorldActorPose(AppState& app,std::string*
     else if(app.actorSliding)motion=scene::MotionRole::Slide;
     else if(!app.actorGrounded)motion=scene::MotionRole::Jump;
     else if(app.actorSprinting)motion=scene::MotionRole::Sprint;
+    else if(movingLoco&&app.gameplayStance==scene::Stance::Prone)motion=scene::MotionRole::Crawl;
+    else if(movingLoco&&app.gameplayAds)motion=scene::MotionRole::Walk;
     else if(effectiveSpeed>gameplay::iw::kRunSpeed*0.45f||(movingLoco&&!app.actorSprinting))motion=scene::MotionRole::Run;
     else if(effectiveSpeed>gameplay::iw::worldUnits(2.0f))motion=scene::MotionRole::Walk;
     scene::Direction direction=scene::Direction::Any;
@@ -3377,6 +3443,7 @@ std::vector<scene::Mat4> evaluateHiddenWorldActorPose(AppState& app,std::string*
     if(!app.playerWorldAnimationGame.empty())nativeGame=app.playerWorldAnimationGame;
     scene::AnimationQuery query;query.domain=scene::AnimationDomain::PlayerBody;query.motion=motion;query.action=scene::ActionRole::None;query.weapon=worldWeapon;query.stance=app.gameplayStance;query.direction=direction;
     query.preferredGame=nativeGame;
+    query.ads=app.gameplayAds;
     query.forceT6Locomotion=app.forceT6PlayerLocomotion;
 
     if(motion==scene::MotionRole::Slide){
@@ -3394,6 +3461,7 @@ std::vector<scene::Mat4> evaluateHiddenWorldActorPose(AppState& app,std::string*
         app.worldSelectionData=actor.animations.data();app.worldSelectionCount=actor.animations.size();
     }
     const auto selectBase=[&]()->std::optional<std::size_t>{
+    if(isGroundWorldMotion(motion))return selectGroundWorldLocomotion(actor,query);
     std::optional<std::size_t> base;
     if(motion==scene::MotionRole::Climb){
         const float height=app.actorMantleHeight/gameplay::iw::worldUnits(1.f);
@@ -3455,11 +3523,15 @@ std::vector<scene::Mat4> evaluateHiddenWorldActorPose(AppState& app,std::string*
     std::optional<std::size_t> base;
     if(app.worldSelectionCacheEnabled&&app.worldSelectionKey==selectionKey)base=app.worldSelectionResult;
     else {base=selectBase();if(app.worldSelectionCacheEnabled){app.worldSelectionKey=selectionKey;app.worldSelectionResult=base;}}
-    if(!base)return placeWorldActor(actor.globalPose(actor.sampleLocalPose(0,0)));
+    if(!base){
+        std::vector<scene::Transform> bind;bind.reserve(actor.skeleton.bones.size());
+        for(const auto& bone:actor.skeleton.bones)bind.push_back(bone.restLocal);
+        return placeWorldActor(actor.globalPose(bind));
+    }
     const auto& baseClip=actor.animations[*base];
     // Turn by the continuous movement angle relative to the authored clip,
     // not only when a cardinal animation lookup fails.
-    if(motion==scene::MotionRole::Walk||motion==scene::MotionRole::Run||motion==scene::MotionRole::Sprint||
+    if(motion==scene::MotionRole::Walk||motion==scene::MotionRole::Run||motion==scene::MotionRole::Sprint||motion==scene::MotionRole::Crawl||
        motion==scene::MotionRole::Slide||motion==scene::MotionRole::Climb||motion==scene::MotionRole::Jump){
         const auto travel=motion==scene::MotionRole::Climb?app.actorMantleEnd-app.actorMantleStart:
             motion==scene::MotionRole::Slide?app.actorVelocity:(hasMoveInput?app.actorWishVelocity:app.actorVelocity);
@@ -3539,9 +3611,16 @@ std::vector<scene::Mat4> evaluateHiddenWorldActorPose(AppState& app,std::string*
 
     if(nativeGame=="pointblank"&&!app.actorMantling&&app.gameplayStance!=scene::Stance::Prone){scene::AnimationQuery q;q.domain=scene::AnimationDomain::PlayerTorso;q.motion=effectiveSpeed>10?scene::MotionRole::Run:scene::MotionRole::Idle;q.weapon=worldWeapon;q.stance=app.gameplayStance;q.preferredGame="pointblank";if(auto idle=app.playerWorldTorsoCache.find(actor,q)){const auto& c=actor.animations[*idle];scene::pointblank::overlayTorso(actor,*idle,c.durationFrames?std::fmod(app.gameplayClock*c.framerate,static_cast<float>(c.durationFrames)):0,baseLocal);}}
     std::optional<std::size_t> overlay;if(app.actionActive&&app.activeAction!=scene::ActionRole::None){scene::AnimationQuery actionQuery;actionQuery.domain=scene::AnimationDomain::PlayerTorso;actionQuery.action=app.activeAction;actionQuery.weapon=worldWeapon;actionQuery.stance=app.gameplayStance;actionQuery.preferredGame=nativeGame;actionQuery.forceT6Locomotion=app.forceT6PlayerLocomotion;overlay=app.worldSelectionCacheEnabled?app.playerWorldActionCache.find(actor,actionQuery):scene::findBestAnimation(actor,actionQuery);if(!overlay){actionQuery.weapon=scene::WeaponClass::Any;overlay=app.worldSelectionCacheEnabled?app.playerWorldActionCache.find(actor,actionQuery):scene::findBestAnimation(actor,actionQuery);}}
+    bool adsHold=false;
+    if(!overlay&&app.gameplayAds&&isGroundWorldMotion(motion)&&motion!=scene::MotionRole::Idle){
+        auto holdQuery=query;holdQuery.motion=scene::MotionRole::Idle;holdQuery.direction=scene::Direction::Any;holdQuery.ads=true;
+        const auto hold=app.playerWorldActionCache.find(actor,holdQuery);
+        if(hold&&actor.animations[*hold].ads){overlay=hold;adsHold=true;}
+    }
     float actionFrame=0;
     if(overlay){const auto& actionClip=actor.animations[*overlay];const auto sourceIndex=app.actionOverlay?app.actionAnimationIndex:app.animationIndex;const float sourceFrame=app.actionOverlay?app.actionFrame:app.animationFrame;if(sourceIndex<app.scene.animations.size()){const auto& source=app.scene.animations[sourceIndex];const float normalized=source.durationFrames?std::clamp(sourceFrame/static_cast<float>(source.durationFrames),0.0f,1.0f):0.0f;actionFrame=normalized*actionClip.durationFrames;}if(torsoName)*torsoName=actionClip.sourceName;if(torsoFrame)*torsoFrame=actionFrame;}
-    app.actorWorldActionBlend.apply(actor,overlay,actionFrame,presentationDelta,std::max(.045f,app.actionBlendTime),baseLocal);
+    if(adsHold){const auto& c=actor.animations[*overlay];actionFrame=c.durationFrames?std::fmod(app.gameplayClock*c.framerate,static_cast<float>(c.durationFrames)):0;if(torsoName)*torsoName=c.sourceName;if(torsoFrame)*torsoFrame=actionFrame;}
+    app.actorWorldActionBlend.apply(actor,overlay,actionFrame,presentationDelta,std::max(.045f,app.actionBlendTime),baseLocal,true);
     auto pose=actor.globalPose(baseLocal);
 
     if(const auto root=actor.skeleton.boneByCanonicalName.find("tag_origin");root!=actor.skeleton.boneByCanonicalName.end()&&root->second<pose.size()){const auto& animated=pose[root->second];const auto& rest=actor.skeleton.bones[root->second].restGlobal;const scene::Vec3 delta{animated.v[12]-rest.v[12],animated.v[13]-rest.v[13],animated.v[14]-rest.v[14]};for(auto& bone:pose){bone.v[12]-=delta.x;bone.v[13]-=delta.y;bone.v[14]-=delta.z;}}
@@ -3631,7 +3710,7 @@ bool recordedWeaponHidden(const take::RecordedActorState& actor){
 void captureTakeSample(AppState& app,float time){
     if(app.scene.skeleton.bones.empty())return;TakeRecordingProbe recordingProbe{app.takeRecordingCost};take::Sample sample;sample.time=time;
     const float hipFov=app.viewmodelFov*app.viewmodelFovScale;const bool sniper=weapon::isSniper(app.weaponProfile.archetype);const float adsFov=app.fovSystem==0?app.weaponTiming.adsFov*app.viewmodelFovScale:(sniper?30.0f:app.weaponTiming.adsFov*app.viewmodelFovScale);const float cameraAds=sniper?app.sniperZoomState.value:app.adsCameraBlend;
-    const float sampleFov=gameplay::view::zoomFov(hipFov,adsFov,cameraAds,sniper?app.cameraControls.zoomIntensity:1.f);
+    const float sampleFov=gameplay::view::scopeFov(gameplay::view::zoomFov(hipFov,adsFov,cameraAds,sniper?app.cameraControls.zoomIntensity:1.f),app.weaponTiming.adsFov,(livePlayerVisibility(app)&take::ScopeOverlay)!=0);
     sample.camera={app.cameraTarget,app.cameraYaw,app.cameraPitch,app.cameraDistance,sampleFov,app.adsCameraBlend};
     sample.weaponSlot=static_cast<std::uint8_t>(std::clamp(app.activeClassSlot,0,2));
     sample.visibility=livePlayerVisibility(app);
@@ -3669,6 +3748,9 @@ void captureTakeSample(AppState& app,float time){
 std::string takePathString(const std::filesystem::path& path){return path.empty()?std::string{}:path.string();}
 
 void captureTakeActorManifest(AppState& app){
+    for(std::size_t slot=0;slot<app.takeMountReferences.size();++slot)
+        app.takeMountReferences[slot]=cadence::replay::MountReference::from(
+            int(slot)==app.activeClassSlot||!app.classSlotRigs[slot]?app.weaponProfile:app.classSlotRigs[slot]->profile);
     auto& actor=app.recordedTake.actor;actor={};actor.baseModel=takePathString(app.loadedBaseModelPath);
     for(const auto& path:app.loadedRigModelPaths)actor.rigModels.push_back(takePathString(path));
     const auto attachmentCount=std::min(app.scene.attachments.size(),app.loadedAttachmentPaths.size());
@@ -4160,6 +4242,19 @@ void retainPointBlankKnifeTail(AppState& app){
 void triggerGameplayAction(AppState& app){
     if(app.gameplayAction==scene::ActionRole::None){stopGameplayAction(app);return;}
     if(app.gameplayAction==scene::ActionRole::Aim&&app.scene.codmNativeCentimetres&&app.actionActive&&(app.activeAction==scene::ActionRole::Fire||(app.gameplayRechamber&&app.activeAction==scene::ActionRole::Reload))){if(const auto up=findViewmodelClip(app,"ads_up"))startViewmodelAimClip(app,*up);return;}
+    const bool blendPutaway=app.gameplayAction==scene::ActionRole::Unequip&&isViewmodelRig(app)&&!activeWeaponIsCs2(app);
+    if(blendPutaway){
+        // Capture the evaluated pose BEFORE discarding ADS, fire/reload layers,
+        // or an in-progress transition. The base clip alone is not that pose.
+        const float drop=app.weaponSwitchQuickAnimation?app.weaponTiming.quickDropTime:app.weaponTiming.dropTime;
+        const float duration=std::min(std::max(.06f,app.actionBlendTime),drop>0?std::max(.001f,drop*.5f):.12f);
+        if(app.weaponSwitchAlgorithm==4)beginYyV4LiveBlend(app,duration);
+        else beginInterruptPoseBlend(app,duration);
+        app.runtimeLayers.clear();app.actionOverlay=false;
+        app.viewmodelAdsEngaged=app.viewmodelAdsExiting=app.viewmodelAdsPoseHold=false;
+        app.viewmodelAdsBaseAnimation=static_cast<std::size_t>(-1);
+        app.viewmodelSprintEntering=app.viewmodelSprintExiting=false;
+    }
     retainPointBlankKnifeTail(app);
     if(app.gameplayAction!=scene::ActionRole::Reload&&app.gameplayAction!=scene::ActionRole::Fire){app.gameplayRechamber=false;app.pendingWeaponRechamber=false;}
     if(app.gameplayAction==scene::ActionRole::Death)app.deathRootReference=app.scene.sampleLocalPose(app.animationIndex,app.animationFrame);
@@ -4175,6 +4270,7 @@ void triggerGameplayAction(AppState& app){
     if(app.activeAction==scene::ActionRole::Melee){++app.meleeVariant;setMeleeKnifeVisible(app,true);app.pendingVariantAnimation=nextViewmodelVariant(app,"melee").value_or(static_cast<std::size_t>(-1));}
     else if(app.activeAction==scene::ActionRole::Gesture)app.pendingVariantAnimation=nextViewmodelVariant(app,"inspect").value_or(static_cast<std::size_t>(-1));
     if(!resolveGameplayAnimation(app)){if(app.activeAction==scene::ActionRole::Melee)setMeleeKnifeVisible(app,false);app.actionActive=false;}
+    if(blendPutaway&&app.actionActive)app.transitioning=false; // the captured-pose blend owns this seam
     if(app.actionActive&&app.activeAction==scene::ActionRole::Melee&&isKnifeWeapon(app)&&app.actorMode&&!app.takePreview)++app.playerKnifeAttack;
     app.pendingVariantAnimation=static_cast<std::size_t>(-1);
 }
@@ -4211,7 +4307,11 @@ void stopGameplayAction(AppState& app){
 // COD4-style YY: returning the requested slot to the held weapon during drop
 // cancels the switch timer immediately. The pose blend is presentation only.
 void cancelYyV4Drop(AppState& app){
-    beginInterruptPoseBlend(app,yyReturnDuration(app));
+    // The return is a short live crossfade, not a fraction of the full drop
+    // duration (which previously froze long sniper drops for ~0.6 seconds).
+    const float duration=std::clamp(.10f*app.weaponTiming.yyReturnScale,.025f,.25f);
+    if(!activeWeaponIsCs2(app))beginYyV4LiveBlend(app,duration,false);
+    else beginInterruptPoseBlend(app,yyReturnDuration(app));
     app.weaponSwitchStage=0;app.weaponSwitchElapsed=0;app.weaponSwitchTarget=app.activeClassSlot;
     app.weaponSwitchQuickAnimation=false;app.weaponSwitchFirstRaiseAnimation=false;
     app.yyReturning=app.yyTowardPutaway=app.yyReverse=false;app.yyCancelDuration=0;
@@ -4221,7 +4321,7 @@ void cancelYyV4Drop(AppState& app){
     app.viewmodelAdsEngaged=app.viewmodelAdsExiting=app.viewmodelAdsPoseHold=false;
     app.viewmodelAdsBaseAnimation=static_cast<std::size_t>(-1);
     app.nextFireTime=std::min(app.nextFireTime,app.gameplayClock);
-    resolveGameplayAnimation(app);app.gameplayStatus="YY v4 — switch canceled";
+    resolveGameplayAnimation(app);if(!activeWeaponIsCs2(app))app.transitioning=false;app.gameplayStatus="YY v4 — switch canceled";
 }
 
 void updateGameplay(AppState& app,float deltaSeconds){
@@ -4979,6 +5079,10 @@ void updateActorController(AppState& app,float deltaSeconds){
 
     const bool fire=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_LEFT)==GLFW_PRESS,reload=actorKey(app,GLFW_KEY_R),reloadEmpty=actorKey(app,GLFW_KEY_LEFT_ALT),melee=actorKey(app,GLFW_KEY_V)&&!(app.experimentalThirdWeapon&&app.classSlotRigs[2]),firstRaise=actorKey(app,GLFW_KEY_F),grenade=actorKey(app,GLFW_KEY_G),inspect=actorKey(app,GLFW_KEY_E)||actorKey(app,GLFW_KEY_I),swap=actorKey(app,GLFW_KEY_Q);const bool knifeWeapon=isKnifeWeapon(app);const float wheelDirection=app.actorWheelDelta;const bool wheelSwap=std::abs(app.actorWheelDelta)>0.01f;app.actorWheelDelta=0;
     const auto trigger=[&](scene::ActionRole action){
+        if(action==scene::ActionRole::Unequip&&isViewmodelRig(app)&&!activeWeaponIsCs2(app)){
+            // Do not stop/reset the current action before its pose is captured.
+            app.gameplayAction=action;triggerGameplayAction(app);return;
+        }
         if(action==scene::ActionRole::Aim&&app.scene.codmNativeCentimetres&&app.actionActive&&(app.activeAction==scene::ActionRole::Fire||(app.gameplayRechamber&&app.activeAction==scene::ActionRole::Reload))){if(const auto up=findViewmodelClip(app,"ads_up"))startViewmodelAimClip(app,*up);return;}
         float fireProgress = 0.0f;
         if(action == scene::ActionRole::Fire && app.actionActive && app.activeAction == scene::ActionRole::Fire && app.actionAnimationIndex < app.scene.animations.size()){
@@ -5040,14 +5144,15 @@ const bool cadenceReady=fireClock>=app.nextFireTime||actionCancelShot;bool wants
     if(!holdThird&&app.holdingThirdWeapon)thirdRequest=app.heldThirdReturnSlot;
     app.holdingThirdWeapon=holdThird;
     if(app.experimentalThirdWeapon){
-        if(swap&&!app.previousSwap)thirdRequest=app.lastClassSlot;
+        if(swap&&!app.previousSwap)thirdRequest=app.weaponSwitchAlgorithm==4&&app.weaponSwitchStage==1?app.activeClassSlot:app.lastClassSlot;
         if(wheelSwap)thirdRequest=(std::max(0,app.weaponSwitchStage==1?app.weaponSwitchTarget:app.activeClassSlot)+(wheelDirection>0?2:1))%3;
         for(int i=0;i<3;++i)if(directKeys[i]&&!app.previousDirectSlot[i])thirdRequest=i;
     }
     for(int i=0;i<3;++i)app.previousDirectSlot[i]=directKeys[i];
     if(thirdRequest==app.activeClassSlot&&app.weaponSwitchStage==1){
-        app.weaponSwitchStage=2;app.weaponSwitchTarget=app.activeClassSlot;app.gameplayAction=scene::ActionRole::Equip;triggerGameplayAction(app);
-        if(!app.actionActive)app.weaponSwitchStage=0;
+        if(app.weaponSwitchAlgorithm==4)cancelYyV4Drop(app);
+        else {app.weaponSwitchStage=2;app.weaponSwitchTarget=app.activeClassSlot;app.gameplayAction=scene::ActionRole::Equip;triggerGameplayAction(app);
+        if(!app.actionActive)app.weaponSwitchStage=0;}
         wantsShot=false;
     }
     if(thirdRequest>=0&&thirdRequest<3&&thirdRequest!=app.activeClassSlot&&app.classSlotRigs[thirdRequest]){
@@ -6920,7 +7025,7 @@ void drawViewAndCamoControls(AppState& app){
         uiHelp("Square PNGs keep their aspect ratio. Outside the image uses its average edge color. Save the weaponfile to retain your image.");
         if(!app.weaponProfile.scopeOverlayImage.empty())ImGui::TextWrapped("%s",app.weaponProfile.scopeOverlayImage.c_str());
         if(!hasCamera)ImGui::TextDisabled("Loaded rig has no tag_camera bone.");
-        else {const float effectiveHip=std::clamp(app.viewmodelFov*app.viewmodelFovScale,1.0f,179.0f),effectiveAds=std::clamp((app.fovSystem==0?app.weaponTiming.adsFov:(weapon::isSniper(app.weaponProfile.archetype)?30.0f/app.viewmodelFovScale:app.weaponTiming.adsFov))*app.viewmodelFovScale,1.0f,179.0f);ImGui::TextDisabled("Effective hip %.1f° · ADS %.1f° (weapon %.1f°)",effectiveHip,gameplay::view::zoomFov(effectiveHip,effectiveAds,1.f,weapon::isSniper(app.weaponProfile.archetype)?app.cameraControls.zoomIntensity:1.f),app.weaponTiming.adsFov);}}
+        else {const float effectiveHip=std::clamp(app.viewmodelFov*app.viewmodelFovScale,1.0f,179.0f),effectiveAds=std::clamp(app.weaponTiming.adsFov*(weapon::isSniper(app.weaponProfile.archetype)?1.f:app.viewmodelFovScale),1.0f,179.0f);ImGui::TextDisabled("Effective hip %.1f° · ADS %.1f° (weapon %.1f°)",effectiveHip,effectiveAds,app.weaponTiming.adsFov);}}
 
     if(ImGui::CollapsingHeader("Weapon Camo",ImGuiTreeNodeFlags_DefaultOpen)){
     if(ImGui::Button("Default")){app.renderer.clearCamoTexture();app.camoPath.clear();app.status="Default weapon materials — camo-mask alpha ignored";}ImGui::SameLine();
@@ -7784,7 +7889,14 @@ ImGui::EndDisabled();
             ImGui::Checkbox("Regular projectile trail",&app.projectileTrailEnabled);ImGui::SliderFloat("Projectile speed",&app.projectileTrailSpeed,500.0f,20000.0f,"%.0f u/s");ImGui::SliderFloat("Projectile length",&app.projectileTrailLength,5.0f,150.0f,"%.1f u");ImGui::SliderFloat("Projectile width",&app.projectileTrailWidth,0.1f,6.0f,"%.2f u");
             ImGui::Checkbox("Muzzle smoke",&app.smokeTrailEnabled);ImGui::SliderFloat("Muzzle flash duration",&app.muzzleFlashDuration,0.005f,0.20f,"%.3f sec");ImGui::SliderFloat("Muzzle smoke duration",&app.smokeEmissionDuration,0.01f,2.0f,"%.2f sec");
         }
-        if(ImGui::CollapsingHeader("YY Behavior")){constexpr const char* algorithms[]={"YY v1 — classic return-to-idle","YY v2 — directional putaway reverse","Source QQ — instant swap + pullout","First-pullout QQ — always first pullout","YY v4"};if(ImGui::Combo("Weapon switching algorithm",&app.weaponSwitchAlgorithm,algorithms,static_cast<int>(std::size(algorithms)))){app.weaponSwitchStage=0;app.weaponSwitchElapsed=0;app.weaponSwitchFirstRaiseAnimation=false;app.yyReturning=app.yyTowardPutaway=app.yyReverse=false;app.yyCancelDuration=0;app.actionActive=app.actionOverlay=false;app.activeAction=scene::ActionRole::None;app.transitioning=false;resolveGameplayAnimation(app);}if(ImGui::SliderFloat("YY interpolate to idle",&app.weaponTiming.yyReturnScale,0.5f,8.0f,"%.2fx")){app.weaponProfile.stats.yyReturnScale=app.weaponTiming.yyReturnScale;app.weaponProfileDirty=true;}}
+        if(ImGui::CollapsingHeader("YY Behavior")){
+            constexpr const char* algorithms[]={"YY v1 — classic return-to-idle","YY v2 — directional putaway reverse","Source QQ — instant swap + pullout","First-pullout QQ — always first pullout","YY v4"};
+            if(ImGui::Combo("Weapon switching algorithm",&app.weaponSwitchAlgorithm,algorithms,static_cast<int>(std::size(algorithms)))){
+                app.weaponSwitchStage=0;app.weaponSwitchElapsed=0;app.weaponSwitchFirstRaiseAnimation=false;app.yyReturning=app.yyTowardPutaway=app.yyReverse=false;app.yyCancelDuration=0;app.actionActive=app.actionOverlay=false;app.activeAction=scene::ActionRole::None;app.transitioning=false;
+                app.interruptPoseDuration=0;app.yyLiveAnimation=SIZE_MAX;app.yyLiveReference.clear();resolveGameplayAnimation(app);
+            }
+            if(ImGui::SliderFloat(app.weaponSwitchAlgorithm==4?"YY blend duration":"YY interpolate to idle",&app.weaponTiming.yyReturnScale,0.5f,8.0f,"%.2fx")){app.weaponProfile.stats.yyReturnScale=app.weaponTiming.yyReturnScale;app.weaponProfileDirty=true;}
+        }
         if(ImGui::CollapsingHeader("Animation Behaviors")){ImGui::SliderFloat("Locomotion interpolation",&app.transitionDuration,0.0f,0.5f,"%.3f sec");ImGui::SliderFloat("Action-layer blend",&app.actionBlendTime,0.0f,0.15f,"%.3f sec",ImGuiSliderFlags_AlwaysClamp);}
         ImGui::EndDisabled();
         
@@ -8403,6 +8515,8 @@ std::size_t findWorldWeaponForViewWeapon(const AppState& app, const assets::Asse
     }
     const auto safeName = [&viewWeapon](std::string n) {
         n = lowerText(n);
+        if(lowerText(viewWeapon.game)=="mwr")for(const auto token:{"_vm_","_npc_"})
+            if(const auto at=n.find(token);at!=std::string::npos)n.replace(at,std::strlen(token),"_");
         if(lowerText(viewWeapon.game)=="mw3"&&n.starts_with("view_"))n.erase(0,5);
         if(lowerText(viewWeapon.game)=="iw_sp")for(const auto token:{"_vm_","_wm_"})if(const auto at=n.find(token);at!=std::string::npos)n.replace(at,4,"_");
         bool stripped = true;
@@ -8413,6 +8527,18 @@ std::size_t findWorldWeaponForViewWeapon(const AppState& app, const assets::Asse
             }
             for (const auto& s : {"_view", "_viewmodel", "_vm", "_wm", "_world", "_worldmodel", "_model", "_lod0", "_lod1", "_lod2", "_npc"}) {
                 if (n.ends_with(s)) { n = n.substr(0, n.size() - std::strlen(s)); stripped = true; break; }
+            }
+        }
+        if(lowerText(viewWeapon.game)=="mw"&&n.ends_with("_mp"))n.resize(n.size()-3);
+        if(lowerText(viewWeapon.game)=="ghosts"){
+            // Exported view/world families differ; cosmetics remain exact.
+            for(const auto& alias:std::array<std::pair<std::string_view,std::string_view>,7>{{
+                {"kriss_v","kriss"},{"lsat_iw6","lsat"},{"mk14_ebr_iw6","mk14_ebr"},
+                {"mk14_iw6","mk14"},{"rm_22_ar","rm_22"},{"magum_iw6","magnum_iw6"},
+                {"vbr_pdw","vbr"}}}){
+                if(n==alias.first||n==std::string(alias.first)+"_camo"||n==std::string(alias.first)+"_gold"){
+                    n=std::string(alias.second)+n.substr(alias.first.size());break;
+                }
             }
         }
         if(lowerText(viewWeapon.game)=="mw3"){
@@ -9363,7 +9489,7 @@ void rebuildBotActors(AppState &app) {
     const auto first = actorScene.meshes.size();
     if (bodyDocument.valid())
       scene::appendRigModel(bodyDocument, actorScene, body.name);
-    auto bodyParts=characterAssemblyParts(app,body);
+    auto bodyParts=characterAssemblyParts(app,body,true);
     if(lowerText(body.game)!="aw"){
       std::erase_if(bodyParts,[&](auto index){return assets::character::headCompatible(body.game,body.name,app.assetCatalog.entries[index].name);});
       if(const auto head=botHeadForBody(app,body))bodyParts.insert(bodyParts.begin(),*head);
@@ -9738,13 +9864,27 @@ std::optional<std::size_t> botLocomotionAnimation(const scene::CastScene& actorS
             if(it != app->botLocomotionOverrides.end()){
                 const auto target = lowerText(it->second);
                 for(std::size_t i = 0; i < actorScene.animations.size(); ++i){
-                    if((lowerText(actorScene.animations[i].name) == target || lowerText(actorScene.animations[i].sourceName) == target) && !isForbiddenLadder(i)){
+                    const auto& clip=actorScene.animations[i];
+                    const bool safeGroundOverride=!isGroundWorldMotion(query.motion)||
+                        (clip.domain==scene::AnimationDomain::PlayerBody&&clip.action==scene::ActionRole::None&&!clip.contextual&&isGroundWorldMotion(clip.motion)&&
+                         (clip.stance==query.stance||clip.stance==scene::Stance::Any)&&
+                         ((query.motion==scene::MotionRole::Idle)==(clip.motion==scene::MotionRole::Idle)));
+                    if((lowerText(clip.name) == target || lowerText(clip.sourceName) == target) && !isForbiddenLadder(i)&&safeGroundOverride){
                         return i;
                     }
                 }
             }
         }
 
+        // Weapon-specific libraries can lack a knife/dual/special movement set.
+        // Relax weapon matching, never motion/stance, before considering idle.
+        // The old final fallback selected the first mapped clip (often mantle),
+        // then held its last frame while the bot continued travelling.
+        if(isGroundWorldMotion(query.motion)){
+            if(auto movement=selectGroundWorldLocomotion(actorScene,query))return movement;
+            auto idle=query;idle.motion=scene::MotionRole::Idle;idle.direction=scene::Direction::Any;
+            return selectGroundWorldLocomotion(actorScene,idle);
+        }
         if(query.motion==scene::MotionRole::Climb){
             std::optional<std::size_t> mantle;int bestScore=-1;
             for(std::size_t i=0;i<actorScene.animations.size();++i){
@@ -9813,16 +9953,8 @@ std::optional<std::size_t> botLocomotionAnimation(const scene::CastScene& actorS
         if(exact) return exact;
         if(best) return best;
 
-        for(std::size_t i=0;i<actorScene.animations.size();++i){
-            const auto& clip=actorScene.animations[i];
-            if(clip.tracks.empty()||clip.domain!=scene::AnimationDomain::PlayerBody)continue;
-            if(!isForbiddenLadder(i)) return i;
-        }
-        for(std::size_t i=0;i<actorScene.animations.size();++i){
-            const auto& clip=actorScene.animations[i];
-            if(!clip.tracks.empty()&&!isForbiddenLadder(i)) return i;
-        }
-        return std::nullopt;
+        auto idle=query;idle.motion=scene::MotionRole::Idle;idle.direction=scene::Direction::Any;
+        return selectGroundWorldLocomotion(actorScene,idle);
     };
     auto result = compute();
     if (cacheable) g_botLocoCache.entries[key] = result;
@@ -12621,6 +12753,9 @@ bool openRecordedTake(AppState& app,const std::filesystem::path& path){
     // context only after all reconstruction, including slot prewarming.
     if(ready){prewarmTakePlayback(app);ready=ensureTakeWeaponSlot(app,app.recordedTake.samples.empty()?0:app.recordedTake.samples.front().weaponSlot);}
     app.takePreview=ready&&!app.recordedTake.samples.empty();
+    for(std::size_t slot=0;slot<app.takeMountReferences.size();++slot)
+        app.takeMountReferences[slot]=cadence::replay::MountReference::from(
+            int(slot)==app.activeClassSlot||!app.classSlotRigs[slot]?app.weaponProfile:app.classSlotRigs[slot]->profile);
     app.takePlaying=false;app.takeTime=0;
     app.takeFirstPersonView=app.recordedTake.actor.viewmodelCamera||app.scene.skeleton.boneByCanonicalName.contains("tag_camera");
     setActorInputCapture(app,false);
@@ -12922,6 +13057,13 @@ auto available=ImGui::GetContentRegionAvail();
         ImGui::EndChild();return;
     }
     std::vector<scene::Mat4> pose=takeSample?takeSample->pose:evaluateCurrentPose(app);
+    if(takeSample&&app.takeFirstPersonView&&takeSample->weaponSlot<app.takeMountReferences.size()){
+        auto& reference=app.takeMountReferences[takeSample->weaponSlot];
+        if(!reference.valid)reference=cadence::replay::MountReference::from(app.weaponProfile);
+        const auto camera=app.scene.skeleton.boneByCanonicalName.find("tag_camera");
+        if(camera!=app.scene.skeleton.boneByCanonicalName.end())
+            cadence::replay::applyMountEdit(pose,camera->second,reference,app.weaponProfile,takeSample->camera.adsBlend);
+    }
     std::vector<std::vector<scene::Mat4>> recordedBotPoses;std::vector<int> renderedBotVariants;if(takeSample){recordedBotPoses.reserve(takeSample->bots.size());for(const auto& actor:takeSample->bots)recordedBotPoses.push_back(actor.pose);for(const auto& actor:takeSample->bots)renderedBotVariants.push_back(actor.modelVariant);}else{renderedBotVariants.reserve(app.bots.size());for(const auto& bot:app.bots)renderedBotVariants.push_back(bot.modelVariant);}const auto* renderedBotPoses=takeSample?&recordedBotPoses:&app.botActorPoses;
     std::vector<render::ActorOverlayInput> overlayActors;
     auto clipFlags=[](const std::string& name){auto n=name;std::transform(n.begin(),n.end(),n.begin(),[](unsigned char c){return char(std::tolower(c));});return std::pair{n.find("jump")!=std::string::npos&&n.find("land")==std::string::npos,n.find("slide")!=std::string::npos};};
@@ -12995,7 +13137,6 @@ auto available=ImGui::GetContentRegionAvail();
         const auto clips=cadence::replay::clipRange(app.cameraNearClipCm,app.cameraFarClipMeters);
         nearPlane=clips.nearPlane;farPlane=clips.farPlane;
     }else if(app.navigationClickPlacement){nearPlane=gameplay::iw::worldUnits(2.0f);farPlane=std::max(gameplay::iw::worldUnits(12000.0f),app.navigationCameraDistance*12.0f);if(app.loadedMap&&app.loadedMap->scene.bounds.valid)farPlane=std::max(farPlane,scene::length(app.loadedMap->scene.bounds.maximum-app.loadedMap->scene.bounds.minimum)*3.0f);}
-    app.renderer.setCameraDepthRange(nearPlane,farPlane);const auto projection=scene::perspective(fovDegrees*scene::kPi/180.0f,static_cast<float>(renderWidth)/renderHeight,nearPlane,farPlane);const auto viewProjection=projection*view;
     const auto hiddenBeforeRender=app.scene.hiddenBones;
     if(takeSample){app.scene.hiddenBones.clear();for(const auto bone:takeSample->hiddenBones)if(bone<app.scene.skeleton.bones.size())app.scene.hiddenBones.insert(bone);}
     bool recordedScopeHidden{},recordedViewmodelHidden{};
@@ -13012,6 +13153,12 @@ auto available=ImGui::GetContentRegionAvail();
     const bool liveAdsWeaponHidden=!takeSample&&!app.actorThirdPerson&&!app.cameraEditMode&&(playerVisibility&take::HideViewmodel);
 
     const bool sniperScopeActive=takeSample?recordedScopeHidden:(liveAdsWeaponHidden&&weapon::isSniper(app.weaponProfile.archetype));
+    // Scope optics are a weapon property, not the amplitude of the cosmetic
+    // zoom curve. This is shared by live rendering and offline replay capture.
+    const bool scopeVisible=sniperScopeActive&&(!takeSample||app.takeFirstPersonView)&&(!app.cameraEditMode||app.takeFirstPersonView);
+    fovDegrees=gameplay::view::scopeFov(fovDegrees,app.weaponTiming.adsFov,scopeVisible);
+    app.lastRenderedCameraFov=fovDegrees;
+    app.renderer.setCameraDepthRange(nearPlane,farPlane);const auto projection=scene::perspective(fovDegrees*scene::kPi/180.0f,static_cast<float>(renderWidth)/renderHeight,nearPlane,farPlane);const auto viewProjection=projection*view;
     std::size_t temporaryScopeHide=static_cast<std::size_t>(-1);bool scopeBoneWasHidden{};if(sniperScopeActive)if(const auto gun=app.scene.skeleton.boneByCanonicalName.find("j_gun");gun!=app.scene.skeleton.boneByCanonicalName.end()){temporaryScopeHide=gun->second;scopeBoneWasHidden=app.scene.hiddenBones.contains(temporaryScopeHide);app.scene.hiddenBones.insert(temporaryScopeHide);}
     const std::vector<scene::Mat4>* renderedWorldActorPose=nullptr;if(cadence::showPlayerWorldProxy(app.takePreview,app.takeFirstPersonView,app.cameraEditMode,app.actorMode,app.actorThirdPerson,app.freeCameraActive)&&app.hiddenWorldActor&&app.worldActorGpuReady){if(takeSample&&!takeSample->worldActor.pose.empty())renderedWorldActorPose=&takeSample->worldActor.pose;else if(!takeSample){app.hiddenWorldActorPose=evaluateHiddenWorldActorPose(app);if(!app.hiddenWorldActorPose.empty())renderedWorldActorPose=&app.hiddenWorldActorPose;}}
     app.renderer.setViewmodelShadows(app.viewmodelSelfShadows,app.viewmodelShadowResolution);app.renderer.setActorDebugOverlays(app.debugWallhack,app.wallhackVisibleColor,app.wallhackOccludedColor,app.wallhackThickness,app.debugHitboxes,app.hitboxColor,app.hitboxThickness);app.renderer.setNavigationAppearance(app.navigationLinkColor,app.navigationNodeColor,app.navigationPriorityColor,app.navigationLineThickness,app.navigationInterpolation,app.navigationHandleHeight,app.navigationCircleSides,app.navigationCircleScale,app.navigationCrossLength);app.renderer.setCamoParameters(app.camoStrength,app.camoScale,app.camoAlphaLow,app.camoAlphaHigh,app.camoInvert,app.camoOffsetX,app.camoOffsetY,app.camoRotation,app.camoLumaMask,app.camoLumaMask,app.camoLumaNativeT6,app.camoLumaLow,app.camoLumaHigh,app.camoLumaGamma,app.camoLumaContrast);app.renderer.setWeaponMaterialTuning(app.weaponSpecularMultiplier,app.weaponSpecularLow,app.weaponSpecularHigh,app.weaponCubemapMultiplier,app.weaponCubemapBlur,app.weaponProfile.materials.overrideMetalness?app.weaponProfile.materials.metalness:-1.f);app.renderer.setWeaponMetalnessFromDiffuse(app.weaponProfile.materials.metalnessFromDiffuse,app.weaponProfile.materials.metalnessBlack,app.weaponProfile.materials.metalnessWhite,app.weaponProfile.materials.metalnessGamma);app.renderer.setSurfaceNormalReflectionInfluence(app.surfaceNormalReflectionInfluence);
@@ -14155,6 +14302,7 @@ void drawUi(AppState& app) {
     }
     if(liveRuntime&&app.playing&&!app.scene.animations.empty()) {
         const float delta=gameDelta;
+        advanceYyV4LiveBlend(app,delta);
         if(app.interruptPoseDuration>0)app.interruptPoseElapsed=std::min(app.interruptPoseDuration,app.interruptPoseElapsed+delta);
         for(auto& layer:app.runtimeLayers)if(layer.animation<app.scene.animations.size()){const auto& clip=app.scene.animations[layer.animation];const float authored=clip.durationFrames/std::max(1.0f,clip.framerate),target=layer.duration>0?layer.duration:authored;layer.elapsed+=delta;advanceAnimationFrame(app,layer.frame,clip,target>0?delta*authored/target:delta,false);const bool heldAim=layer.action==scene::ActionRole::Aim&&app.gameplayAds&&!app.viewmodelAdsExiting,finishingFire=layer.action==scene::ActionRole::Fire&&!layer.fadeImmediately&&layer.elapsed<target;if(!heldAim&&!finishingFire){layer.fadeElapsed+=delta;const float initialWeight=layer.startWeight>=0?layer.startWeight:(layer.action==scene::ActionRole::Fire?0.35f:1.0f);layer.weight=initialWeight*std::clamp(1.0f-layer.fadeElapsed/std::max(0.001f,layer.fadeDuration),0.0f,1.0f);}}
         app.runtimeLayers.erase(std::remove_if(app.runtimeLayers.begin(),app.runtimeLayers.end(),[](const auto& layer){return layer.weight<=0.0f;}),app.runtimeLayers.end());

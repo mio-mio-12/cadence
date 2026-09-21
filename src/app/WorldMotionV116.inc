@@ -7,12 +7,21 @@ float worldMovementFacing(float viewYaw,scene::Vec3 travel,scene::Direction auth
     if(travel.x*travel.x+travel.y*travel.y<=1.f)return viewYaw;
     const float clipAngle=authored==scene::Direction::Left?scene::kPi*.5f:
         authored==scene::Direction::Right?-scene::kPi*.5f:
-        authored==scene::Direction::Backward?scene::kPi:0.f;
+        authored==scene::Direction::Backward?scene::kPi:
+        authored==scene::Direction::ForwardLeft?scene::kPi*.25f:
+        authored==scene::Direction::ForwardRight?-scene::kPi*.25f:
+        authored==scene::Direction::BackwardLeft?scene::kPi*.75f:
+        authored==scene::Direction::BackwardRight?-scene::kPi*.75f:0.f;
     // Cardinal clip selection loses diagonal travel. Preserve the continuous
     // residual angle, even when the selected clip matches the cardinal query.
-    return std::atan2(travel.y,travel.x)-clipAngle;
+    const float offset=std::remainder(std::atan2(travel.y,travel.x)-clipAngle-viewYaw,2.f*scene::kPi);
+    // A missing backpedal clip must not turn the actor away from its aim.
+    // Retain diagonal adjustment, but never correct a wrong clip by 180 degrees.
+    return viewYaw+(std::abs(offset)<=scene::kPi*.5f+.001f?offset:0.f);
 }
 scene::Direction worldClipDirection(const scene::Animation& clip){
+    if(clip.direction==scene::Direction::ForwardLeft||clip.direction==scene::Direction::ForwardRight||
+       clip.direction==scene::Direction::BackwardLeft||clip.direction==scene::Direction::BackwardRight)return clip.direction;
     auto name=lowerText(clip.sourceName);
     if(name.ends_with(".cast"))name.resize(name.size()-5);
     for(const auto& [token,direction]:std::initializer_list<std::pair<const char*,scene::Direction>>{
@@ -25,6 +34,45 @@ scene::Direction worldClipDirection(const scene::Animation& clip){
         if(name.ends_with(key)||name.find(key+"_")!=std::string::npos)return direction;
     }
     return clip.direction;
+}
+
+bool isGroundWorldMotion(scene::MotionRole motion){
+    using M=scene::MotionRole;
+    return motion==M::Idle||motion==M::Walk||motion==M::Run||motion==M::Sprint||motion==M::Crawl;
+}
+
+// Stance and locomotion are requirements, not small score bonuses that an
+// exact weapon name can outweigh. Upper-body actions are layered separately.
+std::optional<std::size_t> selectGroundWorldLocomotion(const scene::CastScene& actor,const scene::AnimationQuery& q){
+    using M=scene::MotionRole;using W=scene::WeaponClass;
+    const auto longGun=[](W w){return w==W::Rifle||w==W::Sniper||w==W::Automatic||w==W::LMG||w==W::Shotgun||w==W::M1216||w==W::Judge||w==W::G11||w==W::Crossbow;};
+    std::optional<std::size_t> best;int bestScore=-100000;
+    for(std::size_t i=0;i<actor.animations.size();++i){
+        const auto& c=actor.animations[i];
+        if(c.tracks.empty()||c.domain!=scene::AnimationDomain::PlayerBody||c.action!=scene::ActionRole::None||c.contextual||!isGroundWorldMotion(c.motion))continue;
+        if(c.stance!=q.stance&&c.stance!=scene::Stance::Any)continue;
+        if((q.motion==M::Idle)!=(c.motion==M::Idle))continue;
+        if(q.stance!=scene::Stance::Prone&&c.motion==M::Crawl)continue;
+        const auto name=lowerText(c.sourceName);
+        if(c.weapon!=q.weapon&&(c.weapon==W::Launcher||c.weapon==W::Grenade||c.weapon==W::RiotShield||c.weapon==W::Equipment||c.weapon==W::Tablet||c.weapon==W::Radio||c.weapon==W::Briefcase))continue;
+        if(name.find("_hold")!=std::string::npos||name.find("unarmed")!=std::string::npos||name.find("_in.")!=std::string::npos||name.find("_out.")!=std::string::npos)continue;
+        const auto d=worldClipDirection(c);
+        int score=c.stance==q.stance?20000:0;
+        if(q.direction!=scene::Direction::Any)score+=d==q.direction?10000:d==scene::Direction::Any?0:-10000;
+        score+=c.motion==q.motion?2000:0;
+        score+=c.ads==q.ads?200:0;
+        score+=c.weapon==q.weapon?5500:c.weapon==W::Any?3500:0;
+        if(longGun(q.weapon)&&longGun(c.weapon))score+=4000;
+        // With no known family, prefer an ordinary single long-gun carry to
+        // whichever exotic/dual-handgun clip happens to sort first.
+        if(q.weapon==W::Any&&c.weapon==W::Rifle)score+=4000;
+        const auto game=lowerText(c.sourceGame);
+        score+=game==lowerText(q.preferredGame)?100:0;
+        if(q.forceT6Locomotion&&(game=="bo2"||game=="bo2_sp"||game=="bo2+bo2_sp"||game=="t6"))score+=4000;
+        score+=c.looping?20:0;
+        if(score>bestScore){best=i;bestScore=score;}
+    }
+    return best;
 }
 
 std::optional<std::size_t> selectWorldMantle(const scene::CastScene& actor,float heightIw,bool over,scene::Direction direction,const std::string& game,scene::WeaponClass weapon){

@@ -1,8 +1,31 @@
 #pragma once
 #include "take/Take.h"
+#include "weapon/WeaponProfile.h"
 #include <cmath>
 
 namespace cadence::replay {
+// Session-only reference: takes already contain the original mount in their
+// poses. A loaded take starts unchanged even if its historical profile is gone.
+struct MountReference {
+    scene::Vec3 hip{},ads{};
+    bool separate{},valid{};
+    static MountReference from(const weapon::Profile& p){return {p.gunPosition,p.adsGunPosition,p.separateAdsPosition,true};}
+    scene::Vec3 at(float blend) const {
+        const float t=std::clamp(blend,0.f,1.f);
+        return separate?scene::lerp(hip,ads,t*t*(3.f-2.f*t)):hip;
+    }
+};
+inline void applyMountEdit(std::vector<scene::Mat4>& pose,std::size_t cameraBone,
+                           const MountReference& reference,const weapon::Profile& current,float ads){
+    if(!reference.valid||cameraBone>=pose.size())return;
+    const auto delta=weapon::gunPositionAt(current,ads)-reference.at(ads);
+    if(scene::length(delta)<.000001f)return;
+    const auto camera=pose[cameraBone];
+    const auto worldDelta=scene::normalize(scene::Vec3{camera.v[0],camera.v[1],camera.v[2]})*delta.x+
+        scene::normalize(scene::Vec3{camera.v[4],camera.v[5],camera.v[6]})*delta.y+
+        scene::normalize(scene::Vec3{camera.v[8],camera.v[9],camera.v[10]})*delta.z;
+    for(std::size_t i=0;i<pose.size();++i)if(i!=cameraBone){pose[i].v[12]+=worldDelta.x;pose[i].v[13]+=worldDelta.y;pose[i].v[14]+=worldDelta.z;}
+}
 inline bool pauseForInactiveWindow(bool focused,bool minimized,bool captureActive){
     return (!focused||minimized)&&!captureActive;
 }

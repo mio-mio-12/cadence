@@ -5,6 +5,8 @@
 #include <GLFW/glfw3.h>
 #include <iostream>
 #include <cstdlib>
+#include <chrono>
+#include <fstream>
 #define CHECK(x) do{if(!(x)){std::cerr<<"FAIL "<<__LINE__<<" "<<#x<<"\n";std::exit(1);}}while(false)
 int main(int argc,char** argv){
     CHECK(argc>1);const std::filesystem::path out=argv[1];std::filesystem::create_directories(out);
@@ -46,14 +48,30 @@ int main(int argc,char** argv){
         const auto vp=scene::perspective(55*scene::kPi/180,640.f/360,1.f,2000.f)*scene::lookAt(camera,{0,60,65},{0,0,1});
         render::ActorOverlaySettings settings;settings.transparentWorld=frame%2;renderer.setActorOverlays(settings,frame/30.,{}, {},true);
         for(const bool enabled:{false,true}){
-            renderer.setPoseUploadCacheEnabled(enabled);renderer.setSortPreparationEnabled(enabled);
+            const bool useOptimization=enabled&&!(argc>2&&std::string(argv[2])=="uncached-control");
+            renderer.setPoseUploadCacheEnabled(useOptimization);renderer.setSortPreparationEnabled(useOptimization);
             renderer.render(rig,pose,vp,640,360,false,false,false,&rig,&bots,&variants,&rig,&pose,true,&map);
             CHECK(renderer.readColorRgba(enabled?optimized:baseline,error));
             if(enabled&&frame==2)CHECK(renderer.saveColorPng(out/"five_actor_visibility_transparency.png",error));
         }
+        if(baseline!=optimized){std::size_t changed=0;int maximum=0;for(std::size_t i=0;i<std::min(baseline.size(),optimized.size());++i)if(baseline[i]!=optimized[i]){++changed;maximum=std::max(maximum,std::abs(int(baseline[i])-int(optimized[i])));}std::ofstream failure(out/"render-mismatch.txt");failure<<"frame="<<frame<<" changed_channels="<<changed<<" maximum_byte_delta="<<maximum<<std::endl;}
         CHECK(baseline==optimized);++compared;
     }
     CHECK(renderer.renderStats(false).poseUploads>0);
     std::cout<<"PASS "<<compared<<" byte-identical rendered comparisons: five BO2 actors, shadows, transparent/additive surfaces, backward seeks, hide/show, scene replacement\n";
+    if(argc>2&&std::string(argv[2])=="postfx"){
+        std::ofstream timings(out/"postfx-timings.txt");
+        rig.hiddenBones.clear();auto pose=rig.samplePose(0,10.f);renderer.setActorOverlays({},0,{}, {},false);
+        const scene::Vec3 eye{260,-350,190};renderer.setCameraPosition(eye);
+        const auto vp=scene::perspective(55*scene::kPi/180,1280.f/720,1.f,2000.f)*scene::lookAt(eye,{0,60,65},{0,0,1});
+        for(int mode=0;mode<4;++mode){render::DepthOfFieldSettings settings;settings.enabled=mode>0;settings.downsample=mode==3?1:2;settings.nearRadius=mode==1?0:8;settings.farRadius=mode==1?0:12;renderer.setDepthOfField(settings);
+            const auto draw=[&]{renderer.render(rig,pose,vp,1280,720,false,false,false,&rig,&bots,&variants,&rig,&pose,true,&map);};
+            for(int i=0;i<10;++i)draw();glFinish();const auto begin=std::chrono::steady_clock::now();
+            for(int i=0;i<60;++i)draw();glFinish();
+            const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count()/60;
+            timings<<"mode="<<mode<<" average_completed_frame_ms="<<ms<<" delayed_gpu_ms="<<renderer.gpuFrameMilliseconds()<<std::endl;
+            CHECK(renderer.saveColorPng(out/("postfx_"+std::to_string(mode)+".png"),error));
+        }
+    }
     renderer.shutdown();glfwDestroyWindow(window);glfwTerminate();
 }
