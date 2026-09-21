@@ -9,6 +9,20 @@ int main() {
     auto state = std::make_unique<AppState>();
     auto& app = *state;
     {
+        auto isolated=std::make_unique<AppState>();auto& a=*isolated;
+        a.assetFirstPerson=true;
+        for(bool exiting:{false,true})for(bool overlay:{false,true})for(auto action:{scene::ActionRole::Reload,scene::ActionRole::Fire}){
+            a.actionActive=true;a.activeAction=action;a.actionOverlay=overlay;
+            a.gameplayRechamber=false;a.viewmodelAdsEngaged=true;a.viewmodelAdsExiting=exiting;
+            a.animationIndex=3;a.actionAnimationIndex=4;a.animationFrame=7;a.actionFrame=8;
+            a.actionElapsed=.25f;a.actionDurationOverride=2.5f;
+            releaseViewmodelAim(a);
+            CHECK(a.actionActive&&a.activeAction==action&&a.actionOverlay==overlay);
+            CHECK(a.animationIndex==3&&a.actionAnimationIndex==4&&a.animationFrame==7&&a.actionFrame==8);
+            CHECK(a.actionElapsed==.25f&&a.actionDurationOverride==2.5f);
+        }
+    }
+    {
         scene::CastScene fixture;fixture.skeleton.bones.emplace_back();
         int stage=0;
         for(const auto suffix:{"reload_intro.cast","reload_loop.cast","reload_out.cast"}){
@@ -157,10 +171,17 @@ int main() {
     const auto goldWorld=add("mw","weapon_desert_eagle_gold_LOD0",assets::Role::WorldWeapon);
     CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[gold])==goldWorld);
     const auto wet=add("mwr","wpn_h1_pst_m9_vm_wet_camo_LOD0",assets::Role::ViewWeapon);
+    const auto legacyAk=add("mwr","viewmodel_ak47_LOD0",assets::Role::ViewWeapon);
+    CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[legacyAk])==std::size_t(-1));
     add("mwr","wpn_h1_pst_m9_npc_camo_LOD0",assets::Role::WorldWeapon);
     CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[wet])==std::size_t(-1));
     const auto wetWorld=add("mwr","wpn_h1_pst_m9_npc_wet_camo_LOD0",assets::Role::WorldWeapon);
     CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[wet])==wetWorld);
+    for(const auto name:{"concussion","flash","frag","smoke"}){
+        const auto view=add("mwr",std::string("wpn_h1_grenade_")+name+"_vm_LOD0",assets::Role::ViewWeapon);
+        const auto world=add("mwr",std::string("wpn_h1_grenade_")+name+(std::string(name)=="flash"?"_mp_npc_LOD0":"_npc_mp_LOD0"),assets::Role::WorldWeapon);
+        CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[view])==world);
+    }
     std::cout << "Team assembly, character matching, safe locomotion and scoped world names passed\n";
     for(const auto& names:std::vector<std::pair<std::string,std::string>>{{"kriss","kriss_v"},{"lsat","lsat_iw6"},{"mk14_ebr","mk14_ebr_iw6"},{"mk14","mk14_iw6"},{"rm_22_ar","rm_22"},{"magum_iw6","magnum_iw6"},{"vbr_pdw","vbr"}}){
         app.assetCatalog.entries.clear();

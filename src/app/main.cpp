@@ -4304,6 +4304,29 @@ void stopGameplayAction(AppState& app){
     resolveGameplayAnimation(app);
 }
 
+void releaseViewmodelAim(AppState& app){
+    // ADS release must not cancel an independently running shot or reload.
+    // Reload itself suppresses ADS; the resulting release edge arrives one
+    // input tick later and used to discard the reload as though it were Aim.
+    const bool preserve=isViewmodelRig(app)&&app.actionActive&&
+        (app.activeAction==scene::ActionRole::Fire||app.activeAction==scene::ActionRole::Reload);
+    if(preserve){
+        if(app.viewmodelAdsExiting)return;
+        const auto action=app.activeAction;
+        const auto base=app.animationIndex,index=app.actionAnimationIndex;
+        const auto frame=app.animationFrame,actionFrame=app.actionFrame,elapsed=app.actionElapsed,duration=app.actionDurationOverride;
+        const bool overlay=app.actionOverlay;
+        if(const auto down=pairedAdsDown(app))startViewmodelAimClip(app,*down);
+        else {app.viewmodelAdsEngaged=app.viewmodelAdsPoseHold=false;app.viewmodelAdsBaseAnimation=SIZE_MAX;}
+        app.actionActive=true;app.activeAction=action;app.actionOverlay=overlay;
+        app.animationIndex=base;app.animationFrame=frame;app.actionAnimationIndex=index;
+        app.actionFrame=actionFrame;app.actionElapsed=elapsed;app.actionDurationOverride=duration;
+        return;
+    }
+    if(app.activeAction!=scene::ActionRole::Aim){app.actionActive=false;app.actionOverlay=false;app.activeAction=scene::ActionRole::None;}
+    stopGameplayAction(app);
+}
+
 // COD4-style YY: returning the requested slot to the held weapon during drop
 // cancels the switch timer immediately. The pose blend is presentation only.
 void cancelYyV4Drop(AppState& app){
@@ -5252,8 +5275,7 @@ else if(canCombat&&reload&&!app.previousReload){app.gameplayReloadEmpty=false;ap
     else if(canCombat&&grenade&&!app.previousGrenade)trigger(scene::ActionRole::GrenadePrep);
     else if(canCombat&&!grenade&&app.previousGrenade){if(app.actionActive&&app.activeAction==scene::ActionRole::GrenadePrep)stopGameplayAction(app);trigger(scene::ActionRole::Throw);}
     else if(canCombat&&!cs2Weapon&&app.scene.pointBlankWeaponStem.empty()&&ads&&(!app.viewmodelAdsEngaged||app.viewmodelAdsExiting))trigger(scene::ActionRole::Aim);
-    else if(!cs2Weapon&&app.scene.pointBlankWeaponStem.empty()&&!ads&&app.previousAds&&(app.viewmodelAdsEngaged||(app.actionActive&&app.activeAction==scene::ActionRole::Aim))){const bool preserveCombatAction=isViewmodelRig(app)&&(app.activeAction==scene::ActionRole::Fire||(app.activeAction==scene::ActionRole::Reload&&app.gameplayRechamber));if(preserveCombatAction){const auto preservedAction=app.activeAction;const auto preservedIndex=app.actionAnimationIndex;const bool preservedOverlay=app.actionOverlay;const float preservedFrame=app.actionFrame,preservedElapsed=app.actionElapsed,preservedDuration=app.actionDurationOverride;if(const auto down=pairedAdsDown(app)){startViewmodelAimClip(app,*down);app.actionActive=true;app.actionOverlay=preservedOverlay;app.activeAction=preservedAction;app.actionAnimationIndex=preservedIndex;app.actionFrame=preservedFrame;app.actionElapsed=preservedElapsed;app.actionDurationOverride=preservedDuration;app.gameplayStatus=preservedAction==scene::ActionRole::Reload?"ADS down layered over rechamber":"ADS down layered over fire";}}
-        else {if(app.activeAction!=scene::ActionRole::Aim){app.actionActive=false;app.actionOverlay=false;app.activeAction=scene::ActionRole::None;}stopGameplayAction(app);}}
+    else if(!cs2Weapon&&app.scene.pointBlankWeaponStem.empty()&&!ads&&app.previousAds&&(app.viewmodelAdsEngaged||(app.actionActive&&app.activeAction==scene::ActionRole::Aim)))releaseViewmodelAim(app);
     else if(app.scene.dualWield&&!hardFireBlock&&app.weaponSwitchStage==0){
         for(int hand=0;hand<2;++hand){const bool held=hand?rawAds:fire,pressed=held&&!(hand?app.previousDualLeft:app.previousFire);auto& ready=hand?app.dualLeftNextFireTime:app.nextFireTime;
             if(pressed&&app.weaponTiming.burstCount>1&&app.dualBurstRemaining[hand]==0&&fireClock>=ready)app.dualBurstRemaining[hand]=app.weaponTiming.burstCount;
@@ -8529,7 +8551,7 @@ std::size_t findWorldWeaponForViewWeapon(const AppState& app, const assets::Asse
                 if (n.ends_with(s)) { n = n.substr(0, n.size() - std::strlen(s)); stripped = true; break; }
             }
         }
-        if(lowerText(viewWeapon.game)=="mw"&&n.ends_with("_mp"))n.resize(n.size()-3);
+        if((lowerText(viewWeapon.game)=="mw"||lowerText(viewWeapon.game)=="mwr")&&n.ends_with("_mp"))n.resize(n.size()-3);
         if(lowerText(viewWeapon.game)=="ghosts"){
             // Exported view/world families differ; cosmetics remain exact.
             for(const auto& alias:std::array<std::pair<std::string_view,std::string_view>,7>{{

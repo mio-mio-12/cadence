@@ -41,6 +41,24 @@ int main(int argc,char**argv){
      if(camera!=app.scene.skeleton.boneByCanonicalName.end()){const auto& c=pose[camera->second];scene::Vec3 eye{c.v[12],c.v[13],c.v[14]},forward{c.v[0],c.v[1],c.v[2]},up{c.v[8],c.v[9],c.v[10]};app.renderer.setCameraPosition(eye);app.renderer.setDebugView(1);app.renderer.render(app.scene,pose,scene::perspective(65*scene::kPi/180,960.f/720,.1f,2000)*scene::lookAtDirection(eye,forward,up),960,720,false,false,false);app.renderer.saveColorPng(out/(asset.name+"_"+action+".png"),error);}
     }
    }
+   if(game=="mwr"&&findViewmodelClip(app,"idle")&&findViewmodelClip(app,"fire")&&findViewmodelClip(app,"ads_up")&&findViewmodelClip(app,"reload")){
+    for(bool empty:{false,true}){
+     app.gameplayLogic=true;app.assetFirstPerson=true;app.actionActive=app.actionOverlay=false;
+     app.viewmodelAdsEngaged=app.viewmodelAdsExiting=false;app.animationIndex=*findViewmodelClip(app,"idle");
+     app.gameplayAds=true;app.gameplayAction=scene::ActionRole::Aim;triggerGameplayAction(app);
+     app.gameplayAction=scene::ActionRole::Fire;triggerGameplayAction(app);
+     app.gameplayReloadEmpty=empty;app.gameplayRechamber=false;app.gameplayAction=scene::ActionRole::Reload;triggerGameplayAction(app);
+     const auto reload=app.actionOverlay?app.actionAnimationIndex:app.animationIndex;
+     const float duration=app.actionDurationOverride>0?app.actionDurationOverride:app.scene.animations[reload].durationFrames/std::max(1.f,app.scene.animations[reload].framerate);
+     app.gameplayAds=false;releaseViewmodelAim(app);
+     updateGameplay(app,1.f/120);const auto elapsed=app.actionElapsed;releaseViewmodelAim(app);
+     check(app.actionActive&&app.activeAction==scene::ActionRole::Reload&&app.actionElapsed==elapsed&&(app.actionOverlay?app.actionAnimationIndex:app.animationIndex)==reload,asset.name+" ADS release preserves "+(empty?"empty reload":"reload"));
+     updateGameplay(app,duration*.4f);
+     check(app.actionActive&&app.activeAction==scene::ActionRole::Reload,asset.name+" reload survives past ADS-out");
+     updateGameplay(app,duration);
+     check(!app.actionActive,asset.name+" reload completes normally");
+    }
+   }
    log.flush();
   }
   return failures?1:0;
