@@ -7,6 +7,11 @@
 std::string lowerText(std::string text){for(auto& c:text)c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));return text;}
 #include "../src/app/WorldMotionV116.inc"
 int main(){
+    assert(std::abs(worldMovementFacing(0,{100,100,0},scene::Direction::Forward)-scene::kPi*.25f)<.0001f);
+    assert(std::abs(worldMovementFacing(0,{100,-100,0},scene::Direction::Forward)+scene::kPi*.25f)<.0001f);
+    assert(std::abs(worldMovementFacing(0,{0,-100,0},scene::Direction::Right))<.0001f);
+    assert(std::abs(worldMovementFacing(0,{-100,0,0},scene::Direction::Backward))<.0001f);
+    assert(worldMovementFacing(.7f,{0,0,0},scene::Direction::Forward)==.7f);
     const auto facing=smoothWorldFacingOffset(0,scene::kPi*.5f,1.f/60);
     assert(facing>0&&facing<scene::kPi*.5f);
     assert(smoothWorldFacingOffset(.3f,1.f,0)==.3f);
@@ -29,6 +34,8 @@ int main(){
     add("mp_slide_akimbo.cast",scene::MotionRole::Slide);
     add("mp_slide.cast",scene::MotionRole::Slide);
     assert(selectDirectionalWorldClip(actor,scene::MotionRole::Slide,scene::Direction::Forward,"ghosts",scene::WeaponClass::Rifle)==6);
+    add("pb_slide_jugmaniac_2crouch.cast",scene::MotionRole::Slide);actor.animations.back().sourceGame="aw";
+    assert(selectDirectionalWorldClip(actor,scene::MotionRole::Slide,scene::Direction::Forward,"aw",scene::WeaponClass::Rifle)==6);
     scene::CastScene empty;add("pb_ladder_climb.cast",scene::MotionRole::Climb);
     assert(!selectWorldMantle(empty,32,true,scene::Direction::Forward,"ghosts",scene::WeaponClass::Any));
     actor.animations.clear();

@@ -1315,7 +1315,7 @@ bool StageRenderer::appendSceneMeshes(const scene::CastScene& scene,std::string&
     };
     for(std::size_t i=std::min(firstSourceMesh,scene.meshes.size());i<scene.meshes.size();++i){
         const auto& source=scene.meshes[i];if(source.vertices.empty()||source.indices.empty())continue;
-        const bool opaque=(source.ignoreAlbedoAlpha||source.viewmodelWeapon||source.camoBlend)&&!source.forceAlpha&&!source.decal&&!source.alphaTest;
+        const bool opaque=(source.ignoreAlbedoAlpha||source.viewmodelWeapon||source.camoBlend)&&!source.forceAlpha&&!source.decal&&!source.alphaTest&&!(source.camoBlend&&source.camoUseAlpha);
         queueTexture(source.albedoPath,opaque,source.materialPolicyExplicit);
         for(const auto* path:{&source.normalPath,&source.specularPath,&source.metalnessPath,&source.roughnessPath})queueTexture(*path,false,false);
         queueTexture(source.emissivePath,false,source.materialPolicyExplicit);
@@ -1369,7 +1369,7 @@ bool StageRenderer::appendSceneMeshes(const scene::CastScene& scene,std::string&
         if(!isMapScene)mesh.cullBounds=visibility::MeshBounds::build(source,scene.skeleton.bones.size());
         else mesh.cullBounds.local={mesh.aabbMin,mesh.aabbMax,mesh.hasBounds};
         if(!source.albedoPath.empty()){
-            const bool opaqueAlbedo=(source.ignoreAlbedoAlpha||source.viewmodelWeapon||source.camoBlend)&&!source.forceAlpha&&!source.decal&&!source.alphaTest;
+            const bool opaqueAlbedo=(source.ignoreAlbedoAlpha||source.viewmodelWeapon||source.camoBlend)&&!source.forceAlpha&&!source.decal&&!source.alphaTest&&!(source.camoBlend&&source.camoUseAlpha);
             const auto key=source.albedoPath.lexically_normal().wstring()+(opaqueAlbedo?L"|opaque":L"")+(source.materialPolicyExplicit?L"|srgb":L"")+(compress?L"|compressed":L"")+L"|"+std::to_wstring(maxTexDim);
             const auto cached=sceneTextureCache_.find(key);
             if(cached!=sceneTextureCache_.end())mesh.texture=cached->second;
@@ -1476,6 +1476,20 @@ bool StageRenderer::appendSceneMeshes(const scene::CastScene& scene,std::string&
 
 bool StageRenderer::loadScene(const scene::CastScene& scene,std::string& error) {
     clearScene();if(!appendSceneMeshes(scene,error))return false;mainMeshCount_=meshes_.size();classMainFirst_[0]=0;classMainCount_[0]=mainMeshCount_;return true;
+}
+bool StageRenderer::loadPreviewScene(const scene::CastScene& scene,std::string& error){
+    // Clothing changes retain textures shared with the previous assembly, not
+    // the entire browsing history. This renderer is separate from gameplay.
+    auto textures=std::move(textures_);textures_.clear();
+    auto cache=std::move(sceneTextureCache_);sceneTextureCache_.clear();
+    clearScene();textures_=std::move(textures);sceneTextureCache_=std::move(cache);
+    if(!appendSceneMeshes(scene,error,0,false)){clearScene();return false;}
+    mainMeshCount_=meshes_.size();classMainFirst_[0]=0;classMainCount_[0]=mainMeshCount_;
+    std::unordered_set<unsigned> used;
+    for(const auto& mesh:meshes_)for(auto id:{mesh.texture,mesh.normalTexture,mesh.specularTexture,mesh.metalnessTexture,mesh.roughnessTexture,mesh.emissiveTexture})if(id)used.insert(id);
+    std::erase_if(sceneTextureCache_,[&](const auto& item){return !used.contains(item.second);});
+    std::erase_if(textures_,[&](unsigned id){if(used.contains(id))return false;textureHasUsefulAlpha_.erase(id);glDeleteTextures(1,&id);return true;});
+    return true;
 }
 
 bool StageRenderer::replaceMainScene(const scene::CastScene& scene, const scene::CastScene* worldActorScene, const scene::CastScene* botActorScene, std::string& error) {

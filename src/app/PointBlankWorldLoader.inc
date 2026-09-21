@@ -69,8 +69,12 @@ void configureLegacyWeaponOnPointBlank(AppState& app,scene::CastScene& actor,siz
 }
 bool appendPointBlankWorldAnimation(AppState& app,const cast::Document& document,scene::CastScene& target,const std::string& game,const std::string& targetGame={}){
     const bool native=lowerText(game)=="pointblank",pbTarget=scene::pointblank::body(target.skeleton)||scene::codm::worldBody(target.skeleton);
-    const bool ghostsCross=lowerText(targetGame)=="ghosts"&&lowerText(game)!="ghosts"&&lowerText(game)!="cs2";
-    if(!native&&!pbTarget&&!ghostsCross)return false;
+    const auto family=[](std::string value){value=lowerText(value);return value=="bo2_sp"||value=="bo2+bo2_sp"?std::string("bo2"):value;};
+    // Matching names do not imply matching local bind frames. In particular,
+    // Ghosts mantles/slides twist AW bodies when appended as raw local tracks.
+    if(lowerText(game)=="cs2"||lowerText(targetGame)=="cs2")return false;
+    const bool foreign=!targetGame.empty()&&family(targetGame)!=family(game);
+    if(!native&&!pbTarget&&!foreign)return false;
     const auto filename=lowerText(std::filesystem::path(document.sourceName()).filename().string());
     // UI ceremony/preview poses are not combat locomotion.
     if(native&&filename.find("_ui_")!=std::string::npos)return true;
@@ -81,7 +85,7 @@ bool appendPointBlankWorldAnimation(AppState& app,const cast::Document& document
             static std::map<std::filesystem::path,scene::Skeleton> references;auto it=references.find(asset.path);if(it==references.end()){auto doc=cast::Document::load(asset.path);if(doc.valid())it=references.emplace(asset.path,scene::buildScene(doc,false).skeleton).first;}
             if(it!=references.end())skeleton=it->second;break;
         }
-    }else {static std::map<std::string,scene::Skeleton> references;auto it=references.find(game);if(it==references.end())if(auto found=playerSkeletonForGame(app,game))it=references.emplace(game,*found).first;if(it!=references.end())skeleton=it->second;}
+    }else skeleton=pointBlankDonor(app,family(game));
     if(!skeleton){target.warnings.push_back("Missing native world reference for "+game+": "+filename);return true;}
     auto source=std::make_shared<scene::CastScene>();source->skeleton=*skeleton;source->pointBlankNativeCentimetres=native;
     scene::appendAnimations(document,*source);if(source->animations.empty())return true;

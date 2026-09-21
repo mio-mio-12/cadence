@@ -21,6 +21,12 @@ inline std::string pointBlankFaction(std::string_view text){
  return {};
 }
 enum class Part { None, Torso, Head, Headgear, Eyewear, Gloves, Pants, Kneepads, Shinguards, Boots, Loadout, Exo };
+inline std::string displayName(std::string name){
+ for(const auto suffix:{"_LOD0","_lod0"})if(name.ends_with(suffix))name.resize(name.size()-5);
+ for(const auto prefix:{"head_mp_head_","mp_headgear_","mp_shinguard_","mp_kneepad_","mp_loadouts_","mp_eyewear_","mp_gloves_","mp_glove_","mp_pants_","mp_boot_","mp_head_","mp_body_","mp_top_","mp_exo_"})
+  if(name.starts_with(prefix)){name.erase(0,std::string_view(prefix).size());break;}
+ std::replace(name.begin(),name.end(),'_',' ');return name;
+}
 inline std::string lower(std::string_view text){std::string s(text);std::transform(s.begin(),s.end(),s.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});return s;}
 inline Part awPart(std::string_view text){
  const auto n=lower(text);

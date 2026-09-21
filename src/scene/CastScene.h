@@ -271,6 +271,7 @@ struct CastScene {
     bool codmNativeCameraCalibrated{};
     std::vector<std::pair<std::size_t,std::size_t>> nativePoseFollowers;
     std::shared_ptr<const CodmRigAdapter> codmRigAdapter;
+    std::string viewHandsDriverGame; // COD-native animation driver with a fitted replacement hand skin.
 
     [[nodiscard]] std::vector<Transform> sampleLocalPose(std::size_t animationIndex, float frame) const;
     void sampleLocalPoseInto(std::size_t animationIndex,float frame,std::vector<Transform>& output) const;

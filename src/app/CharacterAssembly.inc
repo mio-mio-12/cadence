@@ -15,7 +15,7 @@ std::vector<std::size_t> characterAssemblyParts(const AppState& app,const assets
         result.push_back(index);
     };
     if(lowerText(body.game)!="aw"){
-        add(findGenericHeadForPlayermodel(app,body.game,body));
+        if(setup.headAsset!=static_cast<std::size_t>(-2))add(findGenericHeadForPlayermodel(app,body.game,body));
         for(auto index:{setup.helmetAsset,setup.eyewearAsset,setup.glovesAsset,setup.pantsAsset,setup.kneepadAsset,setup.bootsAsset,setup.exoAsset,setup.loadoutAsset,setup.shinguardAsset})add(index);
         for(auto index:setup.customModularParts)if(index<app.assetCatalog.entries.size()){
             const auto& a=app.assetCatalog.entries[index];
@@ -27,6 +27,7 @@ std::vector<std::size_t> characterAssemblyParts(const AppState& app,const assets
     if(assets::character::awPart(body.name)!=Part::Torso)return result;
     std::string headName,pantsName;
     const auto choose=[&](Part type,std::size_t explicitIndex,const char* preferred){
+        if(explicitIndex==static_cast<std::size_t>(-2))return absent;
         const auto compatible=[&](const assets::Asset& a){return a.game==body.game&&assets::character::awPart(a.name)==type&&assets::character::genderCompatible(body.name,a.name);};
         if(explicitIndex<app.assetCatalog.entries.size()&&compatible(app.assetCatalog.entries[explicitIndex]))return explicitIndex;
         std::size_t best=absent;int bestScore=-1;

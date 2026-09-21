@@ -17,6 +17,7 @@ void prepareBenchmarkWorld(AppState& state,const AppState& owner,const std::stri
         if(partDoc.valid()){scene::appendRigModel(partDoc,state.scene,part.name);state.loadedRigModelPaths.push_back(part.path);}
     };
     for(auto part:characterAssemblyParts(owner,body))appendPart(part);
+    if(body.game=="aw")scene::refreshCharacterBounds(state.scene);
     // Embedded clips from the body/parts are not the requested animation source.
     state.scene.animations.clear();state.scene.runtimePoseAdapters.clear();
     std::unordered_set<std::string> loaded;

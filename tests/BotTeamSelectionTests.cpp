@@ -77,10 +77,35 @@ int main() {
         CHECK(characterAssemblyParts(app, asset) == parts);
         app.botTeamSide = 3;
     }
+    app.gameReferenceSetups["aw"].helmetAsset=static_cast<std::size_t>(-2);
+    const auto noHelmet=characterAssemblyParts(app,app.assetCatalog.entries[awBody]);
+    CHECK(noHelmet.size()==7);
+    for(auto i:noHelmet)CHECK(assets::character::awPart(app.assetCatalog.entries[i].name)!=assets::character::Part::Headgear);
+    app.gameReferenceSetups["aw"].helmetAsset=static_cast<std::size_t>(-1);
+    CHECK(characterAssemblyParts(app,app.assetCatalog.entries[awBody]).size()==8);
+    CHECK(assets::character::displayName("mp_headgear_01a_cormack_LOD0")=="01a cormack");
     // Complete PB bodies need no arbitrary head attached, including unknown teams.
     const auto pb = add("pointblank", "playermode_bella_fb", assets::Role::PlayerModel);
     app.botGame = "pointblank";
     CHECK(botTeamModels(app) == std::vector<std::size_t>{pb});
     CHECK(!botHeadForBody(app, app.assetCatalog.entries[pb]));
-    std::cout << "Any team: selected-game filtering, unknown factions, legacy modes, and multipart assembly passed\n";
+    const auto pbHands=add("pointblank","viewmodel_bella_hands",assets::Role::ViewHands);
+    CHECK(assets::character::matchHands(app.assetCatalog.entries,app.assetCatalog.entries[pb],{}).base==pbHands);
+    const auto matchBody=add("aw","mp_top_m_c_04d_LOD0",assets::Role::PlayerModel);
+    const auto sleeves=add("aw","mp_view_top_04d_LOD0",assets::Role::OtherModel);
+    const auto glove=add("aw","mp_glove_03i_LOD0",assets::Role::OtherModel);
+    const auto exo=add("aw","mp_exo_08a_LOD0",assets::Role::OtherModel);
+    CHECK(assets::character::matchHands(app.assetCatalog.entries,app.assetCatalog.entries[matchBody],{glove,exo}).base==std::size_t(-1));
+    const auto viewGlove=add("aw","mp_view_gloves_03i_LOD0",assets::Role::OtherModel);
+    const auto viewExo=add("aw","mp_view_exo_08a_LOD0",assets::Role::OtherModel);
+    const auto matched=assets::character::matchHands(app.assetCatalog.entries,app.assetCatalog.entries[matchBody],{glove,exo});
+    CHECK(matched.base==sleeves);CHECK(matched.parts==std::vector<std::size_t>({viewGlove,viewExo}));
+    const auto unknownGhost=add("ghosts","mp_body_devgru_arctic_LOD0",assets::Role::PlayerModel);
+    add("ghosts","viewhands_elite_pmc_arctic_LOD0",assets::Role::ViewHands);
+    CHECK(assets::character::matchHands(app.assetCatalog.entries,app.assetCatalog.entries[unknownGhost],{}).base==std::size_t(-1));
+    scene::CastScene assembly;scene::Mesh torso,boots,weaponMesh;
+    torso.vertices.resize(1);torso.vertices[0].position={0,0,90};boots.vertices.resize(1);boots.vertices[0].position={0,0,0};weaponMesh.vertices.resize(1);weaponMesh.vertices[0].position={0,0,-200};weaponMesh.attachmentIndex=0;
+    assembly.meshes={torso,boots,weaponMesh};scene::refreshCharacterBounds(assembly);
+    CHECK(assembly.bounds.minimum.z==0);CHECK(assembly.bounds.maximum.z==90);
+    std::cout << "Team assembly and character-to-hands exact/missing/variant matching passed\n";
 }

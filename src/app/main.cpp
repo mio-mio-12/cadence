@@ -18,6 +18,8 @@
 #include "gameplay/ZoomResponse.h"
 #include "assets/AssetCatalog.h"
 #include "assets/CharacterParts.h"
+#include "assets/CharacterHands.h"
+#include "scene/CharacterBounds.h"
 #include "gameplay/SurfacePenetration.h"
 #include "TakeRecordingCost.h"
 #include "assets/AnimationFileIndex.h"
@@ -53,6 +55,7 @@
 #include "scene/PointBlankNative.h"
 #include "scene/GripLandmarks.h"
 #include "scene/PointBlankAdapter.h"
+#include "scene/PointBlankCodHands.h"
 #include "app/DepthProRes.h"
 #include "app/UiNavigation.h"
 #include "app/UiAppearance.h"
@@ -535,6 +538,7 @@ struct AppState {
         std::size_t shinguardAsset{static_cast<std::size_t>(-1)};
         std::vector<std::size_t> customModularParts;
         std::size_t viewhandsAsset{static_cast<std::size_t>(-1)};
+        std::vector<std::size_t> matchedViewhandsParts;
         std::size_t viewWeaponAsset{static_cast<std::size_t>(-1)};
     };
     ReferenceRigMode activeReferenceMode{ReferenceRigMode::None};
@@ -946,10 +950,18 @@ struct AppState {
     enum class PlayermodelPreviewAction { Idle, Sprint, Crouch, Reload };
     render::StageRenderer playermodelPreviewRenderer;
     scene::CastScene playermodelPreviewScene;
+    std::unordered_map<std::string,std::shared_ptr<const cast::Document>> characterPreviewDocuments;
+    scene::Vec3 characterPreviewCenter{};
+    scene::Vec3 characterPreviewPan{};
+    float characterPreviewRadius{60.f},characterPreviewZoom{1.f};
+    bool characterPreviewBindPose{true};
+    bool characterPreviewDirty{true};
+    std::array<float,8> characterPreviewRendered{};
+    std::vector<std::size_t> characterPreviewParts;
     bool playermodelPreviewInitialized{};
     bool playermodelPreviewOpen{false};
-    bool playermodelPreviewAutoRotate{true};
-    float playermodelPreviewYaw{0.0f};
+    bool playermodelPreviewAutoRotate{false};
+    float playermodelPreviewYaw{scene::kPi};
     float playermodelPreviewPitch{0.12f};
     float playermodelPreviewDistance{110.0f};
     float playermodelPreviewAnimTime{0.0f};
@@ -1248,6 +1260,7 @@ void invalidateCatalogSelections(AppState& app,const assets::Catalog* previous=n
         for(auto& [game,setup]:app.gameReferenceSetups){
             for(auto* index:{&setup.playermodelAsset,&setup.headAsset,&setup.helmetAsset,&setup.eyewearAsset,&setup.glovesAsset,&setup.pantsAsset,&setup.kneepadAsset,&setup.bootsAsset,&setup.exoAsset,&setup.loadoutAsset,&setup.shinguardAsset,&setup.viewhandsAsset,&setup.viewWeaponAsset})update(*index);
             for(auto& index:setup.customModularParts)update(index);
+            for(auto& index:setup.matchedViewhandsParts)update(index);
         }
         keepClass=app.classSlotRigs[0].has_value()&&app.classSlotRigs[1].has_value();
         for(auto& slot:app.classSlotRigs)if(slot){
@@ -1322,7 +1335,8 @@ int preferredAttachmentBone(const scene::Skeleton& skeleton) {
 }
 int attachmentSocketForName(const scene::Skeleton& skeleton,std::string name,int fallback){name=lowerText(std::move(name));const auto find=[&](std::initializer_list<const char*> candidates)->std::optional<int>{for(const auto* candidate:candidates)if(const auto found=skeleton.boneByCanonicalName.find(candidate);found!=skeleton.boneByCanonicalName.end())return static_cast<int>(found->second);return std::nullopt;};if(name.find("head")!=std::string::npos||name.find("helmet")!=std::string::npos)if(const auto bone=find({"j_head","j_neck","j_spine4","tag_helmet"}))return *bone;if(name.find("silencer")!=std::string::npos||name.find("suppress")!=std::string::npos)if(const auto bone=find({"tag_flash","tag_barrel"}))return *bone;if(name.find("mag")!=std::string::npos||name.find("clip")!=std::string::npos)if(const auto bone=find({"tag_clip","tag_clip1","j_gun"}))return *bone;if(name.find("scope")!=std::string::npos||name.find("optic")!=std::string::npos||name.find("acog")!=std::string::npos||name.find("holo")!=std::string::npos||name.find("reflex")!=std::string::npos||name.find("eotech")!=std::string::npos)if(const auto bone=find({"tag_rail","tag_scope_rail","tag_scope","j_gun"}))return *bone;return fallback;}
 
-void loadFile(AppState& app, const std::filesystem::path& path) {
+#include "PointBlankCodHands.inc"
+void loadFile(AppState& app, const std::filesystem::path& path,const std::string& handDriverGame={}) {
     app.loadingActive=true;app.loadingProgress=0.05f;app.loadingLabel="Loading model";app.loadingDetail=path.filename().string();
     app.status = "Loading " + path.string() + "...";
     app.document = cast::Document::load(path);
@@ -1351,6 +1365,10 @@ void loadFile(AppState& app, const std::filesystem::path& path) {
     app.takeRecording=false;app.takePlaying=false;app.takePreview=false;app.takeTime=0;app.takeAccumulator=0;app.exportActive=false;
     if (app.document->valid()) {
         app.scene = scene::buildScene(*app.document);
+        if(!handDriverGame.empty()&&scene::pointblank::exportedByPb2cast(*app.document)&&path.stem().string().starts_with("viewmodel_")&&path.stem().string().ends_with("_hands")){
+            std::string error;
+            if(!preparePointBlankCodHands(app,*app.document,handDriverGame,app.scene,error))app.scene.warnings.push_back("Point Blank / COD hands: "+error);
+        }
         for(auto& mesh:app.scene.meshes)mesh.name=path.stem().string()+" / "+mesh.name;
         app.rendererError.clear();
         if (app.deferSceneUpload) {
@@ -1591,7 +1609,7 @@ bool retargetNewAnimations(AppState& app,const std::filesystem::path& animationP
     if(app.scene.codmNativeCentimetres||app.scene.pointBlankNativeCentimetres)return false;
     if(firstAnimation>=app.scene.animations.size()||app.scene.skeleton.bones.empty())return false;
     const auto game=gameFromExportPath(animationPath);if(game.empty())return false;
-    const auto targetGame=activeViewhandsGame(app);
+    const auto targetGame=app.scene.viewHandsDriverGame.empty()?activeViewhandsGame(app):app.scene.viewHandsDriverGame;
     if(game=="codm"&&targetGame!="cs2")return retargetForeignCodmAction(app,animationPath,firstAnimation,parsedDocument);
     if(!targetGame.empty()&&targetGame==game){
         if(game=="iw_sp"||game=="iw7"||game=="iw"){
@@ -3306,6 +3324,17 @@ std::vector<scene::Mat4> evaluateHiddenWorldActorPose(AppState& app,std::string*
         }
         const float lift=actor.bounds.valid?-actor.bounds.minimum.z+gameplay::iw::worldUnits(0.25f):gameplay::iw::worldUnits(0.25f);
         app.actorWorldFacingOffset=smoothWorldFacingOffset(app.actorWorldFacingOffset,std::remainder(worldMotionYaw-app.actorYaw,2.f*scene::kPi),presentationDelta);
+        // Legs follow travel while a normal combat torso keeps the player's
+        // aim heading. Authored traversal and sprint poses stay intact.
+        if(!app.actorMantling&&!app.actorSliding&&!app.actorOnLadder&&!app.actorSprinting&&std::abs(app.actorWorldFacingOffset)>.001f){
+            auto spine=actor.skeleton.boneByCanonicalName.find("j_spineupper");
+            if(spine==actor.skeleton.boneByCanonicalName.end())spine=actor.skeleton.boneByCanonicalName.find("j_spine4");
+            if(spine!=actor.skeleton.boneByCanonicalName.end()&&spine->second<pose.size()){
+                const auto pivot=scene::transformPoint(pose[spine->second],{});
+                const auto turn=scene::translation(pivot)*scene::rotation(scene::fromAxisAngle({0,0,1},-app.actorWorldFacingOffset))*scene::translation(-pivot);
+                for(size_t b=0;b<pose.size();++b){int ancestor=static_cast<int>(b);while(ancestor>=0&&static_cast<size_t>(ancestor)!=spine->second)ancestor=actor.skeleton.bones[ancestor].parent;if(ancestor>=0)pose[b]=turn*pose[b];}
+            }
+        }
         const auto transform=gameplay::presentation::worldActorTransform(app.actorPosition,app.actorRenderPosition,renderSample&&app.actorMode,app.actorYaw+app.actorWorldFacingOffset,lift);
         for(auto& bone:pose)bone=transform*bone;
         return pose;
@@ -3428,13 +3457,13 @@ std::vector<scene::Mat4> evaluateHiddenWorldActorPose(AppState& app,std::string*
     else {base=selectBase();if(app.worldSelectionCacheEnabled){app.worldSelectionKey=selectionKey;app.worldSelectionResult=base;}}
     if(!base)return placeWorldActor(actor.globalPose(actor.sampleLocalPose(0,0)));
     const auto& baseClip=actor.animations[*base];
-    // Most IW sprint/slide sets contain only a forward clip. Face its travel
-    // direction when no authored directional variant exists (including A/D).
-    if((motion==scene::MotionRole::Sprint||motion==scene::MotionRole::Slide||motion==scene::MotionRole::Climb)&&
-       worldClipDirection(baseClip)!=direction){
+    // Turn by the continuous movement angle relative to the authored clip,
+    // not only when a cardinal animation lookup fails.
+    if(motion==scene::MotionRole::Walk||motion==scene::MotionRole::Run||motion==scene::MotionRole::Sprint||
+       motion==scene::MotionRole::Slide||motion==scene::MotionRole::Climb||motion==scene::MotionRole::Jump){
         const auto travel=motion==scene::MotionRole::Climb?app.actorMantleEnd-app.actorMantleStart:
             motion==scene::MotionRole::Slide?app.actorVelocity:(hasMoveInput?app.actorWishVelocity:app.actorVelocity);
-        if(travel.x*travel.x+travel.y*travel.y>1.f)worldMotionYaw=std::atan2(travel.y,travel.x);
+        worldMotionYaw=worldMovementFacing(app.actorYaw,travel,worldClipDirection(baseClip));
     }
     float baseFrame=0.0f;
     if(motion==scene::MotionRole::Slide){
@@ -3538,7 +3567,7 @@ std::vector<scene::Mat4> evaluateHiddenWorldActorPose(AppState& app,std::string*
             }
         }
     }
-    if(std::abs(app.cameraPitch)>0.001f&&pose.size()==actor.skeleton.bones.size()){
+    if(!app.actorMantling&&!app.actorSliding&&!app.actorOnLadder&&std::abs(app.cameraPitch)>0.001f&&pose.size()==actor.skeleton.bones.size()){
         const auto isDescendantOf=[&](std::size_t bone,std::size_t ancestor)->bool{
             if(bone==ancestor)return true;
             int curr=actor.skeleton.bones[bone].parent;
@@ -3749,6 +3778,7 @@ bool restoreCharacterRigParts(const AppState& app,const take::ActorManifest& man
         scene::appendRigModel(document,destination,path->stem().string());
         if(i<manifest.rigModelVariants.size())for(auto mesh=first;mesh<destination.meshes.size();++mesh)destination.meshes[mesh].actorVariant=manifest.rigModelVariants[i];
     }
+    if(std::filesystem::path(manifest.baseModel).stem().string().starts_with("mp_top_"))scene::refreshCharacterBounds(destination);
     return true;
 }
 
@@ -3770,7 +3800,7 @@ bool restoreCharacterAttachments(AppState& app,const take::ActorManifest& manife
     return true;
 }
 
-bool restoreTakeActorInternal(AppState& app,const take::ActorManifest& actor,std::size_t expectedBones,bool resetClassSlots,std::string& error){
+bool restoreTakeActorInternal(AppState& app,const take::ActorManifest& actor,std::size_t expectedBones,bool resetClassSlots,std::string& error,bool originalPbLayout=false){
     error.clear();
     const auto base=resolveTakeModelPath(app,actor.baseModel);
     if(!base){error="Take actor base model is missing: "+actor.baseModel;return false;}
@@ -3791,7 +3821,9 @@ bool restoreTakeActorInternal(AppState& app,const take::ActorManifest& actor,std
         app.classSlotRigs={};
         app.activeClassSlot=-1;
     }
-    loadFile(app,*base);
+    std::string handDriverGame;
+    if(!originalPbLayout&&base->stem().string().starts_with("viewmodel_")&&base->stem().string().ends_with("_hands"))for(const auto& path:rigModels){if(assets::classifyModelPath(path,path.stem().string())==assets::Role::ViewWeapon){handDriverGame=gameFromExportPath(path);break;}}
+    loadFile(app,*base,handDriverGame);
     app.takeRecording=wasRecording;app.takePlaying=wasPlaying;app.takePreview=wasPreview;app.takeTime=savedTakeTime;app.takeAccumulator=savedAccumulator;
     if(!app.document||!app.document->valid()){error="Take actor base model could not be loaded";return false;}
     for(const auto& path:rigModels)addRigModelFile(app,path,false);
@@ -3821,7 +3853,10 @@ bool restoreTakeActorInternal(AppState& app,const take::ActorManifest& actor,std
     // the reference for preserving the recorded ADS magnification.
     app.rendererError.clear();
     if(!uploadMainScene(app)){error="Take actor GPU upload failed: "+app.rendererError;return false;}
-    if(app.scene.skeleton.bones.size()!=expectedBones){error="Take actor rebuilt with "+std::to_string(app.scene.skeleton.bones.size())+" bones; recording expects "+std::to_string(expectedBones);return false;}
+    if(app.scene.skeleton.bones.size()!=expectedBones){
+        if(!originalPbLayout&&!app.scene.viewHandsDriverGame.empty())return restoreTakeActorInternal(app,actor,expectedBones,resetClassSlots,error,true);
+        error="Take actor rebuilt with "+std::to_string(app.scene.skeleton.bones.size())+" bones; recording expects "+std::to_string(expectedBones);return false;
+    }
     return true;
 }
 
@@ -5557,6 +5592,7 @@ void mountGenericPlayermodel(AppState& app, const std::string& gameName) {
     };
 
     for(auto part:characterAssemblyParts(app,playerAsset))appendIfValid(part);
+    if(playerAsset.game=="aw")scene::refreshCharacterBounds(app.scene);
 
     finishRigMerge(app);
     app.activeReferenceMode = AppState::ReferenceRigMode::Playermodel;
@@ -7931,7 +7967,10 @@ void restoreEngineViewHeight(AppState& app){
 }
 
 std::size_t classHandsForWeapon(const AppState& app,const assets::Asset& asset){
-    if(app.classViewhandsOverride<app.assetCatalog.entries.size()&&app.assetCatalog.entries[app.classViewhandsOverride].role==assets::Role::ViewHands)return app.classViewhandsOverride;
+    if(app.classViewhandsOverride<app.assetCatalog.entries.size()){
+        const auto& hands=app.assetCatalog.entries[app.classViewhandsOverride];
+        if(hands.role==assets::Role::ViewHands||(hands.game=="aw"&&hands.name.starts_with("mp_view_top_")))return app.classViewhandsOverride;
+    }
     if(!asset.customPackageId.empty())for(std::size_t i=0;i<app.assetCatalog.entries.size();++i)if(app.assetCatalog.entries[i].role==assets::Role::ViewHands&&app.assetCatalog.entries[i].customPackageId==asset.customPackageId)return i;
     const auto profile=generatedWeaponProfile(app,asset);if(!profile.handModelName.empty())if(const auto exact=findCatalogModelExact(app,assets::Role::ViewHands,asset.game,profile.handModelName);exact<app.assetCatalog.entries.size())return exact;
     const auto g=lowerText(asset.game);
@@ -8050,7 +8089,16 @@ void equipViewWeapon(AppState& app,std::size_t weaponIndex,AppState* notifyApp,s
     const auto sources=app.animationSources;
     auto documents=std::move(app.animationDocuments);
     logLoading(logger, "Loading base viewhands: " + app.assetCatalog.entries[app.selectedBaseAsset].name);
-    loadFile(app,app.assetCatalog.entries[app.selectedBaseAsset].path);
+    loadFile(app,app.assetCatalog.entries[app.selectedBaseAsset].path,selectedWeapon.game);
+    if(app.assetCatalog.entries[app.selectedBaseAsset].game=="pointblank"&&selectedWeapon.game!="pointblank"&&selectedWeapon.game!="codm"&&selectedWeapon.game!="cs2"&&app.scene.viewHandsDriverGame.empty()){
+        app.status=app.scene.warnings.empty()?"Unsupported Point Blank / COD hand pairing":app.scene.warnings.back();return;
+    }
+    for(const auto& [game,setup]:app.gameReferenceSetups)if(setup.viewhandsAsset==app.selectedBaseAsset){
+        for(auto index:setup.matchedViewhandsParts)if(index<app.assetCatalog.entries.size()){
+            const auto& part=app.assetCatalog.entries[index];const auto doc=cast::Document::load(part.path);
+            if(doc.valid()){scene::appendRigModel(doc,app.scene,part.name);app.loadedRigModelPaths.push_back(part.path);app.equippedRigAssets.push_back(index);}
+        }
+    }
     app.animationSources=sources;
     app.animationDocuments=std::move(documents);
     std::optional<scene::Mat4> sourceWeaponMount;float importedWeaponScale=1.0f;
@@ -8232,7 +8280,7 @@ void processPendingModelLoad(AppState& app){
         app.gameplayRechamber=false;app.gameplayWeapon=gameplayWeaponClass(app.weaponProfile,selectedWeapon);
         const auto sources=app.animationSources;auto documents=std::move(app.animationDocuments);
         logLoading(app, "Loading viewhands mesh: " + app.assetCatalog.entries[app.selectedBaseAsset].name, 0.20f);
-        loadFile(app,app.assetCatalog.entries[app.selectedBaseAsset].path);
+        loadFile(app,app.assetCatalog.entries[app.selectedBaseAsset].path,selectedWeapon.game);
         app.animationSources=sources;app.animationDocuments=std::move(documents);
         app.pendingRigAssets.push_back(weaponIndex);
         for(const auto index:app.assetCatalog.compatibleAttachments(weaponIndex))
@@ -8504,6 +8552,7 @@ void configureClassActor(AppState& app){
                 }
             };
             for(auto part:characterAssemblyParts(app,app.assetCatalog.entries[app.classWorldModelAsset]))appendActorPart(part);
+            if(gameName=="aw")scene::refreshCharacterBounds(*app.hiddenWorldActor);
             appendClassBodyAnimations(app, app.playerWorldAnimationGame.empty()?gameName:app.playerWorldAnimationGame, *app.hiddenWorldActor);
             appendSupplementalWorldMotion(app,*app.hiddenWorldActor);
             bool hasSlideClip = false;
@@ -8583,82 +8632,38 @@ void configureClassActor(AppState& app){
 }
 
 void updatePlayermodelPreviewScene(AppState& app) {
-    if(!app.playermodelPreviewInitialized){
-        std::string error;
-        (void)app.playermodelPreviewRenderer.initialize(error);
-        app.playermodelPreviewInitialized = true;
-    }
-    std::size_t pmIdx = (!app.autoPlayerModel && app.manualPlayerModelAsset < app.assetCatalog.entries.size()) 
-        ? app.manualPlayerModelAsset : app.classWorldModelAsset;
-    if(pmIdx >= app.assetCatalog.entries.size()){
-        if(!app.playermodelCustomGame.empty()){
-            pmIdx = findGenericPlayermodelForGame(app, app.playermodelCustomGame);
-        }
-    }
-    if(pmIdx >= app.assetCatalog.entries.size() && app.classPrimaryAsset < app.assetCatalog.entries.size()){
-        pmIdx = findGenericPlayermodelForGame(app, app.assetCatalog.entries[app.classPrimaryAsset].game);
-    }
-    if(pmIdx >= app.assetCatalog.entries.size()){
-        pmIdx = findGenericPlayermodelForGame(app, "bo2");
-    }
-    if(pmIdx >= app.assetCatalog.entries.size()){
-        for(std::size_t i = 0; i < app.assetCatalog.entries.size(); ++i){
-            if(app.assetCatalog.entries[i].role == assets::Role::PlayerModel){
-                pmIdx = i;
-                break;
-            }
-        }
-    }
-    if(pmIdx >= app.assetCatalog.entries.size()) return;
-
-    const auto& pmAsset = app.assetCatalog.entries[pmIdx];
-    // Class customization already assembled this exact actor. Reuse it rather
-    // than parsing every clothing part and mapping every clip a second time.
-    const auto parts=characterAssemblyParts(app,pmAsset);
-    bool sameParts=app.hiddenWorldActor&&app.classWorldModelAsset==pmIdx&&app.hiddenWorldActor->rigParts.size()==parts.size();
-    if(sameParts)for(std::size_t i=0;i<parts.size();++i)
-        sameParts&=app.hiddenWorldActor->rigParts[i].name==app.assetCatalog.entries[parts[i]].name;
-    if(sameParts){
-        app.playermodelPreviewScene=*app.hiddenWorldActor;
-        std::erase_if(app.playermodelPreviewScene.meshes,[](const auto& mesh){return mesh.attachmentIndex>=0;});
-        app.playermodelPreviewScene.attachments.clear();
-        std::string error;
-        if(app.playermodelPreviewRenderer.loadScene(app.playermodelPreviewScene,error)){
-            app.playermodelPreviewLastBuiltAsset=pmIdx;app.playermodelPreviewLastBuiltGame=pmAsset.game;
-        }else app.status="Character preview: "+error;
-        return;
-    }
-    auto doc = cast::Document::load(pmAsset.path);
-    if(!doc.valid()) return;
-
-    app.playermodelPreviewScene = scene::buildScene(doc);
-    const auto gameName = pmAsset.game;
-    const auto setupIt = app.gameReferenceSetups.find(gameName);
-
-    const auto appendPart = [&](std::size_t assetIdx){
-        if(assetIdx < app.assetCatalog.entries.size()){
-            auto partDoc = cast::Document::load(app.assetCatalog.entries[assetIdx].path);
-            if(partDoc.valid()){
-                scene::appendRigModel(partDoc, app.playermodelPreviewScene, app.assetCatalog.entries[assetIdx].name);
-            }
-        }
+    if(!app.playermodelPreviewInitialized){std::string error;if(!app.playermodelPreviewRenderer.initialize(error)){app.status=error;return;}app.playermodelPreviewInitialized=true;}
+    auto pm=app.autoPlayerModel?app.classWorldModelAsset:app.manualPlayerModelAsset;
+    if(pm>=app.assetCatalog.entries.size()&&!app.playermodelCustomGame.empty())pm=findGenericPlayermodelForGame(app,app.playermodelCustomGame);
+    if(pm>=app.assetCatalog.entries.size()&&app.classViewhandsOverride<app.assetCatalog.entries.size())pm=findGenericPlayermodelForGame(app,app.assetCatalog.entries[app.classViewhandsOverride].game);
+    if(pm>=app.assetCatalog.entries.size()&&app.classHandsAsset<app.assetCatalog.entries.size())pm=findGenericPlayermodelForGame(app,app.assetCatalog.entries[app.classHandsAsset].game);
+    if(pm>=app.assetCatalog.entries.size()&&app.classPrimaryAsset<app.assetCatalog.entries.size())pm=findGenericPlayermodelForGame(app,app.assetCatalog.entries[app.classPrimaryAsset].game);
+    if(pm>=app.assetCatalog.entries.size())return;
+    const auto& body=app.assetCatalog.entries[pm];
+    const auto document=[&](std::size_t index)->std::shared_ptr<const cast::Document>{
+        const auto& path=app.assetCatalog.entries[index].path;std::error_code ec;
+        const auto stamp=std::filesystem::last_write_time(path,ec);
+        const auto key=path.string()+"|"+std::to_string(stamp.time_since_epoch().count());
+        if(auto it=app.characterPreviewDocuments.find(key);it!=app.characterPreviewDocuments.end())return it->second;
+        auto doc=std::make_shared<cast::Document>(cast::Document::load(path));
+        if(!doc->valid())return {};
+        if(app.characterPreviewDocuments.size()>=32)app.characterPreviewDocuments.clear();
+        app.characterPreviewDocuments.emplace(key,doc);return doc;
     };
-
-    for(auto part:characterAssemblyParts(app,pmAsset))appendPart(part);
-
-    ensureBotAnimationCache(app, gameName);
-    const auto before = app.playermodelPreviewScene.animations.size();
-    for (const auto& aDoc : app.botAnimationCache[lowerText(gameName)]) {
-        scene::appendAnimations(aDoc, app.playermodelPreviewScene);
-    }
-    for (std::size_t i = before; i < app.playermodelPreviewScene.animations.size(); ++i) {
-        app.playermodelPreviewScene.animations[i].sourceGame = gameName;
-    }
-
-    std::string err;
-    (void)app.playermodelPreviewRenderer.loadScene(app.playermodelPreviewScene, err);
-    app.playermodelPreviewLastBuiltAsset = pmIdx;
-    app.playermodelPreviewLastBuiltGame = gameName;
+    const auto base=document(pm);if(!base){app.status="Cannot load character";return;}
+    auto assembled=scene::buildScene(*base);
+    app.characterPreviewParts=characterAssemblyParts(app,body);
+    for(auto part:app.characterPreviewParts)if(const auto doc=document(part))scene::appendRigModel(*doc,assembled,app.assetCatalog.entries[part].name);
+    // The assembler requires geometry and inverse binds only. Never prepare the
+    // game's animation library just to browse clothes in the bind pose.
+    scene::Bounds bounds;
+    for(const auto& mesh:assembled.meshes)for(const auto& vertex:mesh.vertices){const auto p=scene::transformPoint(mesh.modelTransform,vertex.position);if(!bounds.valid){bounds.minimum=bounds.maximum=p;bounds.valid=true;}else{bounds.minimum={std::min(bounds.minimum.x,p.x),std::min(bounds.minimum.y,p.y),std::min(bounds.minimum.z,p.z)};bounds.maximum={std::max(bounds.maximum.x,p.x),std::max(bounds.maximum.y,p.y),std::max(bounds.maximum.z,p.z)};}}
+    if(bounds.valid){app.characterPreviewCenter=(bounds.minimum+bounds.maximum)*.5f;app.characterPreviewRadius=std::max(1.f,scene::length(bounds.maximum-bounds.minimum)*.5f);}
+    std::string error;
+    if(!app.playermodelPreviewRenderer.loadPreviewScene(assembled,error)){app.status="Character preview: "+error;return;}
+    app.playermodelPreviewScene=std::move(assembled);
+    app.characterPreviewDirty=true;
+    app.playermodelPreviewLastBuiltAsset=pm;app.playermodelPreviewLastBuiltGame=body.game;
 }
 
 void syncPlayermodelWithViewhands(AppState& app) {
@@ -8734,13 +8739,19 @@ void renderPlayermodelPreview(AppState& app, int width, int height) {
         app.playermodelPreviewYaw += 0.015f;
         if(app.playermodelPreviewYaw > scene::kPi * 2.0f) app.playermodelPreviewYaw -= scene::kPi * 2.0f;
     }
+    const std::array<float,8> signature{float(width),float(height),app.playermodelPreviewYaw,app.playermodelPreviewPitch,app.characterPreviewZoom,app.characterPreviewPan.x,app.characterPreviewPan.y,app.characterPreviewPan.z};
+    if(app.characterPreviewBindPose&&!app.characterPreviewDirty&&signature==app.characterPreviewRendered)return;
+    app.characterPreviewRendered=signature;app.characterPreviewDirty=false;
     const float cp = std::cos(app.playermodelPreviewPitch);
     const scene::Vec3 dir{cp * std::cos(app.playermodelPreviewYaw), cp * std::sin(app.playermodelPreviewYaw), std::sin(app.playermodelPreviewPitch)};
-    const scene::Vec3 target{0.0f, 0.0f, 38.0f};
-    const scene::Vec3 eye = target - dir * app.playermodelPreviewDistance;
+    const scene::Vec3 target=app.characterPreviewCenter+app.characterPreviewPan;
+    const float aspect=static_cast<float>(width)/std::max(1,height);
+    const float halfFov=std::atan(std::tan(20.f*scene::kPi/180.f)*std::min(1.f,aspect));
+    const float distance=app.characterPreviewRadius/std::sin(halfFov)*1.05f*app.characterPreviewZoom;
+    const scene::Vec3 eye = target - dir * distance;
     const auto view = scene::lookAt(eye, target, {0, 0, 1});
     const float fovDegrees = 40.0f;
-    const auto proj = scene::perspective(fovDegrees * scene::kPi / 180.0f, static_cast<float>(width) / std::max(1, height), 1.0f, 600.0f);
+    const auto proj = scene::perspective(fovDegrees * scene::kPi / 180.0f, aspect, .1f, distance+app.characterPreviewRadius*4.f);
     const auto viewProj = proj * view;
 
     std::size_t clipIndex = static_cast<std::size_t>(-1);
@@ -8775,7 +8786,7 @@ void renderPlayermodelPreview(AppState& app, int width, int height) {
     }
 
     std::vector<scene::Mat4> pose;
-    if(clipIndex < app.playermodelPreviewScene.animations.size()){
+    if(!app.characterPreviewBindPose&&clipIndex < app.playermodelPreviewScene.animations.size()){
         const auto& anim = app.playermodelPreviewScene.animations[clipIndex];
         const float duration = static_cast<float>(anim.durationFrames);
         const float frame = (duration > 0.0f) ? std::fmod(app.playermodelPreviewAnimTime * 30.0f, duration) : 0.0f;
@@ -8792,218 +8803,27 @@ void renderPlayermodelPreview(AppState& app, int width, int height) {
     app.playermodelPreviewRenderer.render(app.playermodelPreviewScene, pose, viewProj, width, height, false, false, false);
 }
 
-void drawPlayermodelAssembler(AppState& app) {
-    if(ImGui::TreeNodeEx("Playermodel", ImGuiTreeNodeFlags_DefaultOpen)){
-        if(ImGui::Button("Sync with selected viewhands")){
-            syncPlayermodelWithViewhands(app);
-        }
-        ImGui::SameLine();
-        if(ImGui::Button("Load Character Setup")){
-            configureClassActor(app);
-            updatePlayermodelPreviewScene(app);
-        }
-        ImGui::SameLine();
-        if(ImGui::Checkbox("Auto-sync with Viewhands", &app.autoPlayerModel)){
-            configureClassActor(app);
-            updatePlayermodelPreviewScene(app);
-        }
-        ImGui::SameLine();
-        ImGui::Checkbox("Live 3D Viewer", &app.playermodelPreviewOpen);
-
-        std::string activeGame;
-        if(app.autoPlayerModel){
-            activeGame = app.classWorldModelAsset < app.assetCatalog.entries.size() ? app.assetCatalog.entries[app.classWorldModelAsset].game : "";
-            if(activeGame.empty()){
-                std::size_t handsIdx = (app.classViewhandsOverride < app.assetCatalog.entries.size()) ? app.classViewhandsOverride : app.classHandsAsset;
-                if(handsIdx < app.assetCatalog.entries.size()) activeGame = app.assetCatalog.entries[handsIdx].game;
-            }
-        } else {
-            if(!app.playermodelCustomGame.empty()) activeGame = app.playermodelCustomGame;
-            else if(app.manualPlayerModelAsset < app.assetCatalog.entries.size()) activeGame = app.assetCatalog.entries[app.manualPlayerModelAsset].game;
-        }
-
-        const auto games = rippedGames(app);
-        if(!app.autoPlayerModel){
-            const char* gamePreview = activeGame.empty() ? "All games" : activeGame.c_str();
-            if(ImGui::BeginCombo("Playermodel Game", gamePreview)){
-                if(ImGui::Selectable("All games", activeGame.empty())){
-                    app.playermodelCustomGame.clear();
-                    updatePlayermodelPreviewScene(app);
-                }
-                for(const auto& g : games){
-                    if(ImGui::Selectable(g.c_str(), activeGame == g)){
-                        app.playermodelCustomGame = g;
-                        app.manualPlayerModelAsset = findGenericPlayermodelForGame(app, g);
-                        configureClassActor(app);
-                        updatePlayermodelPreviewScene(app);
-                    }
-                }
-                ImGui::EndCombo();
-            }
-        }
-
-        std::size_t currentPm = app.autoPlayerModel ? app.classWorldModelAsset : app.manualPlayerModelAsset;
-        if(currentPm >= app.assetCatalog.entries.size() && !activeGame.empty()){
-            currentPm = findGenericPlayermodelForGame(app, activeGame);
-        }
-        const std::string pmName = (currentPm < app.assetCatalog.entries.size()) ? app.assetCatalog.entries[currentPm].name : "<Select Character Model>";
-
-        ImGui::BeginDisabled(app.autoPlayerModel);
-        if(ImGui::BeginCombo("Character Body / Torso", pmName.c_str())){
-            for(std::size_t i = 0; i < app.assetCatalog.entries.size(); ++i){
-                const auto& a = app.assetCatalog.entries[i];
-                if(a.role != assets::Role::PlayerModel || (!activeGame.empty() && lowerText(a.game) != lowerText(activeGame))) continue;
-                const std::string entry = (a.game.empty() ? std::string{} : "[" + a.game + "] ") + a.name;
-                if(ImGui::Selectable(entry.c_str(), currentPm == i)){
-                    app.manualPlayerModelAsset = i;
-                    app.autoPlayerModel = false;
-                    auto& setup = app.gameReferenceSetups[a.game];
-                    setup.playermodelAsset = i;
-                    configureClassActor(app);
-                    updatePlayermodelPreviewScene(app);
-                }
-            }
-            ImGui::EndCombo();
-        }
-        ImGui::EndDisabled();
-
-        if(!activeGame.empty()){
-            auto& setup = app.gameReferenceSetups[activeGame];
-            const auto gLower = lowerText(activeGame);
-
-            const auto currentHead = (setup.headAsset < app.assetCatalog.entries.size()) ? setup.headAsset : 
-                ((currentPm < app.assetCatalog.entries.size()) ? findGenericHeadForPlayermodel(app, activeGame, app.assetCatalog.entries[currentPm]) : static_cast<std::size_t>(-1));
-            const std::string headName = (currentHead < app.assetCatalog.entries.size()) ? app.assetCatalog.entries[currentHead].name : "<None / Fullbody>";
-            
-            if(ImGui::BeginCombo("Head / Face", headName.c_str())){
-                if(ImGui::Selectable("<None / Embedded in body>", currentHead >= app.assetCatalog.entries.size())){
-                    setup.headAsset = static_cast<std::size_t>(-1);
-                    configureClassActor(app);
-                    updatePlayermodelPreviewScene(app);
-                }
-                for(std::size_t i = 0; i < app.assetCatalog.entries.size(); ++i){
-                    const auto& a = app.assetCatalog.entries[i];
-                    if(!activeGame.empty() && lowerText(a.game) != gLower) continue;
-                    const auto cname = lowerText(a.name);
-                    if(currentPm>=app.assetCatalog.entries.size()||!assets::character::headCompatible(activeGame,app.assetCatalog.entries[currentPm].name,a.name))continue;
-                    if(ImGui::Selectable(a.name.c_str(), currentHead == i)){
-                        setup.headAsset = i;
-                        configureClassActor(app);
-                        updatePlayermodelPreviewScene(app);
-                    }
-                }
-                ImGui::EndCombo();
-            }
-
-            if(gameHasModularParts(app, activeGame)){
-                if(ImGui::TreeNode("Character parts")){
-                    const auto drawPartCombo = [&](const char* label, std::size_t& targetSlot, const std::vector<std::string>& searchTokens){
-                        const std::string curName = (targetSlot < app.assetCatalog.entries.size()) ? app.assetCatalog.entries[targetSlot].name : "<None / Default>";
-                        if(ImGui::BeginCombo(label, curName.c_str())){
-                            if(ImGui::Selectable("<None / Default>", targetSlot >= app.assetCatalog.entries.size())){
-                                targetSlot = static_cast<std::size_t>(-1);
-                                configureClassActor(app);
-                                updatePlayermodelPreviewScene(app);
-                            }
-                            for(std::size_t i = 0; i < app.assetCatalog.entries.size(); ++i){
-                                const auto& a = app.assetCatalog.entries[i];
-                                if(!activeGame.empty() && lowerText(a.game) != gLower) continue;
-                                const auto cname = lowerText(a.name);
-                                bool matches = false;
-                                for(const auto& tok : searchTokens){
-                                    if(cname.find(tok) != std::string::npos){ matches = true; break; }
-                                }
-                                if(!matches||!assets::character::matchesSlot(activeGame,a.name,label)) continue;
-                                if(ImGui::Selectable(a.name.c_str(), targetSlot == i)){
-                                    targetSlot = i;
-                                    configureClassActor(app);
-                                    updatePlayermodelPreviewScene(app);
-                                }
-                            }
-                            ImGui::EndCombo();
-                        }
-                    };
-
-                    drawPartCombo("Helmet / Hat", setup.helmetAsset, {"helmet", "hat", "cap", "beret", "mp_helmet", "headgear"});
-                    drawPartCombo("Eyewear / Visor", setup.eyewearAsset, {"eyewear", "glasses", "goggles", "visor", "mp_eyewear"});
-                    drawPartCombo("Gloves / Hands", setup.glovesAsset, {"glove", "gloves", "hands", "mp_glove"});
-                    drawPartCombo("Pants / Legs", setup.pantsAsset, {"pants", "legs", "trousers", "mp_pants", "mp_legs"});
-                    drawPartCombo("Kneepads", setup.kneepadAsset, {"kneepad", "kneepads", "mp_kneepad"});
-                    drawPartCombo("Boots / Shoes", setup.bootsAsset, {"boot", "boots", "shoes", "mp_boot"});
-                    drawPartCombo("Exo", setup.exoAsset, {"exo"});
-                    drawPartCombo("Loadout / Gear", setup.loadoutAsset, {"loadout", "gear"});
-                    drawPartCombo("Shinguards", setup.shinguardAsset, {"shinguard"});
-
-                    ImGui::TreePop();
-                }
-            }
-        }
-
-        ImGui::Spacing();
-        if(ImGui::CollapsingHeader("Live Playermodel Preview")){
-
-        
-        std::size_t expectedPm = app.autoPlayerModel ? app.classWorldModelAsset : app.manualPlayerModelAsset;
-        if(app.playermodelPreviewLastBuiltAsset != expectedPm || app.playermodelPreviewLastBuiltGame != activeGame){
-            updatePlayermodelPreviewScene(app);
-        }
-
-        app.playermodelPreviewAnimTime += ImGui::GetIO().DeltaTime;
-        const int previewWidth = 280;
-        const int previewHeight = 360;
-
-        renderPlayermodelPreview(app, previewWidth, previewHeight);
-
-        const auto textureId = app.playermodelPreviewRenderer.colorTexture();
-        if(textureId != 0){
-            ImGui::Image(static_cast<ImTextureID>(textureId), ImVec2(static_cast<float>(previewWidth), static_cast<float>(previewHeight)), ImVec2(0,1), ImVec2(1,0));
-            if(ImGui::IsItemHovered() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)){
-                const ImVec2 delta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
-                app.playermodelPreviewYaw -= delta.x * 0.01f;
-                app.playermodelPreviewPitch = std::clamp(app.playermodelPreviewPitch + delta.y * 0.01f, -1.2f, 1.2f);
-                app.playermodelPreviewAutoRotate = false;
-                ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
-            }
-            if(ImGui::IsItemHovered()){
-                const float wheel = ImGui::GetIO().MouseWheel;
-                if(wheel != 0.0f){
-                    app.playermodelPreviewDistance = std::clamp(app.playermodelPreviewDistance - wheel * 5.0f, 40.0f, 300.0f);
-                }
-            }
-        }
-
-        ImGui::Text("Animation Preview:");
-        const auto drawActionBtn = [&](const char* label, AppState::PlayermodelPreviewAction action){
-            const bool active = (app.playermodelPreviewAction == action);
-            if(active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.3f, 1.0f));
-            if(ImGui::Button(label)){
-                app.playermodelPreviewAction = action;
-                app.playermodelPreviewAnimTime = 0.0f;
-            }
-            if(active) ImGui::PopStyleColor();
-        };
-
-        drawActionBtn("Idle", AppState::PlayermodelPreviewAction::Idle);
-        ImGui::SameLine();
-        drawActionBtn("Sprint", AppState::PlayermodelPreviewAction::Sprint);
-        ImGui::SameLine();
-        drawActionBtn("Crouch", AppState::PlayermodelPreviewAction::Crouch);
-        ImGui::SameLine();
-        drawActionBtn("Reload", AppState::PlayermodelPreviewAction::Reload);
-
-        ImGui::Checkbox("Auto-rotate", &app.playermodelPreviewAutoRotate);
-        ImGui::SameLine();
-        if(ImGui::SmallButton("Reset View")){
-            app.playermodelPreviewYaw = 0.0f;
-            app.playermodelPreviewPitch = 0.12f;
-            app.playermodelPreviewDistance = 110.0f;
-            app.playermodelPreviewAutoRotate = true;
-        }
-
-        }
-ImGui::TreePop();
+void loadBothClassSlots(AppState& app);
+void matchViewhandsToCharacter(AppState& app){
+    if(app.pendingClassFuture||app.catalogScanFuture||app.takeRecording||app.takePreview||app.exportActive){app.status="Finish loading or leave replay/recording before matching hands";return;}
+    const auto body=app.playermodelPreviewLastBuiltAsset;
+    if(body>=app.assetCatalog.entries.size())return;
+    const auto match=assets::character::matchHands(app.assetCatalog.entries,app.assetCatalog.entries[body],characterAssemblyParts(app,app.assetCatalog.entries[body]));
+    if(match.base>=app.assetCatalog.entries.size()){app.status=match.error;return;}
+    // Native adapters consume a single legacy CAST, not modular source documents.
+    // Preserve the existing selection instead of silently omitting gloves/exo.
+    if(!match.parts.empty())for(auto index:{app.classPrimaryAsset,app.classSecondaryAsset,app.experimentalThirdWeapon?app.classThirdAsset:std::size_t(-1)})if(index<app.assetCatalog.entries.size()){
+        const auto& game=app.assetCatalog.entries[index].game;if(game=="codm"||game=="pointblank"){app.status="Modular AW hands are not supported by this weapon's native adapter yet; hands unchanged";return;}
     }
+    app.manualPlayerModelAsset=body;app.autoPlayerModel=false;
+    auto& setup=app.gameReferenceSetups[app.assetCatalog.entries[body].game];
+    setup.viewhandsAsset=match.base;setup.matchedViewhandsParts=match.parts;
+    app.classViewhandsOverride=match.base;app.classSlotRigs={};
+    app.status="Matched viewhands to character";
+    if(app.classPrimaryAsset<app.assetCatalog.entries.size()&&app.classSecondaryAsset<app.assetCatalog.entries.size())loadBothClassSlots(app);
 }
+#include "CharacterPreviewNavigation.inc"
+#include "CharacterAssemblerUi.inc"
 
 void drawPlayermodelLiveViewer(AppState& app) {
     if (!app.playermodelPreviewOpen) return;
@@ -9080,6 +8900,10 @@ void equipClassSlot(AppState& app,int slot,AppState* notifyApp){
     configureClassActor(app);
     logLoading(logger, std::string("[Slot ") + std::to_string(slot) + "] Assembling viewmodel weapon rig...", slot==0 ? 0.25f : 0.65f);
     equipViewWeapon(app,weapon,notifyApp);
+    // Never cache a failed anatomical fit as a usable class slot.
+    if(app.assetCatalog.entries[app.classHandsAsset].game=="pointblank"&&weaponGame!="pointblank"&&weaponGame!="codm"&&weaponGame!="cs2"&&app.scene.viewHandsDriverGame.empty()){
+        app.classSlotRigs[slot].reset();app.activeClassSlot=-1;logLoading(logger,app.status,1.0f);return;
+    }
     if(weaponGame=="codm"){
         std::string nativeError;if(scene::codm::nativeMetres(weaponAsset.path,nativeError)&&(!app.scene.codmNativeCentimetres||app.scene.codmNativeWeaponStem!=weaponAsset.name||app.loadedBaseModelPath!=app.assetCatalog.entries[app.classHandsAsset].path)){
             app.classSlotRigs[slot].reset();app.activeClassSlot=-1;logLoading(logger,"Native CODM rig is unsupported; class slot was not cached",1.0f);return;
@@ -9191,13 +9015,27 @@ bool drawBotPoolCategory(AppState& app,const char* label,bool& enabled,std::stri
 void ensureBotAnimationCache(AppState& app,const std::string& game){const auto key=lowerText(game);auto& documents=app.botAnimationCache[key];if(!documents.empty())return;std::optional<std::filesystem::path> folder;for(const auto& asset:app.assetCatalog.entries)if(lowerText(asset.game)==key){folder=animationFolderFor(asset);if(folder)break;}if(!folder)return;std::error_code error;for(std::filesystem::recursive_directory_iterator it(*folder,std::filesystem::directory_options::skip_permission_denied,error),end;it!=end;it.increment(error)){if(error){error.clear();continue;}if(!it->is_regular_file(error)||lowerText(it->path().extension().string())!=".cast")continue;const auto filename=lowerText(it->path().filename().string());if((!filename.starts_with("pb_")&&!filename.starts_with("mp_")&&!filename.starts_with("pt_"))||filename.find("dog")!=std::string::npos||filename.find("shepherd")!=std::string::npos||filename.find("vehicle")!=std::string::npos||filename.find("turret")!=std::string::npos)continue;scene::Animation metadata;scene::classifyAnimationName(filename,metadata);if(metadata.domain!=scene::AnimationDomain::PlayerBody&&metadata.domain!=scene::AnimationDomain::PlayerTorso)continue;auto animation=cast::Document::load(it->path());if(animation.valid())documents.push_back(std::move(animation));}}
 
 std::optional<scene::Skeleton> playerSkeletonForGame(const AppState& app,const std::string& game){
+    const auto reference=[&](const assets::Catalog& catalog)->std::optional<scene::Skeleton>{
+        // The exported CW arms retain the full native body hierarchy and are
+        // the verified source reference even without a skinned player model.
+        if(lowerText(game)=="bocw_sp")for(const auto& asset:catalog.entries)
+            if(lowerText(asset.game)=="bocw_sp"&&lowerText(asset.name).ends_with("arms_black2_lod0")){
+                auto doc=cast::Document::load(asset.path);if(doc.valid()){auto s=scene::buildScene(doc,false).skeleton;scene::addColdWarWorldAliases(s);return s;}
+            }
+        return {};
+    };
+    if(auto native=reference(app.assetCatalog))return native;
     for(const auto& asset:app.assetCatalog.entries)if(asset.role==assets::Role::PlayerModel&&lowerText(asset.game)==lowerText(game)){auto document=cast::Document::load(asset.path);if(document.valid())return scene::buildScene(document).skeleton;}
-    // SP's native BO2 movement foundation may be outside the picker selection.
-    if(app.botSystemMode==1&&lowerText(game)=="bo2"){
+    // Supplemental clips may come from an installed but unselected game.
+    // This lookup is cached for the assembly transaction, never per frame.
+    {
         auto root=gameRootDirectoryForGame(app,game);
-        if(root.empty()){const auto sp=gameRootDirectoryForGame(app,"bo2_sp");if(!sp.empty())root=sp.parent_path()/"bo2";}
+        if(root.empty()&&!app.defaultSalukiDirectory.empty())root=salukiExportRoot(app.defaultSalukiDirectory)/game;
         assets::Catalog catalog;std::string error;
-        if(!root.empty()&&assets::appendScan(root,game,catalog,error))for(const auto& asset:catalog.entries)if(asset.role==assets::Role::PlayerModel){auto document=cast::Document::load(asset.path);if(document.valid())return scene::buildScene(document).skeleton;}
+        if(!root.empty()&&assets::appendScan(root,game,catalog,error)){
+            if(auto native=reference(catalog))return native;
+            for(const auto& asset:catalog.entries)if(asset.role==assets::Role::PlayerModel){auto document=cast::Document::load(asset.path);if(document.valid())return scene::buildScene(document).skeleton;}
+        }
     }
     return std::nullopt;
 }
@@ -9318,7 +9156,7 @@ void loadSpBotScenarios(AppState& app,scene::CastScene& actorScene,const std::st
     for(const auto& path:paths){
         const auto document=cast::Document::load(path);if(!document.valid())continue;
         const auto first=actorScene.animations.size();
-        if(scene::pointblank::body(actorScene.skeleton)||scene::codm::worldBody(actorScene.skeleton)){
+        if(lowerText(modelGame)!="cs2"&&lowerText(modelGame)!="bo2_sp"){
             auto native=std::make_shared<scene::CastScene>();native->skeleton=*source;scene::appendAnimations(document,*native);
             actorScene.animations.resize(first+native->animations.size());scene::pointblank::bridgeWorld(actorScene,first,native,0);
         }else scene::appendAnimations(document,actorScene);
@@ -9534,6 +9372,7 @@ void rebuildBotActors(AppState &app) {
       const auto& asset=app.assetCatalog.entries[part];const auto partDocument=cast::Document::load(asset.path);
       if(partDocument.valid())scene::appendRigModel(partDocument,actorScene,asset.name);
     }
+    if(body.game=="aw")scene::refreshCharacterBounds(actorScene);
     scene::WeaponClass weaponClass = scene::WeaponClass::Rifle;
     std::size_t worldIndex = static_cast<std::size_t>(-1);
     if (weaponIndex < app.assetCatalog.entries.size()) {

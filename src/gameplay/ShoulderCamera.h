@@ -19,8 +19,8 @@ struct ShoulderCameraSettings {
 };
 struct CameraControls {
     ShoulderCameraSettings shoulder;
-    float zoomInDuration{},zoomOutDuration{},zoomIntensity{1}; // zero duration follows weapon timing
-    void sanitize(){shoulder.sanitize();for(auto* v:{&zoomInDuration,&zoomOutDuration})*v=std::isfinite(*v)?std::clamp(*v,0.f,5.f):0.f;zoomIntensity=std::isfinite(zoomIntensity)?std::clamp(zoomIntensity,0.f,2.f):1.f;}
+    float zoomInDuration{},zoomOutDuration{},zoomIntensity{}; // zero duration follows weapon timing
+    void sanitize(){shoulder.sanitize();for(auto* v:{&zoomInDuration,&zoomOutDuration})*v=std::isfinite(*v)?std::clamp(*v,0.f,5.f):0.f;zoomIntensity=std::isfinite(zoomIntensity)?std::clamp(zoomIntensity,0.f,2.f):0.f;}
 };
 inline std::ostream& operator<<(std::ostream& o,const CameraControls& c){const auto& s=c.shoulder;return o<<s.position.x<<' '<<s.position.y<<' '<<s.position.z<<' '<<s.adsPosition.x<<' '<<s.adsPosition.y<<' '<<s.adsPosition.z<<' '<<s.rotation.x<<' '<<s.rotation.y<<' '<<s.rotation.z<<' '<<s.fov<<' '<<s.adsFov<<' '<<c.zoomInDuration<<' '<<c.zoomOutDuration<<' '<<c.zoomIntensity;}
 inline std::istream& operator>>(std::istream& i,CameraControls& c){CameraControls v;auto& s=v.shoulder;if(i>>s.position.x>>s.position.y>>s.position.z>>s.adsPosition.x>>s.adsPosition.y>>s.adsPosition.z>>s.rotation.x>>s.rotation.y>>s.rotation.z>>s.fov>>s.adsFov>>v.zoomInDuration>>v.zoomOutDuration>>v.zoomIntensity){v.sanitize();c=v;}return i;}

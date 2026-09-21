@@ -19,7 +19,15 @@ inline void overlayTorso(const CastScene& actor,size_t clip,float frame,std::vec
     for(const auto& t:actor.animations[clip].tracks){const auto b=t.boneIndex;if(!t.ownsLayer||b>=base.size()||b>=pose.size())continue;switch(t.property){case TrackProperty::Rotation:base[b].rotation=pose[b].rotation;break;case TrackProperty::TranslationX:base[b].position.x=pose[b].position.x;break;case TrackProperty::TranslationY:base[b].position.y=pose[b].position.y;break;case TrackProperty::TranslationZ:base[b].position.z=pose[b].position.z;break;case TrackProperty::ScaleX:base[b].scale.x=pose[b].scale.x;break;case TrackProperty::ScaleY:base[b].scale.y=pose[b].scale.y;break;case TrackProperty::ScaleZ:base[b].scale.z=pose[b].scale.z;break;default:break;}}
 }
 inline void bridgeWorld(CastScene& target,size_t first,std::shared_ptr<const CastScene> source,size_t sourceFirst){
-    auto semanticTarget=target.skeleton;for(auto& b:semanticTarget.bones){const auto original=b.name;b.name=worldSemantic(original);
+    auto semanticTarget=target.skeleton;
+    // Native hashed rigs already carry verified semantic aliases. Resolve the
+    // target as well as the donor, without changing exported bone identities.
+    std::vector<std::string> resolved(semanticTarget.bones.size());
+    for(const auto& [name,index]:target.skeleton.boneByCanonicalName)
+        if(index<resolved.size()&&(name.starts_with("j_")||name.starts_with("tag_"))&&
+           (resolved[index].empty()||name<resolved[index]))resolved[index]=name;
+    for(size_t index=0;index<semanticTarget.bones.size();++index){auto& b=semanticTarget.bones[index];const auto original=b.name;
+        b.name=original.starts_with("string_")&&!resolved[index].empty()?resolved[index]:worldSemantic(original);
         // BO2 separates mainroot translation from pelvis rotation; PB collapses
         // those into its pelvis chain. Use the complete pelvis pose, not just mainroot.
         if(original=="Pelvis"&&source->skeleton.boneByCanonicalName.contains("pelvis"))b.name="pelvis";
@@ -42,7 +50,7 @@ inline void bridgeWorld(CastScene& target,size_t first,std::shared_ptr<const Cas
         for(size_t b=0;b<target.skeleton.bones.size();++b)adapter->globalTranslation[b]=target.skeleton.bones[b].name=="Pelvis";
         auto& a=target.animations[i];a=source->animations[si];a.coldWarWorldPose=adapter;a.tracks.clear();
         std::vector<bool> upper(target.skeleton.bones.size());
-        for(size_t b=0;b<upper.size();++b){const auto name=worldSemantic(target.skeleton.bones[b].name);const auto p=target.skeleton.bones[b].parent;upper[b]=name.starts_with("j_spine")||name=="j_neck"||name.starts_with("j_clavicle")||(p>=0&&upper[p]);}
+        for(size_t b=0;b<upper.size();++b){const auto& name=semanticTarget.bones[b].name;const auto p=target.skeleton.bones[b].parent;upper[b]=name.starts_with("j_spine")||name=="j_neck"||name.starts_with("j_clavicle")||(p>=0&&upper[p]);}
         // The adapter evaluates global source frames, so local source tracks
         // are NOT the target's channel mask (notably T6 mainroot -> PB pelvis).
         // Publish the actual evaluated channels for blending and SP overlays.

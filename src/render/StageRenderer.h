@@ -57,6 +57,7 @@ public:
     [[nodiscard]] bool initialize(std::string& error);
     void shutdown();
     [[nodiscard]] bool loadScene(const scene::CastScene& scene, std::string& error);
+    [[nodiscard]] bool loadPreviewScene(const scene::CastScene& scene, std::string& error);
     [[nodiscard]] bool replaceMainScene(const scene::CastScene& scene, const scene::CastScene* worldActorScene, const scene::CastScene* botActorScene, std::string& error);
     [[nodiscard]] bool hasMapMeshes() const noexcept { return mapMeshCount_ > 0; }
     [[nodiscard]] bool appendMainSceneMeshes(const scene::CastScene& scene,std::size_t firstSourceMesh,std::string& error);

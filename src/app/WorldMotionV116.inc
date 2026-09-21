@@ -3,6 +3,15 @@ float smoothWorldFacingOffset(float current,float target,float delta){
     const float change=std::remainder(target-current,2.f*scene::kPi);
     return std::remainder(current+change*(1.f-std::exp(-std::max(0.f,delta)/.075f)),2.f*scene::kPi);
 }
+float worldMovementFacing(float viewYaw,scene::Vec3 travel,scene::Direction authored){
+    if(travel.x*travel.x+travel.y*travel.y<=1.f)return viewYaw;
+    const float clipAngle=authored==scene::Direction::Left?scene::kPi*.5f:
+        authored==scene::Direction::Right?-scene::kPi*.5f:
+        authored==scene::Direction::Backward?scene::kPi:0.f;
+    // Cardinal clip selection loses diagonal travel. Preserve the continuous
+    // residual angle, even when the selected clip matches the cardinal query.
+    return std::atan2(travel.y,travel.x)-clipAngle;
+}
 scene::Direction worldClipDirection(const scene::Animation& clip){
     auto name=lowerText(clip.sourceName);
     if(name.ends_with(".cast"))name.resize(name.size()-5);
@@ -52,7 +61,7 @@ std::optional<std::size_t> selectDirectionalWorldClip(const scene::CastScene& ac
         const bool longGun=weapon==W::Rifle||weapon==W::Sniper||weapon==W::Automatic||weapon==W::LMG||weapon==W::Shotgun||weapon==W::M1216||weapon==W::Judge;
         if(longGun&&(clip.weapon==W::Pistol||clip.weapon==W::DualWield||clip.weapon==W::Knife||name.find("pistol")!=std::string::npos||name.find("akimbo")!=std::string::npos))continue;
         if(weapon==W::Knife&&clip.weapon!=W::Knife)continue;
-        if(motion==scene::MotionRole::Slide&&(name.find("death")!=std::string::npos||name.find("ladder")!=std::string::npos||name.find("2_")!=std::string::npos||name.find("slide2")!=std::string::npos))continue;
+        if(motion==scene::MotionRole::Slide&&(name.find("death")!=std::string::npos||name.find("ladder")!=std::string::npos||name.find("2_")!=std::string::npos||name.find("slide2")!=std::string::npos||name.find("jugmaniac")!=std::string::npos||name.find("2crouch")!=std::string::npos||name.find("2prone")!=std::string::npos))continue;
         const auto d=worldClipDirection(clip);
         // Unlabelled normal slides are forward fallbacks, not lateral clips.
         if(d!=direction&&!(motion==scene::MotionRole::Slide&&direction==scene::Direction::Forward&&d==scene::Direction::Any))continue;

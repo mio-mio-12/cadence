@@ -12,11 +12,11 @@ inline Mat4 anatomicalFrame(Vec3 origin,Vec3 next,Vec3 palmNormal){
     const auto z=normalize(cross(x,y));Mat4 m=Mat4::identity();
     m.v[0]=x.x;m.v[1]=x.y;m.v[2]=x.z;m.v[4]=y.x;m.v[5]=y.y;m.v[6]=y.z;m.v[8]=z.x;m.v[9]=z.y;m.v[10]=z.z;m.v[12]=origin.x;m.v[13]=origin.y;m.v[14]=origin.z;return m;
 }
-inline bool fitLegacyHands(CastScene& native,const CastScene& reference,const cast::Document& legacyDocument,std::string& error){
-    if((!native.codmNativeCentimetres&&!native.pointBlankNativeCentimetres)||reference.skeleton.bones.empty()){error="Normalized native reference required";return false;}
-    auto legacy=buildScene(legacyDocument);if(legacy.meshes.empty()){error="Legacy hands have no mesh";return false;}
+inline bool fitPreparedHands(CastScene& native,const CastScene& reference,CastScene legacy,const std::string& sourceName,std::string& error){
+    if(reference.skeleton.bones.empty()){error="Normalized native reference required";return false;}
+    if(legacy.meshes.empty()){error="Legacy hands have no mesh";return false;}
     const auto& src=reference.skeleton;const auto& dst=legacy.skeleton;
-    auto adapter=std::make_shared<CodmRigAdapter>();adapter->firstBone=native.skeleton.bones.size();adapter->identity=std::string(native.pointBlankNativeCentimetres?"Point Blank anatomical fit v2 / ":"CODM anatomical fit v1 / ")+std::filesystem::path(legacyDocument.sourceName()).filename().string();
+    auto adapter=std::make_shared<CodmRigAdapter>();adapter->firstBone=native.skeleton.bones.size();adapter->identity=std::string(native.pointBlankNativeCentimetres?"Point Blank anatomical fit v2 / ":"CODM anatomical fit v1 / ")+std::filesystem::path(sourceName).filename().string();
     // Identity tracks calibration inputs, not filenames alone. This is an
     // in-memory diagnostic fingerprint, not a cryptographic asset digest.
     uint64_t fingerprint=14695981039346656037ull;
@@ -110,5 +110,9 @@ inline bool fitLegacyHands(CastScene& native,const CastScene& reference,const ca
         native.meshes.erase(std::remove_if(native.meshes.begin(),native.meshes.end(),[](const auto& m){return !m.viewmodelWeapon;}),native.meshes.end());for(auto& m:legacy.meshes)native.meshes.push_back(std::move(m));native.codmRigAdapter=std::move(adapter);
         native.warnings.push_back("CODM legacy anatomical adapter candidate; visual validation required. Native weapon and camera tracks unchanged.");return true;
     }catch(const std::exception& e){error=e.what();return false;}
+}
+inline bool fitLegacyHands(CastScene& native,const CastScene& reference,const cast::Document& legacyDocument,std::string& error){
+    if(!native.codmNativeCentimetres&&!native.pointBlankNativeCentimetres){error="Normalized native reference required";return false;}
+    return fitPreparedHands(native,reference,buildScene(legacyDocument),legacyDocument.sourceName(),error);
 }
 }

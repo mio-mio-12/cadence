@@ -1738,7 +1738,7 @@ std::vector<Mat4> CastScene::globalPose(const std::vector<Transform>& localPose)
         const auto parent=skeleton.bones[i].parent;
         globals[i]=parent>=0?globals[parent]*matrix:matrix;
         if(codmNativeCentimetres)for(const auto& [target,source]:nativePoseFollowers)if(target==i&&source<i){globals[i]=globals[source];break;}
-        if((codmNativeCentimetres||pointBlankNativeCentimetres)&&codmRigAdapter&&i>=codmRigAdapter->firstBone&&i-codmRigAdapter->firstBone<codmRigAdapter->bindings.size()){
+        if(codmRigAdapter&&i>=codmRigAdapter->firstBone&&i-codmRigAdapter->firstBone<codmRigAdapter->bindings.size()){
             const auto& b=codmRigAdapter->bindings[i-codmRigAdapter->firstBone];if(b.source<i){globals[i]=globals[b.source]*b.offset;if(b.rollSource<i&&b.rollWeight>0){Vec3 p0,p1,s0,s1;Quat q0,q1;decomposeAffine(globals[i],p0,q0,s0);decomposeAffine(globals[b.rollSource]*b.rollOffset,p1,q1,s1);globals[i]=trs(lerp(p0,p1,b.rollWeight),slerp(q0,q1,b.rollWeight),lerp(s0,s1,b.rollWeight));}}
         }
     }

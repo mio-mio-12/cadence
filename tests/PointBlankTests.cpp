@@ -86,5 +86,19 @@ int main(){
   CHECK(adapter->sample(source->skeleton,70)[0].position.z>0&&adapter->sample(source->skeleton,70)[0].position.z<10);
   CHECK(source->skeleton.bones[0].restLocal.position.z==0);
  }
+ {
+  // Foreign body rotations must be evaluated in donor space, not copied
+  // into an AW-style differently oriented bind hierarchy.
+  auto source=std::make_shared<scene::CastScene>();
+  for(int i=0;i<3;++i){scene::Bone b;b.name=i==0?"tag_origin":i==1?"j_spineupper":"j_shoulder_ri";b.parent=i-1;b.restLocal.position={0,0,i?30.f:0.f};b.restGlobal=(i?source->skeleton.bones[i-1].restGlobal:scene::Mat4::identity())*scene::translation(b.restLocal.position);b.inverseBind=scene::inverseAffine(b.restGlobal);source->skeleton.boneByCanonicalName[b.name]=i;source->skeleton.bones.push_back(b);}
+  scene::Animation clip;clip.durationFrames=20;clip.domain=scene::AnimationDomain::PlayerTorso;scene::Track t;t.boneIndex=1;t.property=scene::TrackProperty::Rotation;t.frames={0,20};t.rotationValues={{0,0,0,1},scene::fromEulerRadians({.4f,.8f,-.3f})};clip.tracks.push_back(t);source->animations.push_back(clip);
+  scene::CastScene target;target.skeleton=source->skeleton;
+  target.skeleton.bones[1].restLocal.rotation=scene::fromEulerRadians({0,0,scene::kPi});
+  for(size_t i=0;i<3;++i){auto&b=target.skeleton.bones[i];b.restGlobal=(i?target.skeleton.bones[i-1].restGlobal:scene::Mat4::identity())*scene::trs(b.restLocal.position,b.restLocal.rotation,b.restLocal.scale);b.inverseBind=scene::inverseAffine(b.restGlobal);b.name=scene::nativeBoneHash(b.name);}
+  target.animations.resize(1);scene::pointblank::bridgeWorld(target,0,source,0);
+  CHECK(target.animations[0].coldWarWorldPose->sourceBones[1]==1);
+  CHECK(std::any_of(target.animations[0].tracks.begin(),target.animations[0].tracks.end(),[](const auto&t){return t.boneIndex==2&&t.ownsLayer;}));
+  for(float frame:{0.f,2.5f,10.f,20.f,4.f}){const auto a=target.samplePose(0,frame);const auto b=source->samplePose(0,frame);const auto expected=b[1]*scene::inverseAffine(source->skeleton.bones[1].restGlobal)*target.skeleton.bones[1].restGlobal;for(int k=0;k<12;++k)CHECK(std::abs(a[1].v[k]-expected.v[k])<.001f);}
+ }
  std::cout<<"Point Blank knife policy, units/UV, barrel sockets and volume-preserving calibration passed\n";
 }

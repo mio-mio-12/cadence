@@ -66,7 +66,7 @@ int main(){int failures=0;auto check=[&](bool b){if(!b)++failures;};
     check(gameplay::view::loadMotionDefaults(path,restarted)&&restarted.controls.shoulder.position.y==-25&&restarted.controls.shoulder.rotation.z==17&&restarted.controls.zoomInDuration==.8f&&restarted.controls.zoomOutDuration==.45f&&restarted.controls.zoomIntensity==.6f);
     // Legacy v1 remains readable with compatibility defaults for new controls.
     {std::ofstream legacy(path);legacy<<"CADENCEMOTION 1\n"<<defaults;}
-    check(gameplay::view::loadMotionDefaults(path,restarted)&&restarted.controls.zoomIntensity==1&&restarted.controls.zoomInDuration==0&&restarted.controls.shoulder.fov==75);
+    check(gameplay::view::loadMotionDefaults(path,restarted)&&restarted.controls.zoomIntensity==0&&restarted.controls.zoomInDuration==0&&restarted.controls.shoulder.fov==75);
     std::stringstream controls;controls<<defaults.controls;gameplay::view::CameraControls roundtrip;controls>>roundtrip;
     check(bool(controls)&&roundtrip.zoomOutDuration==.45f&&roundtrip.shoulder.position.y==-25);
     check(bool(preset)&&loadedPreset.mantle.intensity==.51f&&loadedPreset.camera.intensity==.92f&&loadedPreset.zoomIn.count==3);

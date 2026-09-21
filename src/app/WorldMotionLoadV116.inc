@@ -11,9 +11,8 @@ void appendSupplementalWorldMotion(AppState& app,scene::CastScene& actor){
         const auto first=actor.animations.size();
         const auto targetGame=app.classWorldModelAsset<app.assetCatalog.entries.size()?lowerText(app.assetCatalog.entries[app.classWorldModelAsset].game):std::string{};
         // Supplemental AW/Ghosts actions need the same reference-frame bridge
-        // as the selected animation library on PB/CODM and foreign Ghosts rigs.
-        // Cold War already installs its native adapter inside appendAnimations.
-        if(game=="bocw_sp"||!appendPointBlankWorldAnimation(app,document,actor,game,targetGame))scene::appendAnimations(document,actor);
+        // as the selected animation library on every foreign player rig.
+        if(!appendPointBlankWorldAnimation(app,document,actor,game,targetGame))scene::appendAnimations(document,actor);
         for(std::size_t i=first;i<actor.animations.size();++i){
             auto& clip=actor.animations[i];clip.sourceGame=game;clip.domain=scene::AnimationDomain::PlayerBody;
             clip.motion=motion;clip.action=scene::ActionRole::None;clip.direction=worldClipDirection(clip);
