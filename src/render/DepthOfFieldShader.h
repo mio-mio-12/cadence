@@ -15,11 +15,25 @@ uniform int uSamples,uBlades,uMode;
 bool foreground(float raw){return uForeground&&raw<.0400001;}
 float depthAt(vec2 uv){float z=texture(uDepth,uv).r;vec2 range=vec2(uNear,uFar);if(foreground(z)){z=clamp(z/.04,0,1);range=uViewmodelDepthRange;}return 2*range.x*range.y/(range.y+range.x-(z*2-1)*(range.y-range.x));}
 float coc(vec2 uv){if(!uAffectViewmodel&&foreground(texture(uDepth,uv).r))return 0;float z=depthAt(uv);return clamp((z-uFocus-uRange*.5)/uFarTransition,0,1)*uFarRadius-clamp((uFocus-uRange*.5-z)/uNearTransition,0,1)*uNearRadius;}
-vec3 source(vec2 uv){vec3 c=texture(uSource,uv).rgb;float ao=uAoEnabled?pow(clamp(1-(1-texture(uAo,uv).r)*uAoIntensity,0,1),uAoPower):1;c=c*ao+aoFogRestore(uv,ao);if(uIsolation)c+=texture(uIsolated,uv).rgb*(1-ao);return pow(max(c,vec3(0)),vec3(uGamma));}
+vec3 source(vec2 uv){vec3 c=texture(uSource,uv).rgb;float ao=uAoEnabled?pow(clamp(1-(1-texture(uAo,uv).r)*uAoIntensity,0,1),uAoPower):1;c=c*ao+aoFogRestore(uv,ao);if(uIsolation)c+=texture(uIsolated,uv).rgb*(1-ao);return max(c,vec3(0));}
+// Same gamma-weighted gather, represented in log space at high gamma.
+// Direct pow(c,32) underflows dark rain and overflows HDR water highlights;
+// even a rejected sample used to inject 0*infinity into the whole aperture.
+float logAdd(float a,float b){float hi=max(a,b);return hi+log2(1.+exp2(-abs(a-b)));}
+vec3 logAdd(vec3 a,vec3 b){vec3 hi=max(a,b);return hi+log2(vec3(1)+exp2(-abs(a-b)));}
+vec3 logColor(vec3 c){return mix(vec3(-1e30),log2(max(c,vec3(1e-30)))*uGamma,greaterThan(c,vec3(0)));}
+float logBokeh(vec3 c){
+ float hi=max(c.x,max(c.y,c.z));
+ float lum=hi+log2(max(1e-30,dot(exp2(c-vec3(hi)),vec3(.2126,.7152,.0722))));
+ if(uBokeh<=0.||lum<=log2(max(1e-30,uThreshold)))return 0.;
+ float remaining=max(0.,1.-uThreshold*exp2(clamp(-lum,-126.,126.)));
+ return logAdd(0.,lum+log2(max(1e-30,8.*uBokeh*remaining)));
+}
 void main(){vec2 uv=vScreen*.5+.5;float centerCoc=coc(uv),centerDepth=depthAt(uv);bool centerFg=foreground(texture(uDepth,uv).r);
  float radius=uMode==0?max(0,centerCoc):uNearRadius;
- if(radius<.5){color=vec4(pow(source(uv),vec3(1/uGamma)),0);return;}
+ if(radius<.5){color=vec4(source(uv),0);return;}
  vec3 total=vec3(0);float weights=0,coverage=0,coverageWeights=0;
+ bool logarithmic=uGamma>2.;vec3 logTotal=vec3(-1e30);float logWeights=-1e30;
  for(int i=0;i<96;++i){if(i>=uSamples)break;float fraction=(float(i)+.5)/float(uSamples),angle=float(i)*2.39996323+uRotation;float ring=sqrt(mix(uHollow*uHollow,1.0,fraction));
   float shape=1;if(uBlades>=3){float sector=6.2831853/float(uBlades);shape=cos(3.14159265/float(uBlades))/cos(mod(angle-uRotation+sector*.5,sector)-sector*.5);}
   vec2 delta=vec2(cos(angle)*uAnamorphic,sin(angle)/uAnamorphic)*ring*radius*shape;vec2 q=clamp(uv+delta*uTexel,vec2(0),vec2(1));float sampleCoc=coc(q);bool sampleFg=foreground(texture(uDepth,q).r);
@@ -29,12 +43,18 @@ void main(){vec2 uv=vScreen*.5+.5;float centerCoc=coc(uv),centerDepth=depthAt(uv
   // focused/near surfaces and the separately rendered viewmodel stay protected.
   if(uMode==0){w=sampleCoc>0?smoothstep(-1.0,1.0,sampleCoc-ring*radius):0;if(centerFg!=sampleFg)w=0;}
   else {w=sampleCoc<0?smoothstep(-1.0,1.0,-sampleCoc-ring*radius):0;if(!uAffectViewmodel&&centerFg)w=0;}
-  vec3 c=source(q);float bright=1+uBokeh*max(dot(c,vec3(.2126,.7152,.0722))-uThreshold,0)*8;
-  total+=c*(w*bright);weights+=w*bright;coverage+=w;coverageWeights+=1;
+  coverage+=w;coverageWeights+=1;
+  if(w>0.){
+   if(logarithmic){vec3 c=logColor(source(q));float lw=log2(w)+logBokeh(c);logTotal=logAdd(logTotal,c+vec3(lw));logWeights=logAdd(logWeights,lw);}
+   else {vec3 c=pow(source(q),vec3(uGamma));float bright=1+uBokeh*max(dot(c,vec3(.2126,.7152,.0722))-uThreshold,0)*8;
+    total+=c*(w*bright);weights+=w*bright;}
+  }
  }
- vec3 blurred=weights>1e-5?pow(total/weights,vec3(1/uGamma)):pow(source(uv),vec3(1/uGamma));
+ vec3 blurred=source(uv);
+ if(logarithmic){if(logWeights>log2(1e-5))blurred=exp2((logTotal-vec3(logWeights))/uGamma);}
+ else if(weights>1e-5)blurred=pow(total/weights,vec3(1/uGamma));
  float alpha=uMode==0?smoothstep(.5,2.0,max(0,centerCoc)):clamp(coverage/max(1,coverageWeights),0,1);
- color=vec4(blurred,alpha);
+ color=vec4(clamp(blurred,vec3(0),vec3(65504)),alpha);
 }
 )GLSL";
 }

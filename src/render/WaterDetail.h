@@ -11,7 +11,7 @@ namespace render::water {
 struct Surface {
     float tightness{.55f}, foamPersistence{1.6f}, foamDetail{.8f};
     void sanitize(){
-        const auto c=[](float& x,float lo,float hi,float fallback){x=std::isfinite(x)?std::clamp(x,lo,hi):fallback;};
+        const auto c=[](float& x,float,float,float fallback){if(!std::isfinite(x))x=fallback;};
         c(tightness,0,1,.55f);c(foamPersistence,0,4,1.6f);c(foamDetail,0,1,.8f);
     }
 };

@@ -1,3 +1,5 @@
+#include "render/RainBlockers.h"
+#include "render/ShadowCoverage.h"
 #ifdef _WIN32
 #define NOMINMAX
 #include <Windows.h>
@@ -12,6 +14,8 @@
 #include "render/HbaoShader.h"
 #include "render/VolumetricLightingShader.h"
 #include "render/WaterShader.h"
+#include "render/RainShader.h"
+#include "render/WetShader.h"
 #include "render/AoFogShader.h"
 #include "render/DepthOfFieldShader.h"
 #include "render/StaticMaterialOrder.h"
@@ -64,6 +68,8 @@ out vec4 vLightPosition;
 out vec4 vFarLightPosition;
 out vec4 vViewmodelLightPosition;
 out vec3 vWorldPosition;
+out vec3 vWeatherPosition;
+out vec3 vWeatherNormal;
 out vec4 vColor;
 mat4 boneMatrix(uint index) {
     int base=int(index)*4;
@@ -85,6 +91,8 @@ void main() {
     vFarLightPosition=uFarLightViewProjection*world;
     vViewmodelLightPosition=uViewmodelLightViewProjection*world;
     vWorldPosition=world.xyz;
+    vWeatherPosition=aPosition;
+    vWeatherNormal=aNormal;
     vColor=aColor;
     gl_Position=uViewProjection*world;
     // Only Z changes: authored pose, lens size, FOV and X/Y projection stay exact.
@@ -94,7 +102,7 @@ void main() {
 }
 )GLSL";
 
-const char* kMeshFragment = R"GLSL(
+const std::string kMeshFragment = R"GLSL(
 #version 330 core
 in vec3 vNormal;
 in vec2 vUv;
@@ -238,16 +246,17 @@ uniform float uFarShadowDistance;
 uniform float uFarShadowBlend;
 uniform float uShadowSpecularMultiplier;
 out vec4 color;
-float sampleShadowMap(sampler2D shadowMap,vec4 lightPosition,vec3 normal){
+uniform vec2 uShadowDepthScale;
+float sampleShadowMap(sampler2D shadowMap,vec4 lightPosition,vec3 normal,float depthScale){
     vec3 projected=lightPosition.xyz/lightPosition.w*0.5+0.5;
     if(projected.z<=0.0||projected.z>=1.0||projected.x<=0.0||projected.x>=1.0||projected.y<=0.0||projected.y>=1.0)return 1.0;
-    float bias=uShadowBias+uShadowNormalBias*0.01*(1.0-dot(normalize(normal),normalize(-uSunDirection)));
+    float bias=(uShadowBias+uShadowNormalBias*0.01*(1.0-dot(normalize(normal),normalize(-uSunDirection))))*depthScale;
     vec2 texel=1.0/vec2(textureSize(shadowMap,0));float visible=0.0;
     for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x)visible+=(projected.z-bias<=texture(shadowMap,projected.xy+vec2(x,y)*texel*uShadowSoftness).r)?1.0:0.0;
     return visible/9.0;
 }
 float shadowVisibility(vec3 normal){
-    if(!uShadowEnabled)return 1.0;float distanceToCamera=length(vWorldPosition-uCameraPosition);float nearShadow=sampleShadowMap(uShadowMap,vLightPosition,normal),worldVisibility;if(!uFarShadowEnabled)worldVisibility=mix(1.0,nearShadow,1.0-smoothstep(uShadowFadeStart,uShadowDistance,distanceToCamera));else {float blend=max(0.001,uFarShadowBlend),nearWeight=1.0-smoothstep(uFarShadowStart-blend,uFarShadowStart+blend,distanceToCamera),farWeight=smoothstep(uFarShadowStart-blend,uFarShadowStart+blend,distanceToCamera)*(1.0-smoothstep(uFarShadowDistance-blend,uFarShadowDistance,distanceToCamera));float farShadow=farWeight>0.001?sampleShadowMap(uFarShadowMap,vFarLightPosition,normal):1.0;worldVisibility=mix(1.0,nearShadow,nearWeight)*(1.0-farWeight)+farShadow*farWeight;}if(uViewmodelSurface&&uViewmodelSelfShadows)worldVisibility*=sampleShadowMap(uViewmodelShadowMap,vViewmodelLightPosition,normal);worldVisibility=clamp((worldVisibility-.5)*uShadowContrast+.5,0.0,1.0);return mix(1.0,worldVisibility,clamp(uShadowIntensity,0.0,1.0));
+    if(!uShadowEnabled)return 1.0;float distanceToCamera=length(vWorldPosition-uCameraPosition);float nearShadow=sampleShadowMap(uShadowMap,vLightPosition,normal,uShadowDepthScale.x),worldVisibility;if(!uFarShadowEnabled)worldVisibility=mix(1.0,nearShadow,1.0-smoothstep(uShadowFadeStart,uShadowDistance,distanceToCamera));else {float blend=max(0.001,uFarShadowBlend),nearWeight=1.0-smoothstep(uFarShadowStart-blend,uFarShadowStart+blend,distanceToCamera),farWeight=smoothstep(uFarShadowStart-blend,uFarShadowStart+blend,distanceToCamera)*(1.0-smoothstep(uFarShadowDistance-blend,uFarShadowDistance,distanceToCamera));float farShadow=farWeight>0.001?sampleShadowMap(uFarShadowMap,vFarLightPosition,normal,uShadowDepthScale.y):1.0;worldVisibility=mix(1.0,nearShadow,nearWeight)*(1.0-farWeight)+farShadow*farWeight;}if(uViewmodelSurface&&uViewmodelSelfShadows)worldVisibility*=sampleShadowMap(uViewmodelShadowMap,vViewmodelLightPosition,normal,1.0);worldVisibility=clamp((worldVisibility-.5)*uShadowContrast+.5,0.0,1.0);return mix(1.0,worldVisibility,clamp(uShadowIntensity,0.0,1.0));
 }
 mat3 cotangentFrame(vec3 normal,vec3 position,vec2 uv){vec3 dp1=dFdx(position),dp2=dFdy(position);vec2 duv1=dFdx(uv),duv2=dFdy(uv);vec3 dp2perp=cross(dp2,normal),dp1perp=cross(normal,dp1);vec3 tangent=dp2perp*duv1.x+dp1perp*duv2.x,bitangent=dp2perp*duv1.y+dp1perp*duv2.y;float scale=inversesqrt(max(dot(tangent,tangent),dot(bitangent,bitangent)));return mat3(tangent*scale,bitangent*scale,normal);}
 int specFaceSource(int face){if(face==0)return uSpecFaceSource0;if(face==1)return uSpecFaceSource1;if(face==2)return uSpecFaceSource2;if(face==3)return uSpecFaceSource3;if(face==4)return uSpecFaceSource4;return uSpecFaceSource5;}
@@ -260,10 +269,14 @@ vec3 sampleSpecCube(vec3 worldDirection){float c=cos(uSkyRotation),s=sin(uSkyRot
 uniform int uCubemapSamples;
 vec3 sampleSpecCubeDualKawase(vec3 direction,float blur){direction=normalize(direction);if(blur<=0.001)return sampleSpecCube(direction);vec3 helper=abs(direction.z)<0.85?vec3(0,0,1):vec3(0,1,0);vec3 tangent=normalize(cross(helper,direction)),bitangent=normalize(cross(direction,tangent));vec3 result=sampleSpecCube(direction)*0.20;float totalWeight=0.20;int samples=clamp(uCubemapSamples,4,32);float maxR=blur*1.6;for(int i=0;i<32;++i){if(i>=samples)break;float fi=float(i)+0.5;float r=sqrt(fi/float(samples))*maxR;float theta=float(i)*2.3999632;float w=exp(-3.0*(r/maxR)*(r/maxR));vec3 sampleDir=normalize(direction+(tangent*cos(theta)+bitangent*sin(theta))*r);result+=sampleSpecCube(sampleDir)*w;totalWeight+=w;}return result/totalWeight;}
 float schlickSmith(float ndl,float ndv,float exponent){float roughness=sqrt(2.0/(max(2.0,exponent)+2.0)),k=roughness*roughness*0.5;float gl=ndl/max(0.0001,ndl*(1.0-k)+k),gv=ndv/max(0.0001,ndv*(1.0-k)+k);return gl*gv;}
-vec3 codSpecularLobe(vec3 f0,float exponent,float intensity,vec3 n,vec3 l,vec3 v){vec3 h=normalize(l+v);float ndl=max(dot(n,l),0.0),ndv=max(dot(n,v),0.0),ndh=max(dot(n,h),0.0),vdh=max(dot(v,h),0.0);vec3 fresnel=f0+(vec3(1.0)-f0)*pow(1.0-vdh,5.0);float normalized=(exponent+2.0)/6.2831853;return fresnel*(normalized*pow(ndh,exponent)*schlickSmith(ndl,ndv,exponent)*ndl)*intensity;}
-vec3 awSpecular(vec3 f0,float roughness,vec3 n,vec3 l,vec3 v){vec3 h=normalize(l+v);float ndl=max(dot(n,l),0.0),ndv=max(dot(n,v),0.0),ndh=max(dot(n,h),0.0),vdh=max(dot(v,h),0.0),a=max(.025,roughness*roughness),a2=a*a,d=a2/(3.14159265*pow(max(.0001,ndh*ndh*(a2-1.0)+1.0),2.0)),k=pow(roughness+1.0,2.0)/8.0,g=(ndl/(ndl*(1.0-k)+k))*(ndv/(ndv*(1.0-k)+k));vec3 f=f0+(vec3(1)-f0)*pow(1.0-vdh,5.0);return f*d*g*ndl/max(.001,4.0*ndl*ndv);}
+// Normalized vectors can dot slightly above 1 at aligned camera/light angles.
+// Clamp the Fresnel cosine at both ends: GLSL pow(negative, 5) is undefined,
+// and a single NaN can spread through every bloom level or water transmission.
+vec3 codSpecularLobe(vec3 f0,float exponent,float intensity,vec3 n,vec3 l,vec3 v){vec3 h=normalize(l+v);float ndl=max(dot(n,l),0.0),ndv=max(dot(n,v),0.0),ndh=max(dot(n,h),0.0),vdh=clamp(dot(v,h),0.0,1.0);vec3 fresnel=f0+(vec3(1.0)-f0)*pow(1.0-vdh,5.0);float normalized=(exponent+2.0)/6.2831853;return fresnel*(normalized*pow(ndh,exponent)*schlickSmith(ndl,ndv,exponent)*ndl)*intensity;}
+vec3 awSpecular(vec3 f0,float roughness,vec3 n,vec3 l,vec3 v){vec3 h=normalize(l+v);float ndl=max(dot(n,l),0.0),ndv=max(dot(n,v),0.0),ndh=max(dot(n,h),0.0),vdh=clamp(dot(v,h),0.0,1.0),a=max(.025,roughness*roughness),a2=a*a,d=a2/(3.14159265*pow(max(.0001,ndh*ndh*(a2-1.0)+1.0),2.0)),k=pow(roughness+1.0,2.0)/8.0,g=(ndl/(ndl*(1.0-k)+k))*(ndv/(ndv*(1.0-k)+k));vec3 f=f0+(vec3(1)-f0)*pow(1.0-vdh,5.0);return f*d*g*ndl/max(.001,4.0*ndl*ndv);}
 )GLSL" R"GLSL(
 vec3 film(vec3 rgb){if(!uFilmEnabled)return rgb;float l=dot(rgb,vec3(.2126,.7152,.0722));rgb=mix(rgb,vec3(l),clamp(uFilmDesaturation,-1.0,1.0));rgb=(rgb-.5)*uFilmContrast+.5+uFilmBrightness;vec3 tint=mix(uFilmDarkTint,uFilmLightTint,clamp(l,0.0,1.0));if(uFilmMidTintEnabled)tint=mix(tint,uFilmMidTint,clamp(1.0-abs(l*2.0-1.0),0.0,1.0));rgb*=tint;if(uBloomEnabled){vec3 bright=max(rgb-vec3(uBloomThreshold),vec3(0));rgb+=bright*bright/(bright+vec3(.25))*uBloomIntensity;}if(uVignetteEnabled){vec2 uv=gl_FragCoord.xy/max(uViewportSize,vec2(1));float d=length((uv-.5)*vec2(uViewportSize.x/uViewportSize.y,1));float v=smoothstep(uVignetteRadius,max(uVignetteRadius+.001,uVignetteRadius+uVignetteSoftness),d);rgb*=1.0-v*clamp(uVignetteIntensity,0.0,1.0);}if(uFilmInvert)rgb=vec3(1)-rgb;return max(rgb,vec3(0));}
+)GLSL" + std::string(kWetShader) + R"GLSL(
 void main() {
     if(vVisible<0.5)discard;
     if(uActorOverlay>0){
@@ -305,6 +318,8 @@ void main() {
     if(uDecalAdditive&&alpha<0.005)discard;
     if(!uLens&&uAlphaTest&&alpha<uAlphaCutoff)discard;
     if(uExplicitMaterial&&uAlphaTest)alpha=1.0;
+    float surfaceWet=0.,surfacePuddle=0.;
+    if(!uLens&&!uEmissive&&!uDecalAdditive&&!uDecalMultiply&&!uUnlit)surfaceWater(normal,rgb,surfaceWet,surfacePuddle);
     vec3 viewDirection=normalize(uCameraPosition-vWorldPosition);
     vec3 f0_eevee_local=vec3(0.04);
     float visibility=1.0;
@@ -357,7 +372,7 @@ void main() {
             if(uSpecularGlossiness){f0_eevee=clamp(specularSample.rgb,vec3(0),vec3(.99));f0_eevee_local=f0_eevee;}
 )GLSL" R"GLSL(
             vec3 h=normalize(lightDirection+viewDirection);
-            float ndh=max(dot(normal,h),0.0),ndv=max(dot(normal,viewDirection),0.0),vdh=max(dot(viewDirection,h),0.0);
+            float ndh=max(dot(normal,h),0.0),ndv=max(dot(normal,viewDirection),0.0),vdh=clamp(dot(viewDirection,h),0.0,1.0);
             float clNdl=max(rawNdl,0.0);
             if(clNdl>0.0){
                 float a2=alpha_g*alpha_g,denom=(ndh*ndh*(a2-1.0)+1.0);
@@ -385,7 +400,7 @@ void main() {
 
         if(uBrdfModel>0){
             vec3 h=normalize(lightDirection+viewDirection);
-            float ndh=max(dot(normal,h),0.0),ndv=max(dot(normal,viewDirection),0.0),vdh=max(dot(viewDirection,h),0.0),clNdl=max(rawNdl,0.0);
+            float ndh=max(dot(normal,h),0.0),ndv=max(dot(normal,viewDirection),0.0),vdh=clamp(dot(viewDirection,h),0.0,1.0),clNdl=max(rawNdl,0.0);
             if(uBrdfModel==1){
                 diffuse=clNdl; directSpec=vec3(0.0);
             }else if(uBrdfModel==2){
@@ -482,14 +497,15 @@ void main() {
             rgb=mix(rgb,through,clamp(uGltfTransmission*(1.0-gltfMetal),0.0,1.0));
         }
     }
+    if(surfaceWet>0.){
+        float waterF=.02037+.97963*pow(1.-clamp(dot(normal,viewDirection),0.,1.),5.);
+        float rough=clamp(mix(uWetA.z,uWetMaterial.x,surfacePuddle),.025,1.);
+        waterF=mix(waterF,uWetMaterial.y+(1.-uWetMaterial.y)*pow(1.-clamp(dot(normal,viewDirection),0.,1.),5.),surfacePuddle);
+        if(uHasSpecCubemap)rgb+=sampleSpecCubeDualKawase(reflect(-viewDirection,normal),rough)*waterF*surfaceWet*uWetCoat*uWetMaterial.z;
+        if(uSunEnabled)rgb+=awSpecular(vec3(.02037),rough,normal,normalize(-uSunDirection),viewDirection)*uSunColor*uSunIntensity*visibility*surfaceWet*uWetCoat;
+    }
     if(uExplicitMaterial)rgb+=uGltfEmissive*(uHasEmissionMap?texture(uSpecularImperfections,vUv).rgb:vec3(1.0));
     else if(!uEmissive)rgb+=uGltfPbr?uGltfEmissive:vec3(0);
-    if(uFogEnabled){
-        float visibility=exp2(-max(0.0,length(vWorldPosition-uCameraPosition)-uFogStart)/max(1.0,uFogHalfDistance));
-        float heightDensity=uFogHeightEnabled?exp2(-max(0.0,vWorldPosition.z-uFogHeight)/max(1.0,uFogHeightFalloff)):1.0;
-        float fogAmount=(1.0-visibility)*heightDensity*clamp(uFogOpacity,0.0,1.0);
-        rgb=mix(rgb,uFogColor,clamp(fogAmount,0.0,1.0));
-    }
     if(uDecalMultiply){
         rgb=mix(vec3(1.0),base.rgb*vertTint,clamp(alpha,0.0,1.0));
         alpha=1.0;
@@ -498,6 +514,14 @@ void main() {
     }
     // Legacy render target is display-encoded; explicit textures entered linear.
     if(uExplicitMaterial)rgb=mix(rgb*12.92,1.055*pow(max(rgb,vec3(0)),vec3(1.0/2.4))-0.055,step(vec3(0.0031308),rgb));
+    // Fog controls and the shared post-processing target are display-encoded.
+    // Composite after material conversion so map and legacy actor fog agree.
+    if(uFogEnabled&&!uDecalMultiply&&!uDecalAdditive){
+        float visibility=exp2(-max(0.0,length(vWorldPosition-uCameraPosition)-uFogStart)/max(1.0,uFogHalfDistance));
+        float heightDensity=uFogHeightEnabled?exp2(-max(0.0,vWorldPosition.z-uFogHeight)/max(1.0,uFogHeightFalloff)):1.0;
+        float fogAmount=(1.0-visibility)*heightDensity*clamp(uFogOpacity,0.0,1.0);
+        rgb=mix(rgb,uFogColor,clamp(fogAmount,0.0,1.0));
+    }
     color=vec4(film(rgb),alpha*uWorldOpacity);
 }
 )GLSL";
@@ -909,7 +933,7 @@ bool StageRenderer::initialize(std::string& error) {
     if(initialized_)return true;
     uniformLocations_.clear();
     if(!glapi::load()){error="OpenGL 3.3 function loading failed";return false;}
-    meshProgram_=compileProgram(kMeshVertex,kMeshFragment,error);if(!meshProgram_)return false;
+    meshProgram_=compileProgram(kMeshVertex,kMeshFragment.c_str(),error);if(!meshProgram_)return false;
     lineProgram_=compileProgram(kLineVertex,kLineFragment,error);if(!lineProgram_){glapi::DeleteProgram(meshProgram_);meshProgram_=0;return false;}
     billboardProgram_=compileProgram(kBillboardVertex,kBillboardFragment,error);if(!billboardProgram_){glapi::DeleteProgram(lineProgram_);glapi::DeleteProgram(meshProgram_);lineProgram_=meshProgram_=0;return false;}
     shadowProgram_=compileProgram(kShadowVertex,kShadowFragment,error);if(!shadowProgram_){glapi::DeleteProgram(billboardProgram_);glapi::DeleteProgram(lineProgram_);glapi::DeleteProgram(meshProgram_);billboardProgram_=lineProgram_=meshProgram_=0;return false;}
@@ -1026,6 +1050,9 @@ void StageRenderer::releaseTarget(){
 #include "render/HbaoPass.inc"
 #include "render/VolumetricLightingPass.inc"
 #include "render/WaterPass.inc"
+#include "render/RainPass.inc"
+#include "render/RainShelter.inc"
+#include "render/MuzzleLight.inc"
 #include "render/DepthOfFieldPass.inc"
 
 void StageRenderer::releaseMsaaTarget(){
@@ -1043,9 +1070,20 @@ void StageRenderer::clearScene(){
 }
 
 void StageRenderer::shutdown(){
+    if(muzzleLightProgram_)glapi::DeleteProgram(muzzleLightProgram_);muzzleLightProgram_=0;
+    if(muzzleLightFramebuffer_)glapi::DeleteFramebuffers(1,&muzzleLightFramebuffer_);muzzleLightFramebuffer_=0;
+    if(rainShelterProgram_)glapi::DeleteProgram(rainShelterProgram_);rainShelterProgram_=0;
+    if(rainShelterFramebuffer_)glapi::DeleteFramebuffers(1,&rainShelterFramebuffer_);rainShelterFramebuffer_=0;
+    if(rainShelterTexture_)glDeleteTextures(1,&rainShelterTexture_);rainShelterTexture_=0;
+    if(rainShelterDepth_)glDeleteTextures(1,&rainShelterDepth_);rainShelterDepth_=0;rainShelterValid_=false;
     if(nightPanorama_)glDeleteTextures(1,&nightPanorama_);nightPanorama_=0;nightPanoramaPath_.clear();
     driverPoll_={};driverTotalMb_=driverFreeMb_=0;
     if(volumetricProgram_)glapi::DeleteProgram(volumetricProgram_);volumetricProgram_=0;
+    if(rainProgram_)glapi::DeleteProgram(rainProgram_);rainProgram_=0;
+    if(rainFramebuffer_)glapi::DeleteFramebuffers(1,&rainFramebuffer_);rainFramebuffer_=0;
+    if(rainLaneTexture_)glDeleteTextures(1,&rainLaneTexture_);rainLaneTexture_=0;
+    if(rainBackground_)glDeleteTextures(1,&rainBackground_);rainBackground_=0;rainBackgroundWidth_=rainBackgroundHeight_=0;
+    rainField_={};rainMap_=nullptr;rainError_.clear();
     if(waterProgram_)glapi::DeleteProgram(waterProgram_);waterProgram_=0;
     if(waterSceneFramebuffer_)glapi::DeleteFramebuffers(1,&waterSceneFramebuffer_);waterSceneFramebuffer_=0;
     if(waterSceneDepth_)glDeleteTextures(1,&waterSceneDepth_);waterSceneDepth_=0;
@@ -1288,6 +1326,7 @@ bool StageRenderer::setT6SkyboxIwi(const std::filesystem::path& path,std::string
 }
 
 bool StageRenderer::appendSceneMeshes(const scene::CastScene& scene,std::string& error,std::size_t firstSourceMesh,bool generateWireframe,bool isMapScene,ProgressCallback progressCallback) {
+    rainShelterValid_=false;
     if(!initialized_){error="Renderer is not initialized";return false;}
     const int maxTexDim = isMapScene ? mapTextureResolution_ : 1024;
     const bool compress = isMapScene && hardwareTextureCompression_;
@@ -1357,6 +1396,7 @@ bool StageRenderer::appendSceneMeshes(const scene::CastScene& scene,std::string&
         GpuMesh mesh;mesh.indexCount=static_cast<int>(source.indices.size());mesh.model=source.modelTransform;mesh.color=source.color;mesh.skinned=source.skinned;mesh.camoBlend=source.camoBlend;mesh.camoUseAlpha=source.camoUseAlpha;mesh.hideWhenCamo=source.hideWhenCamo;mesh.lens=source.lens;mesh.eyeOverlay=source.eyeOverlay;mesh.emissive=source.emissive;mesh.forceAlpha=source.forceAlpha;mesh.decal=source.decal;mesh.decalMultiply=source.decalMultiply;mesh.decalAdditive=source.decalAdditive;mesh.alphaTest=source.alphaTest;mesh.ignoreAlbedoAlpha=source.ignoreAlbedoAlpha;mesh.viewmodelWeapon=source.viewmodelWeapon;mesh.gltfPbr=source.gltfPbr;mesh.specularGlossiness=source.specularGlossiness;mesh.metallicFactor=source.metallicFactor;mesh.roughnessFactor=source.roughnessFactor;mesh.transmissionFactor=source.transmissionFactor;mesh.indexOfRefraction=source.indexOfRefraction;mesh.emissiveFactor=source.emissiveFactor;mesh.attachmentIndex=source.attachmentIndex;mesh.actorVariant=source.actorVariant;
         mesh.materialPolicyExplicit=source.materialPolicyExplicit;mesh.doubleSided=source.doubleSided;mesh.unlit=source.unlit;mesh.useVertexColor=source.useVertexColor;mesh.alphaCutoff=source.alphaCutoff;mesh.materialDepthBias=source.materialDepthBias;mesh.renderQueue=source.renderQueue;mesh.sourceBlend=source.sourceBlend;mesh.destinationBlend=source.destinationBlend;
         mesh.aabbMin=source.bounds.minimum;mesh.aabbMax=source.bounds.maximum;mesh.hasBounds=source.bounds.valid;
+        mesh.rainExcluded=source.weatherNonBlocking||rain::nonblockingSurface(source.name)||rain::nonblockingSurface(source.materialName)||source.color.w<=.001f;
         if(!mesh.hasBounds&&!source.vertices.empty()){
             mesh.aabbMin=source.vertices.front().position;mesh.aabbMax=source.vertices.front().position;
             for(const auto& v:source.vertices){
@@ -1789,6 +1829,7 @@ void StageRenderer::render(const scene::CastScene& scene,const std::vector<scene
     if(!initialized_||!resizeTarget(width,height)||(msaaEnabled_&&!resizeMsaaTarget(width,height)))return;
     foregroundDrawn_=showMainScene;
     GpuTimer::Scope gpuTiming(gpuTimer_);
+    prepareRainShelter();
     lastVisibleMapMeshes_=lastShadowCasterDraws_=lastFarShadowCasterDraws_=lastTotalDrawCalls_=0;
     const auto equipmentHidden=[&](const GpuMesh& mesh,const scene::CastScene& drawScene,const std::vector<scene::Mat4>& drawPose){
         if(&drawScene==&scene)return equipmentHiddenPlayer_&&mesh.viewmodelWeapon;
@@ -1857,6 +1898,7 @@ void StageRenderer::render(const scene::CastScene& scene,const std::vector<scene
     scene::Bounds lightBounds =
         mapScene && mapScene->bounds.valid ? mapScene->bounds : scene.bounds;
     scene::Mat4 lightViewProjection = scene::Mat4::identity();
+    scene::Vec2 shadowDepthScale{1,1};
     scene::Mat4 farLightViewProjection = scene::Mat4::identity();
     scene::Mat4 viewmodelLightViewProjection = scene::Mat4::identity();
     if (sunEnabled_ && lightBounds.valid) {
@@ -1868,12 +1910,10 @@ void StageRenderer::render(const scene::CastScene& scene,const std::vector<scene
       const scene::Vec3 up = std::abs(direction.z) > 0.95f
                                  ? scene::Vec3{0, 1, 0}
                                  : scene::Vec3{0, 0, 1};
-      const auto lightView = scene::lookAt(center - direction * radius * 1.8f,
-                                           center, up),
-                 lightProjection = scene::orthographic(
-                     -radius, radius, -radius, radius, 1.0f, radius * 4.0f);
-      lightViewProjection = lightProjection * lightView;
-      const float farRadius=std::max(radius,farShadowDistance_);const auto farView=scene::lookAt(center-direction*farRadius*1.8f,center,up),farProjection=scene::orthographic(-farRadius,farRadius,-farRadius,farRadius,1.0f,farRadius*4.0f);farLightViewProjection=farProjection*farView;
+      const auto nearCoverage=shadow::coverage(center,direction,radius,lightBounds);
+      lightViewProjection=nearCoverage.matrix;shadowDepthScale.x=nearCoverage.biasScale;
+      const auto farCoverage=shadow::coverage(center,direction,std::max(radius,farShadowDistance_),lightBounds);
+      farLightViewProjection=farCoverage.matrix;shadowDepthScale.y=farCoverage.biasScale;
       const float vmRadius=45.0f;
       const auto vmLightView=scene::lookAt(center-direction*vmRadius*2.0f,center,up),vmLightProjection=scene::orthographic(-vmRadius,vmRadius,-vmRadius,vmRadius,1.0f,vmRadius*4.0f);
       viewmodelLightViewProjection=vmLightProjection*vmLightView;
@@ -2026,9 +2066,25 @@ void StageRenderer::render(const scene::CastScene& scene,const std::vector<scene
         glapi::Uniform4f(uniformLocation(environmentProgram_,"uNightMoon"),nightSky_.moonIntensity,nightSky_.moonSize*scene::kPi/360,nightSky_.moonPhase,nightSky_.moonHalo);
 glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forward=scene::normalize(environmentForward_),right=scene::normalize(scene::cross(forward,environmentUp_)),up=scene::normalize(scene::cross(right,forward));glapi::Uniform1i(uniformLocation(environmentProgram_,"uMode"),environmentMode_);glapi::Uniform1i(uniformLocation(environmentProgram_,"uFlipVertical"),skyVerticalFlip_?1:0);glapi::Uniform3f(uniformLocation(environmentProgram_,"uForward"),forward.x,forward.y,forward.z);glapi::Uniform3f(uniformLocation(environmentProgram_,"uRightAxis"),right.x,right.y,right.z);glapi::Uniform3f(uniformLocation(environmentProgram_,"uUpAxis"),up.x,up.y,up.z);glapi::Uniform1f(uniformLocation(environmentProgram_,"uTanHalfFov"),std::tan(std::clamp(environmentFov_,1.0f,179.0f)*scene::kPi/360.0f));glapi::Uniform1f(uniformLocation(environmentProgram_,"uAspect"),std::max(0.01f,environmentAspect_));glapi::Uniform1f(uniformLocation(environmentProgram_,"uRotation"),environmentRotation_*scene::kPi/180.0f);glapi::Uniform1f(uniformLocation(environmentProgram_,"uIntensity"),environmentIntensity_);glapi::Uniform1f(uniformLocation(environmentProgram_,"uExposure"),environmentExposure_);glapi::Uniform1i(uniformLocation(environmentProgram_,"uFilmEnabled"),filmEnabled_?1:0);glapi::Uniform1f(uniformLocation(environmentProgram_,"uFilmBrightness"),filmBrightness_);glapi::Uniform1f(uniformLocation(environmentProgram_,"uFilmContrast"),filmContrast_);glapi::Uniform1f(uniformLocation(environmentProgram_,"uFilmDesaturation"),filmDesaturation_);glapi::Uniform3f(uniformLocation(environmentProgram_,"uFilmDarkTint"),filmDarkTint_.x,filmDarkTint_.y,filmDarkTint_.z);glapi::Uniform3f(uniformLocation(environmentProgram_,"uFilmLightTint"),filmLightTint_.x,filmLightTint_.y,filmLightTint_.z);glapi::Uniform1i(uniformLocation(environmentProgram_,"uFilmInvert"),filmInvert_?1:0);glapi::Uniform3f(uniformLocation(environmentProgram_,"uFogColor"),fogColor_.x,fogColor_.y,fogColor_.z);glapi::Uniform1f(uniformLocation(environmentProgram_,"uFogSkyAmount"),fogEnabled_?fogSkyAmount_:0.0f);for(int i=0;i<6;++i){const auto sourceName="uFaceSource"+std::to_string(i),rotationName="uFaceRotation"+std::to_string(i);glapi::Uniform1i(uniformLocation(environmentProgram_,sourceName.c_str()),skyFaceSources_[i]);glapi::Uniform1i(uniformLocation(environmentProgram_,rotationName.c_str()),skyFaceQuarterTurns_[i]);}const char* names[]={"uPanorama","uFront","uBack","uLeft","uRight","uUp","uDown"};glapi::ActiveTexture(glapi::Texture0+5);glBindTexture(GL_TEXTURE_2D,environmentTexture_);glapi::Uniform1i(uniformLocation(environmentProgram_,names[0]),5);for(int i=0;i<6;++i){glapi::ActiveTexture(glapi::Texture0+6+i);glBindTexture(GL_TEXTURE_2D,environmentFaces_[i]);glapi::Uniform1i(uniformLocation(environmentProgram_,names[i+1]),6+i);}glapi::BindVertexArray(lineVao_);glapi::DrawArrays(GL_TRIANGLES,0,3);glEnable(GL_DEPTH_TEST);}
     glapi::UseProgram(meshProgram_);setExtendedFilmUniforms(meshProgram_);glapi::Uniform1i(uniformLocation(meshProgram_,"uBloomEnabled"),0);
+    glapi::Uniform2f(uniformLocation(meshProgram_,"uShadowDepthScale"),shadowDepthScale.x,shadowDepthScale.y);
     glapi::UniformMatrix4fv(uniformLocation(meshProgram_,"uViewProjection"),1,GL_FALSE,viewProjection.data());
     const int foregroundClipLoc=uniformLocation(meshProgram_,"uForegroundClip");
     glapi::Uniform2f(foregroundClipLoc,0,0);
+    glapi::Uniform4f(uniformLocation(meshProgram_,"uWetA"),wet_.amount,wet_.darkening,wet_.roughness,wet_.coverage);
+    glapi::Uniform4f(uniformLocation(meshProgram_,"uWetB"),wet_.patchSize,wet_.edge,0,wet_.ripples);
+    glapi::Uniform4f(uniformLocation(meshProgram_,"uWetC"),wet_.droplets,wet_.dropSize,wet_.rivulets,wet_.flow);
+    glapi::Uniform1f(uniformLocation(meshProgram_,"uWetTime"),float(std::remainder(rain::clock(rainTime_,rain_),65536.)));
+    glapi::Uniform1f(uniformLocation(meshProgram_,"uWetCoat"),wet_.coat);
+    glapi::Uniform4f(uniformLocation(meshProgram_,"uWetDetail"),wet_.detail.randomness,wet_.detail.flowDisplacement,wet_.detail.flowDetail,wet_.detail.normalStrength);
+    glapi::Uniform4f(uniformLocation(meshProgram_,"uWetMaterial"),wet_.detail.puddleRoughness,wet_.detail.reflectance,wet_.detail.reflection,0);
+    glapi::Uniform4f(uniformLocation(meshProgram_,"uWetEdge"),wet_.detail.edgeNoise,wet_.detail.edgeDetail,0,0);
+    glapi::Uniform1i(uniformLocation(meshProgram_,"uWetCoatAll"),wet_.detail.coatAll);
+    glapi::Uniform1i(uniformLocation(meshProgram_,"uWetShelter"),rainShelterReady_);
+    glapi::Uniform3f(uniformLocation(meshProgram_,"uWetTile"),rainShelterCenter_.x,rainShelterCenter_.y,std::max(1.f,rainShelterExtent_));
+    glapi::Uniform3f(uniformLocation(meshProgram_,"uWetWind"),rainShelterSlope_.x,rainShelterSlope_.y,0);
+    glapi::Uniform3f(uniformLocation(meshProgram_,"uWetCenter"),cameraPosition_.x+rainShelterSlope_.x*cameraPosition_.z,cameraPosition_.y+rainShelterSlope_.y*cameraPosition_.z,std::max(1.f,rainShelterExtent_/1.75f));
+    glapi::Uniform1i(uniformLocation(meshProgram_,"uRainShelter"),18);
+    glapi::ActiveTexture(glapi::Texture0+18);glBindTexture(GL_TEXTURE_2D,rainShelterTexture_);
     glapi::Uniform1i(uniformLocation(meshProgram_,"uBones"),16);
     glapi::Uniform1i(uniformLocation(meshProgram_,"uBoneVisibility"),17);
     glapi::Uniform1i(uniformLocation(meshProgram_,"uAlbedo"),1);
@@ -2093,6 +2149,9 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
     glapi::Uniform2f(uniformLocation(meshProgram_,"uOverlayViewport"),static_cast<float>(width),static_cast<float>(height));
     const auto drawMesh=[&](const GpuMesh& mesh,const scene::CastScene& drawScene,const std::vector<scene::Mat4>& drawPose){
         if(equipmentHidden(mesh,drawScene,drawPose))return;
+        const bool wetAllowed=debugView_==0&&!wireframe&&actorOverlayMode==0;
+        set1i(uniformLocation(meshProgram_,"uWetGround"),wetAllowed&&wet_.ground&&wet_.map&&&drawScene==mapScene);
+        set1i(uniformLocation(meshProgram_,"uWetSurface"),wetAllowed&&wet_.enabled&&(&drawScene==mapScene?wet_.map:&drawScene==&scene?(mesh.viewmodelWeapon||mesh.camoBlend?wet_.viewmodels:wet_.detail.viewhands):wet_.actors));
         const bool mapSurface=&drawScene==mapScene;const bool viewmodelSurface=!mapSurface&&drawScene.skeleton.boneByCanonicalName.contains("tag_view");const bool weaponSurface=!mapSurface&&(mesh.viewmodelWeapon||mesh.camoBlend);const int requestedProfile=mapSurface?worldSpecularProfile_:(weaponSurface?viewmodelSpecularProfile_:playerSpecularProfile_);
         const int profileKey = requestedProfile * 10 + (weaponSurface ? 1 : 0) + (viewmodelSurface ? 2 : 0);
         if(profileKey != lastSurfaceProfile){
@@ -2622,6 +2681,7 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
     if(!campathLines.empty()){glLineWidth(campathThickness_);drawLines(campathLines,viewProjection);}
     glapi::BindVertexArray(0);glapi::UseProgram(0);
     if(msaaEnabled_){glapi::BindFramebuffer(glapi::ReadFramebuffer,msaaFramebuffer_);glapi::BindFramebuffer(glapi::DrawFramebuffer,framebuffer_);glapi::BlitFramebuffer(0,0,width_,height_,0,0,width_,height_,GL_COLOR_BUFFER_BIT,GL_NEAREST);glapi::BlitFramebuffer(0,0,width_,height_,0,0,width_,height_,GL_DEPTH_BUFFER_BIT,GL_NEAREST);}
+    renderRain(viewProjection);
     renderVolumetricLighting(viewProjection,lightViewProjection,farLightViewProjection,showMainScene);
     #include "render/AoTransparencyPass.inc"
     const bool hbaoActive=hbao_.enabled&&(debugView_==0||debugView_==1)&&renderHbao(viewProjection,showMainScene);
@@ -2812,9 +2872,10 @@ bool StageRenderer::saveDepthImage(const std::filesystem::path& path,int formatB
     error="Depth export is not implemented on this platform";return false;
 #endif
 }
-void StageRenderer::renderMuzzleFlash3D(scene::Vec3 position, float size, float rotation, scene::Vec4 color, const scene::Mat4& viewProjection, scene::Vec3 cameraPos, bool firstPerson) {
+void StageRenderer::renderMuzzleFlash3D(scene::Vec3 position, float size, float rotation, scene::Vec4 color, const scene::Mat4& viewProjection, scene::Vec3 cameraPos, bool firstPerson,scene::Vec3 direction) {
     if (size <= 0.001f || color.w <= 0.001f) return;
     if (!billboardProgram_ || !billboardVao_ || !billboardBuffer_ || !framebuffer_) return;
+    renderMuzzleLight(position,color,viewProjection,cameraPos,direction);
 
     scene::Vec3 toCam = cameraPos - position;
     if (scene::length(toCam) < 0.001f) toCam = {0, 0, 1};

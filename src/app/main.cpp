@@ -487,6 +487,10 @@ struct AppState {
     render::HbaoSettings hbao{};
     render::VolumetricLightingSettings volumetric{};
     render::water::Settings water{};
+    render::rain::Settings rain{};
+    render::WetSettings wet{};
+    render::MuzzleLightSettings muzzleLight{};
+    double rainSeconds{};
     double waterSeconds{};
     render::daynight::Settings dayNight{};
     render::NightSkySettings nightSky{};
@@ -828,6 +832,11 @@ struct AppState {
     std::uint32_t playerKnifeAttack{},botProcessedKnifeAttack{};
     float botModelScale{1.0f},botHeadHeight{64.0f};
     float playerMuzzleFlashTime{},hitmarkerTime{};bool debugMuzzleFlash{true},debugMuzzleLine{false};float muzzleFlashSize{1.0f},muzzleFlashRayLength{1.0f};
+    bool hitmarkerEnabled{true},hitmarkerProcedural{false},hitmarkerDot{};
+    int hitmarkerArms{4};
+    float hitmarkerGap{7.071068f},hitmarkerLength{14.142136f},hitmarkerThickness{2.2f},hitmarkerRotation{45.f},hitmarkerOutline{},hitmarkerDotSize{2.f};
+    float hitmarkerOpacity{1.f},hitmarkerFadePower{1.f},hitmarkerPulse{},hitmarkerDurationScale{1.f},hitmarkerKillScale{1.2f},hitmarkerSpriteSize{36.f};
+    ImVec4 hitmarkerColor{245.f/255,245.f/255,245.f/255,1},hitmarkerHeadColor{1,220.f/255,120.f/255,1},hitmarkerKillColor{245.f/255,62.f/255,48.f/255,1},hitmarkerOutlineColor{0,0,0,1};
     std::filesystem::path muzzleFlashPath;
     float muzzleFlashDuration{0.06f};
     float muzzleFlashCurvePower{1.6f};
@@ -1374,9 +1383,9 @@ void loadFile(AppState& app, const std::filesystem::path& path,const std::string
     app.takeRecording=false;app.takePlaying=false;app.takePreview=false;app.takeTime=0;app.takeAccumulator=0;app.exportActive=false;
     if (app.document->valid()) {
         app.scene = scene::buildScene(*app.document);
-        if(!handDriverGame.empty()&&scene::pointblank::exportedByPb2cast(*app.document)&&path.stem().string().starts_with("viewmodel_")&&path.stem().string().ends_with("_hands")){
+        if(!handDriverGame.empty()&&handDriverGame!="codm"&&handDriverGame!="pointblank"&&((handDriverGame!="cs2"&&scene::pointblank::exportedByPb2cast(*app.document)&&path.stem().string().starts_with("viewmodel_")&&path.stem().string().ends_with("_hands"))||app.scene.skeleton.boneByName.contains("b_LeftHand"))){
             std::string error;
-            if(!preparePointBlankCodHands(app,*app.document,handDriverGame,app.scene,error))app.scene.warnings.push_back("Point Blank / COD hands: "+error);
+            if(!preparePointBlankCodHands(app,*app.document,handDriverGame,app.scene,error))app.scene.warnings.push_back("Cross-game viewhands: "+error);
         }
         for(auto& mesh:app.scene.meshes)mesh.name=path.stem().string()+" / "+mesh.name;
         app.rendererError.clear();
@@ -3610,7 +3619,7 @@ std::vector<scene::Mat4> evaluateHiddenWorldActorPose(AppState& app,std::string*
     }
 
     if(nativeGame=="pointblank"&&!app.actorMantling&&app.gameplayStance!=scene::Stance::Prone){scene::AnimationQuery q;q.domain=scene::AnimationDomain::PlayerTorso;q.motion=effectiveSpeed>10?scene::MotionRole::Run:scene::MotionRole::Idle;q.weapon=worldWeapon;q.stance=app.gameplayStance;q.preferredGame="pointblank";if(auto idle=app.playerWorldTorsoCache.find(actor,q)){const auto& c=actor.animations[*idle];scene::pointblank::overlayTorso(actor,*idle,c.durationFrames?std::fmod(app.gameplayClock*c.framerate,static_cast<float>(c.durationFrames)):0,baseLocal);}}
-    std::optional<std::size_t> overlay;if(app.actionActive&&app.activeAction!=scene::ActionRole::None){scene::AnimationQuery actionQuery;actionQuery.domain=scene::AnimationDomain::PlayerTorso;actionQuery.action=app.activeAction;actionQuery.weapon=worldWeapon;actionQuery.stance=app.gameplayStance;actionQuery.preferredGame=nativeGame;actionQuery.forceT6Locomotion=app.forceT6PlayerLocomotion;overlay=app.worldSelectionCacheEnabled?app.playerWorldActionCache.find(actor,actionQuery):scene::findBestAnimation(actor,actionQuery);if(!overlay){actionQuery.weapon=scene::WeaponClass::Any;overlay=app.worldSelectionCacheEnabled?app.playerWorldActionCache.find(actor,actionQuery):scene::findBestAnimation(actor,actionQuery);}}
+    std::optional<std::size_t> overlay;if(app.actionActive&&app.activeAction!=scene::ActionRole::None){scene::AnimationQuery actionQuery;actionQuery.domain=scene::AnimationDomain::PlayerTorso;actionQuery.action=app.activeAction;actionQuery.weapon=worldWeapon;actionQuery.stance=app.gameplayStance;actionQuery.ads=app.gameplayAds;actionQuery.preferredGame=nativeGame;actionQuery.forceT6Locomotion=app.forceT6PlayerLocomotion;overlay=app.worldSelectionCacheEnabled?app.playerWorldActionCache.find(actor,actionQuery):scene::findBestAnimation(actor,actionQuery);if(!overlay){actionQuery.weapon=scene::WeaponClass::Any;overlay=app.worldSelectionCacheEnabled?app.playerWorldActionCache.find(actor,actionQuery):scene::findBestAnimation(actor,actionQuery);}}
     bool adsHold=false;
     if(!overlay&&app.gameplayAds&&isGroundWorldMotion(motion)&&motion!=scene::MotionRole::Idle){
         auto holdQuery=query;holdQuery.motion=scene::MotionRole::Idle;holdQuery.direction=scene::Direction::Any;holdQuery.ads=true;
@@ -3904,11 +3913,16 @@ bool restoreTakeActorInternal(AppState& app,const take::ActorManifest& actor,std
         app.activeClassSlot=-1;
     }
     std::string handDriverGame;
-    if(!originalPbLayout&&base->stem().string().starts_with("viewmodel_")&&base->stem().string().ends_with("_hands"))for(const auto& path:rigModels){if(assets::classifyModelPath(path,path.stem().string())==assets::Role::ViewWeapon){handDriverGame=gameFromExportPath(path);break;}}
+    if(!originalPbLayout&&((base->stem().string().starts_with("viewmodel_")&&base->stem().string().ends_with("_hands"))||gameFromExportPath(*base)=="codm"))for(const auto& path:rigModels){if(assets::classifyModelPath(path,path.stem().string())==assets::Role::ViewWeapon){handDriverGame=gameFromExportPath(path);break;}}
     loadFile(app,*base,handDriverGame);
     app.takeRecording=wasRecording;app.takePlaying=wasPlaying;app.takePreview=wasPreview;app.takeTime=savedTakeTime;app.takeAccumulator=savedAccumulator;
     if(!app.document||!app.document->valid()){error="Take actor base model could not be loaded";return false;}
-    for(const auto& path:rigModels)addRigModelFile(app,path,false);
+    for(const auto& path:rigModels){
+        if(gameFromExportPath(path)=="cs2"&&!app.scene.viewHandsDriverGame.empty()){
+            if(const auto* source=sourceViewhandsSkeletonForGame(app,"cs2")){addRigModelFile(app,path,false,scene::Mat4::identity(),crossRigWeaponScale(app.scene.skeleton,*source));continue;}
+        }
+        addRigModelFile(app,path,false);
+    }
     if(!rigModels.empty())finishRigMerge(app);
     for(const auto& [attached,path]:attachedModels){
         std::optional<std::size_t> boneIndex;
@@ -7140,7 +7154,7 @@ void drawActorOverlayControls(AppState& app){
 template<class App> auto actorOverlayValues(App& app){auto& f=app.actorOverlays;return std::tie(f.chams,f.throughWalls,f.outlines,f.glow,f.echoes,f.ribbons,f.arcs,f.landingRings,f.hitGhosts,f.impactPulses,f.transparentWorld,f.boxes,f.rainbow,f.impactCubes,f.material,f.echoCount,f.opacity,f.outlineWidth,f.glowWidth,f.glowStrength,f.historySeconds,f.historySpacing,f.lineWidth,f.ringRadius,f.hitDuration,f.worldOpacity,f.boxWidth,f.rainbowSpeed,f.cubeSize,f.cubeDuration,f.visible.x,f.visible.y,f.visible.z,f.visible.w,f.hidden.x,f.hidden.y,f.hidden.z,f.hidden.w,f.edge.x,f.edge.y,f.edge.z,f.edge.w,f.motion.x,f.motion.y,f.motion.z,f.motion.w,f.hit.x,f.hit.y,f.hit.z,f.hit.w,f.box.x,f.box.y,f.box.z,f.box.w);}
 #include "app/ActorOverlayPresets.inc"
 
-bool saveVisualPreset(const AppState& app,const std::filesystem::path& path){std::error_code error;std::filesystem::create_directories(path.parent_path(),error);std::ofstream out(path);if(!out)return false;out<<"CASTVISUAL 5\n"<<"view_motion "<<app.experimentalUniversalFirstPersonMantle<<' '<<app.universalFirstPersonMantleScale<<' '<<app.mantleFallbackPositionIw.x<<' '<<app.mantleFallbackPositionIw.y<<' '<<app.mantleFallbackPositionIw.z<<' '<<app.mantleFallbackRotationDegrees.x<<' '<<app.mantleFallbackRotationDegrees.y<<' '<<app.mantleFallbackRotationDegrees.z<<' '<<app.mantleFallbackRecovery<<' '<<app.mantleFallbackCurve<<' '<<app.boostFallback<<' '<<app.slideFallback<<' '<<app.boostCamera<<' '<<app.boostCameraMovesViewmodel<<' '<<app.directionalTilt<<' '<<app.sniperZoomIn<<' '<<app.sniperZoomOut<<'\n'<<"dof "<<app.dof<<'\n'<<"ao_transparency "<<app.hbao.separateTransparent<<' '<<app.hbao.transparentGap<<'\n'<<"hbao "<<app.hbao<<'\n'<<"shading "<<app.shadingModel<<' '<<app.iw3DualLobe<<'\n'<<"brdf_model "<<app.shadingSubModel<<'\n'<<"aw "<<app.awRoughnessScale<<' '<<app.awRoughnessBias<<' '<<app.awMetalness<<' '<<app.awSpecularLevel<<' '<<app.awDiffuseWrap<<' '<<app.awClearcoat<<' '<<app.awClearcoatRoughness<<' '<<app.awEnvironmentIntensity<<'\n'<<"eevee "<<app.eeveeMetallic<<' '<<app.eeveeRoughness<<' '<<app.eeveeIor<<' '<<app.eeveeSpecular<<' '<<app.eeveeSpecularTint<<' '<<app.eeveeClearcoat<<' '<<app.eeveeClearcoatRoughness<<'\n'<<"tonemapping "<<app.tonemappingMode<<'\n'<<"tonemap_rec709 "<<app.tonemapRec709Match<<' '<<app.tonemapRec709Strength<<'\n'<<"lens "<<app.lensAlpha<<' '<<app.lensTint.x<<' '<<app.lensTint.y<<' '<<app.lensTint.z<<' '<<app.lensSpecularIntensity<<' '<<app.lensCubemapIntensity<<'\n'<<"emissive "<<app.tritiumTint.x<<' '<<app.tritiumTint.y<<' '<<app.tritiumTint.z<<'\n'<<"spec "<<app.specularIntensity<<' '<<app.specularSharpness<<' '<<app.specularIntensity2<<' '<<app.specularSharpness2<<'\n'<<"cube "<<app.cubemapSpecular<<' '<<app.cubemapSpecularIntensity<<' '<<app.cubemapSpecularBlur<<' '<<app.weaponCubemapBlur<<'\n'<<"shadow_specular "<<app.shadowSpecularMultiplier<<'\n'<<"film "<<app.filmTweaks<<' '<<app.filmBrightness<<' '<<app.filmContrast<<' '<<app.filmDesaturation<<' '<<app.filmInvert<<' '<<app.filmDarkTint.x<<' '<<app.filmDarkTint.y<<' '<<app.filmDarkTint.z<<' '<<app.filmLightTint.x<<' '<<app.filmLightTint.y<<' '<<app.filmLightTint.z<<'\n'<<"film_mid "<<app.filmMidTintEnabled<<' '<<app.filmMidTint.x<<' '<<app.filmMidTint.y<<' '<<app.filmMidTint.z<<'\n'<<"fog "<<app.fogEnabled<<' '<<app.fogColor.x<<' '<<app.fogColor.y<<' '<<app.fogColor.z<<' '<<app.fogStartMeters<<' '<<app.fogHalfDistanceMeters<<' '<<app.fogOpacity<<' '<<app.fogSkyAmount<<'\n'<<"sun "<<app.sunLighting<<' '<<app.sunShadows<<' '<<app.sunAzimuth<<' '<<app.sunElevation<<' '<<app.sunIntensity<<' '<<app.sunAmbient<<' '<<app.sunColor.x<<' '<<app.sunColor.y<<' '<<app.sunColor.z<<' '<<app.ambientColor.x<<' '<<app.ambientColor.y<<' '<<app.ambientColor.z<<'\n'<<"environment "<<app.environmentIntensity<<' '<<app.environmentExposure<<' '<<app.environmentRotation<<' '<<app.skyVerticalFlip<<'\n'<<"env_hdr "<<app.environmentContrast<<' '<<app.environmentHighlightThreshold<<' '<<app.environmentHighlightBoost<<' '<<app.environmentToneMap<<'\n'<<"post_bloom "<<app.bloomEnabled<<' '<<app.bloomThreshold<<' '<<app.bloomSoftThreshold<<' '<<app.bloomSaturationBias<<' '<<app.bloomIntensity<<' '<<app.bloomRadius<<' '<<app.bloomKawaseSamples<<' '<<app.bloomAffectsSky<<' '<<app.bloomAspectRatio<<' '<<app.bloomRotation<<'\n'<<"bloom_blend "<<app.bloomBlendMode<<'\n'<<"post_vignette "<<app.vignetteEnabled<<' '<<app.vignetteIntensity<<' '<<app.vignetteRadius<<' '<<app.vignetteSoftness<<'\n'<<"post_distortion "<<app.lensDistortion<<'\n'<<"post_levels "<<app.autoBlackPoint<<' '<<app.autoBlackPointIntensity<<' '<<app.autoWhitePoint<<' '<<app.autoWhitePointIntensity<<'\n'<<"post_lut "<<app.lutIntensity<<' '<<std::quoted(app.lutPath.string())<<'\n'<<"post_order "<<app.postPassOrder[0]<<' '<<app.postPassOrder[1]<<' '<<app.postPassOrder[2]<<' '<<app.postPassOrder[3]<<' '<<app.postPassOrder[4]<<' '<<app.postPassOrder[5]<<' '<<app.postPassOrder[6]<<'\n'<<"impact_surf "<<app.impactSurfaceEnabled<<' '<<app.impactSurfacePlanesCount<<' '<<app.impactSurfaceStartWidth<<' '<<app.impactSurfaceEndWidth<<' '<<app.impactSurfaceLifetime<<' '<<app.impactSurfaceBlastSpeed<<' '<<app.impactSurfaceRiseSpeed<<' '<<app.impactSurfaceDispersion<<' '<<app.impactSurfaceTaperingExp<<' '<<app.impactSurfaceFeathering<<' '<<app.impactSurfaceColor.x<<' '<<app.impactSurfaceColor.y<<' '<<app.impactSurfaceColor.z<<' '<<app.impactSurfaceColor.w<<' '<<app.impactSurfaceTexScale<<' '<<app.impactSurfaceTexOffsetX<<' '<<app.impactSurfaceTexOffsetY<<' '<<app.impactSurfaceTexRotation<<' '<<app.impactSurfaceOriginY<<' '<<std::quoted(app.impactSurfacePath.string())<<'\n'<<"impact_bot "<<app.impactBotEnabled<<' '<<app.impactBotPlanesCount<<' '<<app.impactBotStartWidth<<' '<<app.impactBotEndWidth<<' '<<app.impactBotLifetime<<' '<<app.impactBotBlastSpeed<<' '<<app.impactBotRiseSpeed<<' '<<app.impactBotDispersion<<' '<<app.impactBotTaperingExp<<' '<<app.impactBotFeathering<<' '<<app.impactBotColor.x<<' '<<app.impactBotColor.y<<' '<<app.impactBotColor.z<<' '<<app.impactBotColor.w<<' '<<app.impactBotTexScale<<' '<<app.impactBotTexOffsetX<<' '<<app.impactBotTexOffsetY<<' '<<app.impactBotTexRotation<<' '<<app.impactBotOriginY<<' '<<std::quoted(app.impactBotPath.string())<<'\n'<<"sky "<<std::quoted(app.environmentPath.string())<<'\n';out<<"hbao_before_fog "<<app.hbao.beforeFog<<'\n';out<<"cubemap_surface_multipliers "<<app.viewmodelCubemapMultiplier<<' '<<app.worldCubemapMultiplier<<'\n';out<<"volumetric "<<app.volumetric<<'\n';out<<"reticle_spacing "<<app.csgoCrosshairHorizontalSpacing<<' '<<app.csgoCrosshairVerticalSpacing<<' '<<app.csgoCrosshairSideMarks<<' '<<app.csgoCrosshairMarkLength<<' '<<app.csgoCrosshairMarkOffset<<'\n';out<<"camera_controls "<<app.cameraControls<<'\n';out<<"crosshair ";writeVisualValues(out,crosshairValues(app));
+bool saveVisualPreset(const AppState& app,const std::filesystem::path& path){std::error_code error;std::filesystem::create_directories(path.parent_path(),error);std::ofstream out(path);if(!out)return false;out<<std::setprecision(std::numeric_limits<float>::max_digits10)<<"CASTVISUAL 5\n"<<"view_motion "<<app.experimentalUniversalFirstPersonMantle<<' '<<app.universalFirstPersonMantleScale<<' '<<app.mantleFallbackPositionIw.x<<' '<<app.mantleFallbackPositionIw.y<<' '<<app.mantleFallbackPositionIw.z<<' '<<app.mantleFallbackRotationDegrees.x<<' '<<app.mantleFallbackRotationDegrees.y<<' '<<app.mantleFallbackRotationDegrees.z<<' '<<app.mantleFallbackRecovery<<' '<<app.mantleFallbackCurve<<' '<<app.boostFallback<<' '<<app.slideFallback<<' '<<app.boostCamera<<' '<<app.boostCameraMovesViewmodel<<' '<<app.directionalTilt<<' '<<app.sniperZoomIn<<' '<<app.sniperZoomOut<<'\n'<<"dof "<<app.dof<<'\n'<<"ao_transparency "<<app.hbao.separateTransparent<<' '<<app.hbao.transparentGap<<'\n'<<"hbao "<<app.hbao<<'\n'<<"shading "<<app.shadingModel<<' '<<app.iw3DualLobe<<'\n'<<"brdf_model "<<app.shadingSubModel<<'\n'<<"aw "<<app.awRoughnessScale<<' '<<app.awRoughnessBias<<' '<<app.awMetalness<<' '<<app.awSpecularLevel<<' '<<app.awDiffuseWrap<<' '<<app.awClearcoat<<' '<<app.awClearcoatRoughness<<' '<<app.awEnvironmentIntensity<<'\n'<<"eevee "<<app.eeveeMetallic<<' '<<app.eeveeRoughness<<' '<<app.eeveeIor<<' '<<app.eeveeSpecular<<' '<<app.eeveeSpecularTint<<' '<<app.eeveeClearcoat<<' '<<app.eeveeClearcoatRoughness<<'\n'<<"tonemapping "<<app.tonemappingMode<<'\n'<<"tonemap_rec709 "<<app.tonemapRec709Match<<' '<<app.tonemapRec709Strength<<'\n'<<"lens "<<app.lensAlpha<<' '<<app.lensTint.x<<' '<<app.lensTint.y<<' '<<app.lensTint.z<<' '<<app.lensSpecularIntensity<<' '<<app.lensCubemapIntensity<<'\n'<<"emissive "<<app.tritiumTint.x<<' '<<app.tritiumTint.y<<' '<<app.tritiumTint.z<<'\n'<<"spec "<<app.specularIntensity<<' '<<app.specularSharpness<<' '<<app.specularIntensity2<<' '<<app.specularSharpness2<<'\n'<<"cube "<<app.cubemapSpecular<<' '<<app.cubemapSpecularIntensity<<' '<<app.cubemapSpecularBlur<<' '<<app.weaponCubemapBlur<<'\n'<<"shadow_specular "<<app.shadowSpecularMultiplier<<'\n'<<"film "<<app.filmTweaks<<' '<<app.filmBrightness<<' '<<app.filmContrast<<' '<<app.filmDesaturation<<' '<<app.filmInvert<<' '<<app.filmDarkTint.x<<' '<<app.filmDarkTint.y<<' '<<app.filmDarkTint.z<<' '<<app.filmLightTint.x<<' '<<app.filmLightTint.y<<' '<<app.filmLightTint.z<<'\n'<<"film_mid "<<app.filmMidTintEnabled<<' '<<app.filmMidTint.x<<' '<<app.filmMidTint.y<<' '<<app.filmMidTint.z<<'\n'<<"fog "<<app.fogEnabled<<' '<<app.fogColor.x<<' '<<app.fogColor.y<<' '<<app.fogColor.z<<' '<<app.fogStartMeters<<' '<<app.fogHalfDistanceMeters<<' '<<app.fogOpacity<<' '<<app.fogSkyAmount<<'\n'<<"sun "<<app.sunLighting<<' '<<app.sunShadows<<' '<<app.sunAzimuth<<' '<<app.sunElevation<<' '<<app.sunIntensity<<' '<<app.sunAmbient<<' '<<app.sunColor.x<<' '<<app.sunColor.y<<' '<<app.sunColor.z<<' '<<app.ambientColor.x<<' '<<app.ambientColor.y<<' '<<app.ambientColor.z<<'\n'<<"environment "<<app.environmentIntensity<<' '<<app.environmentExposure<<' '<<app.environmentRotation<<' '<<app.skyVerticalFlip<<'\n'<<"env_hdr "<<app.environmentContrast<<' '<<app.environmentHighlightThreshold<<' '<<app.environmentHighlightBoost<<' '<<app.environmentToneMap<<'\n'<<"post_bloom "<<app.bloomEnabled<<' '<<app.bloomThreshold<<' '<<app.bloomSoftThreshold<<' '<<app.bloomSaturationBias<<' '<<app.bloomIntensity<<' '<<app.bloomRadius<<' '<<app.bloomKawaseSamples<<' '<<app.bloomAffectsSky<<' '<<app.bloomAspectRatio<<' '<<app.bloomRotation<<'\n'<<"bloom_blend "<<app.bloomBlendMode<<'\n'<<"post_vignette "<<app.vignetteEnabled<<' '<<app.vignetteIntensity<<' '<<app.vignetteRadius<<' '<<app.vignetteSoftness<<'\n'<<"post_distortion "<<app.lensDistortion<<'\n'<<"post_levels "<<app.autoBlackPoint<<' '<<app.autoBlackPointIntensity<<' '<<app.autoWhitePoint<<' '<<app.autoWhitePointIntensity<<'\n'<<"post_lut "<<app.lutIntensity<<' '<<std::quoted(app.lutPath.string())<<'\n'<<"post_order "<<app.postPassOrder[0]<<' '<<app.postPassOrder[1]<<' '<<app.postPassOrder[2]<<' '<<app.postPassOrder[3]<<' '<<app.postPassOrder[4]<<' '<<app.postPassOrder[5]<<' '<<app.postPassOrder[6]<<'\n'<<"impact_surf "<<app.impactSurfaceEnabled<<' '<<app.impactSurfacePlanesCount<<' '<<app.impactSurfaceStartWidth<<' '<<app.impactSurfaceEndWidth<<' '<<app.impactSurfaceLifetime<<' '<<app.impactSurfaceBlastSpeed<<' '<<app.impactSurfaceRiseSpeed<<' '<<app.impactSurfaceDispersion<<' '<<app.impactSurfaceTaperingExp<<' '<<app.impactSurfaceFeathering<<' '<<app.impactSurfaceColor.x<<' '<<app.impactSurfaceColor.y<<' '<<app.impactSurfaceColor.z<<' '<<app.impactSurfaceColor.w<<' '<<app.impactSurfaceTexScale<<' '<<app.impactSurfaceTexOffsetX<<' '<<app.impactSurfaceTexOffsetY<<' '<<app.impactSurfaceTexRotation<<' '<<app.impactSurfaceOriginY<<' '<<std::quoted(app.impactSurfacePath.string())<<'\n'<<"impact_bot "<<app.impactBotEnabled<<' '<<app.impactBotPlanesCount<<' '<<app.impactBotStartWidth<<' '<<app.impactBotEndWidth<<' '<<app.impactBotLifetime<<' '<<app.impactBotBlastSpeed<<' '<<app.impactBotRiseSpeed<<' '<<app.impactBotDispersion<<' '<<app.impactBotTaperingExp<<' '<<app.impactBotFeathering<<' '<<app.impactBotColor.x<<' '<<app.impactBotColor.y<<' '<<app.impactBotColor.z<<' '<<app.impactBotColor.w<<' '<<app.impactBotTexScale<<' '<<app.impactBotTexOffsetX<<' '<<app.impactBotTexOffsetY<<' '<<app.impactBotTexRotation<<' '<<app.impactBotOriginY<<' '<<std::quoted(app.impactBotPath.string())<<'\n'<<"sky "<<std::quoted(app.environmentPath.string())<<'\n';out<<"hbao_before_fog "<<app.hbao.beforeFog<<'\n';out<<"cubemap_surface_multipliers "<<app.viewmodelCubemapMultiplier<<' '<<app.worldCubemapMultiplier<<'\n';out<<"volumetric "<<app.volumetric<<'\n';out<<"reticle_spacing "<<app.csgoCrosshairHorizontalSpacing<<' '<<app.csgoCrosshairVerticalSpacing<<' '<<app.csgoCrosshairSideMarks<<' '<<app.csgoCrosshairMarkLength<<' '<<app.csgoCrosshairMarkOffset<<'\n';out<<"camera_controls "<<app.cameraControls<<'\n';out<<"crosshair ";writeVisualValues(out,crosshairValues(app));
 
 out<<"day_night "<<app.dayNight<<'\n'<<"night_sky "<<app.nightSky<<'\n'<<"night_galaxy_noise "<<app.nightSky.galaxyNoiseAlgorithm<<' '<<app.nightSky.galaxyNoiseScale<<' '<<app.nightSky.galaxyNoiseDetail<<' '<<app.nightSky.galaxyNoiseContrast<<'\n'<<"star_rotation "<<app.dayNight.starAutoRotate<<' '<<app.dayNight.starRotationSpeed<<'\n';
 out<<"actor_overlays ";writeVisualValues(out,actorOverlayValues(app));
@@ -7148,6 +7162,15 @@ out<<"water_appearance "<<static_cast<const render::water::Appearance&>(app.wate
 out<<"water_optics "<<app.water.optics<<'\n';
 out<<"water_spectrum "<<app.water.crossSwell<<' '<<app.water.swellAngle<<' '<<app.water.swellLength<<' '<<app.water.seed<<'\n';
 out<<"water_surface "<<app.water.surface<<'\n';
+out<<"rain_v1 "<<app.rain<<'\n';
+out<<"rain_style_v1 "<<app.rain.style<<'\n';
+out<<"rain_blocker_distance "<<app.rain.blockerDistance<<'\n';
+out<<"wet_surfaces_v1 "<<app.wet<<'\n';
+out<<"wet_detail_v1 "<<app.wet.detail<<'\n';
+out<<"muzzle_light_v1 "<<app.muzzleLight<<'\n';
+out<<std::setprecision(std::numeric_limits<float>::max_digits10);
+forEachExtendedVisualGroup(app,[&](const char* key,const auto& values){out<<key<<' ';writeVisualValues(out,values);});
+out<<"visual_images "<<std::quoted(app.camoPath.string())<<' '<<std::quoted(app.specularImperfectionsPath.string())<<' '<<std::quoted(app.hitmarkerTexturePath.string())<<' '<<std::quoted(app.killmarkerTexturePath.string())<<' '<<std::quoted(app.weaponProfile.scopeOverlayImage)<<'\n';
 out<<"weapon_flash ";writeVisualValues(out,weapon_flashValues(app));
 out<<"weapon_smoke ";writeVisualValues(out,weapon_smokeValues(app));
 out<<"weapon_trails ";writeVisualValues(out,weapon_trailsValues(app));out<<"weapon_fx_images "<<std::quoted(app.muzzleFlashPath.string())<<' '<<std::quoted(app.smokeTrailTexturePath.string())<<' '<<std::quoted(app.bulletTrailTexturePath.string())<<'\n';
@@ -7156,6 +7179,7 @@ out<<"sniper_taper_curve "<<app.sniperTrailTaper<<'\n'<<"bullet_taper_curve "<<a
 #include "app/DayNightPresets.inc"
 #include "app/DayNightControls.inc"
 #include "app/WaterControls.inc"
+#include "app/RainControls.inc"
 
 void updateFrameHistogram(AppState& app){if(glfwGetTime()-app.histogramUpdated<0.35)return;app.histogramUpdated=glfwGetTime();std::vector<std::uint8_t> pixels;std::string error;if(!app.renderer.readColorRgba(pixels,error)||pixels.empty())return;app.frameHistogram.fill(0);const std::size_t stride=std::max<std::size_t>(4,(pixels.size()/4/120000)*4);for(std::size_t i=0;i+2<pixels.size();i+=stride){const float l=(pixels[i]*.2126f+pixels[i+1]*.7152f+pixels[i+2]*.0722f)/255.0f;++app.frameHistogram[static_cast<std::size_t>(std::clamp(static_cast<int>(l*255),0,255))];}const float peak=*std::max_element(app.frameHistogram.begin(),app.frameHistogram.end());if(peak>0)for(auto& bin:app.frameHistogram)bin/=peak;}
 void drawLevelsHistogram(AppState& app){updateFrameHistogram(app);ImGui::BeginGroup();const ImVec2 size{28.f*ImGui::GetFontSize(),120};const auto p=ImGui::GetCursorScreenPos();ImGui::InvisibleButton("levels_histogram",size);auto* dl=ImGui::GetWindowDrawList();dl->AddRectFilled(p,{p.x+size.x,p.y+size.y},IM_COL32(10,12,16,255));for(std::size_t i=0;i<app.frameHistogram.size();++i){const float x0=p.x+size.x*static_cast<float>(i)/256.0f,x1=p.x+size.x*static_cast<float>(i+1)/256.0f,y=p.y+size.y*(1.0f-app.frameHistogram[i]);const ImU32 color=(i==0&&app.frameHistogram[i]>.01f)?IM_COL32(255,70,65,255):(i==255&&app.frameHistogram[i]>.01f)?IM_COL32(255,70,65,255):IM_COL32(170,190,215,220);dl->AddRectFilled({x0,y},{x1,p.y+size.y},color);}const float bx=p.x+size.x*app.autoBlackPointIntensity,wx=p.x+size.x*app.autoWhitePointIntensity;dl->AddLine({bx,p.y},{bx,p.y+size.y},IM_COL32(255,80,70,255),2);dl->AddLine({wx,p.y},{wx,p.y+size.y},IM_COL32(80,255,130,255),2);if(app.frameHistogram.front()==0)dl->AddText({p.x+5,p.y+4},IM_COL32(90,255,140,255),"empty blacks");if(app.frameHistogram.back()==0)dl->AddText({p.x+size.x-92,p.y+4},IM_COL32(90,255,140,255),"empty whites");ImGui::TextUnformatted("Input black / white");ImGui::PushItemWidth(size.x);ImGui::DragFloatRange2("##levels_input",&app.autoBlackPointIntensity,&app.autoWhitePointIntensity,.001f,0.0f,1.0f,"B %.3f","W %.3f");ImGui::PopItemWidth();app.autoWhitePointIntensity=std::max(app.autoWhitePointIntensity,app.autoBlackPointIntensity+.001f);app.autoBlackPoint=app.autoWhitePoint=true;uiHelp("Red marks clipped endpoints; green labels mark unused endpoint range.");ImGui::EndGroup();}
@@ -7357,7 +7381,9 @@ ImGui::Checkbox("Cubemap specular",&app.cubemapSpecular);ImGui::SliderFloat("Ref
 
 scene::Vec3 blackbodyRgb(float kelvin){const float t=std::clamp(kelvin,1000.0f,40000.0f)/100.0f;const float r=t<=66?255.0f:329.698727446f*std::pow(t-60.0f,-0.1332047592f),g=t<=66?99.4708025861f*std::log(t)-161.1195681661f:288.1221695283f*std::pow(t-60.0f,-0.0755148492f),b=t>=66?255.0f:t<=19?0.0f:138.5177312231f*std::log(t-10.0f)-305.044792731f;return {std::clamp(r/255.0f,0.0f,1.0f),std::clamp(g/255.0f,0.0f,1.0f),std::clamp(b/255.0f,0.0f,1.0f)};}
 bool drawResponseCurve(const char* id,gameplay::view::ResponseCurve& curve);
+#include "app/HitmarkerControls.inc"
 void drawProjectileEffects(AppState& app){
+    drawHitmarkerControls(app);
         if(ImGui::CollapsingHeader("Crosshair")){
             drawCrosshairPresets(app);
             ImGui::Checkbox("Enable classic crosshair",&app.csgoClassicCrosshair);ImGui::BeginDisabled(!app.csgoClassicCrosshair);
@@ -7615,7 +7641,8 @@ void drawRenderingControls(AppState& app){
     const int selected=uiCategory("visual_category",sections,6);
     const int visualSection=std::array{0,1,5,3,6,7}[selected];
     if(visualSection==7)drawProjectileEffects(app);
-    if(visualSection==1)drawViewAndCamoControls(app);
+    if(visualSection==1){drawViewAndCamoControls(app);drawMuzzleLightControls(app);}
+    if(visualSection==3){drawRainControls(app);drawWetControls(app);drawWaterControls(app);}
     if(visualSection==5)drawLogicalMaterials(app);
     if(visualSection==6)drawProfessionalPostFx(app);
     if(visualSection==4&&ImGui::CollapsingHeader("LUT / Lens Post Effects",ImGuiTreeNodeFlags_DefaultOpen)){static int postLutIndex=-1;const auto lutSnapshot=uiFileLists().get(programDirectory()/"luts","|.png||.jpg||.jpeg||.tif|");const auto& luts=*lutSnapshot;const std::string preview=postLutIndex>=0&&postLutIndex<static_cast<int>(luts.size())?luts[static_cast<std::size_t>(postLutIndex)].stem().string():"No LUT";if(ImGui::BeginCombo("Program LUT",preview.c_str())){if(ImGui::Selectable("No LUT",postLutIndex<0)){postLutIndex=-1;app.lutPath.clear();app.renderer.clearLutTexture();}for(std::size_t i=0;i<luts.size();++i)if(ImGui::Selectable(luts[i].stem().string().c_str(),postLutIndex==static_cast<int>(i))){std::string error;if(app.renderer.setLutTexture(luts[i],error)){postLutIndex=static_cast<int>(i);app.lutPath=luts[i];}else app.status=error;}ImGui::EndCombo();}ImGui::BeginDisabled(app.lutPath.empty());ImGui::SliderFloat("LUT intensity",&app.lutIntensity,0.0f,1.0f,"%.3f");ImGui::EndDisabled();if(ImGui::CollapsingHeader("Lens distortion")){
@@ -8224,8 +8251,8 @@ void equipViewWeapon(AppState& app,std::size_t weaponIndex,AppState* notifyApp,s
     auto documents=std::move(app.animationDocuments);
     logLoading(logger, "Loading base viewhands: " + app.assetCatalog.entries[app.selectedBaseAsset].name);
     loadFile(app,app.assetCatalog.entries[app.selectedBaseAsset].path,selectedWeapon.game);
-    if(app.assetCatalog.entries[app.selectedBaseAsset].game=="pointblank"&&selectedWeapon.game!="pointblank"&&selectedWeapon.game!="codm"&&selectedWeapon.game!="cs2"&&app.scene.viewHandsDriverGame.empty()){
-        app.status=app.scene.warnings.empty()?"Unsupported Point Blank / COD hand pairing":app.scene.warnings.back();return;
+    if((app.assetCatalog.entries[app.selectedBaseAsset].game=="pointblank"||app.assetCatalog.entries[app.selectedBaseAsset].game=="codm")&&selectedWeapon.game!="pointblank"&&selectedWeapon.game!="codm"&&(selectedWeapon.game!="cs2"||app.assetCatalog.entries[app.selectedBaseAsset].game=="codm")&&app.scene.viewHandsDriverGame.empty()){
+        app.status=app.scene.warnings.empty()?"Unsupported cross-game viewhands pairing":app.scene.warnings.back();return;
     }
     for(const auto& [game,setup]:app.gameReferenceSetups)if(setup.viewhandsAsset==app.selectedBaseAsset){
         for(auto index:setup.matchedViewhandsParts)if(index<app.assetCatalog.entries.size()){
@@ -8468,6 +8495,16 @@ void processPendingModelLoad(AppState& app){
 
 void ensureBotAnimationCache(AppState& app,const std::string& game);
 
+std::string availableWorldAnimationGame(AppState& app,std::string game){
+    game=lowerText(game);if(game=="bo2_sp"||game=="bo2+bo2_sp")game="bo2";
+    ensureBotAnimationCache(app,game);
+    if(game!="bo2"&&game!="cs2"&&app.botAnimationCache[game].empty()){
+        ensureBotAnimationCache(app,"bo2");
+        if(!app.botAnimationCache["bo2"].empty())return "bo2";
+    }
+    return game;
+}
+
 #include "PointBlankWorldLoader.inc"
 #include "WorldMotionLoadV116.inc"
 
@@ -8487,7 +8524,8 @@ bool attachCodmWorldWeapon(AppState& app,const cast::Document& world,std::size_t
         }
     }
     std::string error;
-    const auto mount=scene::codm::worldMount(world,pointBlankReferenceDocument(asset.path),pointBlankReferenceDocument(idle),actor.skeleton,error);
+    const auto palm=pointBlankDonor(app,"bo2");
+    const auto mount=scene::codm::worldMount(world,pointBlankReferenceDocument(asset.path),pointBlankReferenceDocument(idle),actor.skeleton,error,palm?&*palm:nullptr);
     if(!mount){actor.warnings.push_back("CODM world weapon: "+asset.name+": "+error);app.status=actor.warnings.back();return true;}
     const auto before=actor.attachments.size();
     scene::appendAttachment(world,actor,mount->bone,std::filesystem::path(world.sourceName()).stem().string());
@@ -8495,7 +8533,8 @@ bool attachCodmWorldWeapon(AppState& app,const cast::Document& world,std::size_t
     return true;
 }
 
-void appendClassBodyAnimations(AppState& app, const std::string& gameName, scene::CastScene& actor) {
+void appendClassBodyAnimations(AppState& app, const std::string& requestedGame, scene::CastScene& actor) {
+    const auto gameName=availableWorldAnimationGame(app,requestedGame);
     const auto gameKey = lowerText(gameName);
     ensureBotAnimationCache(app, gameName);
     if (app.classBodyAnimationLibraryCache) {
@@ -8517,6 +8556,24 @@ void appendClassBodyAnimations(AppState& app, const std::string& gameName, scene
     appendMissingWorldHolds(app,actor,gameName,targetGame);
     if (app.classBodyAnimationLibraryCache)
         app.classBodyAnimationLibraryCache->remember(gameKey, actor.skeleton, actor, firstAnimation, firstWarning);
+}
+
+void configureMwrWeaponOnCod4(AppState& app,scene::CastScene& actor,size_t attachment,const std::string& weaponGame,weapon::Archetype archetype){
+    if(weaponGame!="mwr"||attachment>=actor.attachments.size())return;
+    // COD4's low-detail wrists do not share H1's authored weapon-socket frame.
+    const auto wrist=actor.skeleton.boneByCanonicalName.find("j_wrist_ri");
+    if(wrist==actor.skeleton.boneByCanonicalName.end()||scene::codm::worldBody(actor.skeleton))return;
+    const auto donor=pointBlankDonor(app,"mwr");if(!donor)return;
+    const auto sw=donor->boneByCanonicalName.find("j_wrist_ri"),socket=donor->boneByCanonicalName.find("tag_weapon_right");
+    if(sw==donor->boneByCanonicalName.end()||socket==donor->boneByCanonicalName.end())return;
+    scene::CastScene reference;reference.skeleton=*donor;appendClassBodyAnimations(app,"mwr",reference);
+    scene::AnimationQuery query;query.domain=scene::AnimationDomain::PlayerBody;query.motion=scene::MotionRole::Idle;query.stance=scene::Stance::Stand;
+    query.weapon=archetype==weapon::Archetype::Pistol?scene::WeaponClass::Pistol:scene::WeaponClass::Rifle;
+    const auto clip=scene::findBestAnimation(reference,query);if(!clip){actor.warnings.push_back("MWR world grip: native hold unavailable");return;}
+    const auto pose=reference.samplePose(*clip,0);const auto sourceOrigin=scene::transformPoint(donor->bones[sw->second].restGlobal,{}),targetOrigin=scene::transformPoint(actor.skeleton.bones[wrist->second].restGlobal,{});
+    const auto basis=scene::inverseAffine(actor.skeleton.bones[wrist->second].restGlobal)*scene::translation(targetOrigin-sourceOrigin)*donor->bones[sw->second].restGlobal;
+    actor.attachments[attachment].boneIndex=wrist->second;
+    cadence::world_weapon::setTransform(actor.attachments[attachment],basis*scene::inverseAffine(pose[sw->second])*pose[socket->second]);
 }
 
 std::size_t findWorldWeaponForViewWeapon(const AppState& app, const assets::Asset& viewWeapon) {
@@ -8764,6 +8821,7 @@ void configureClassActor(AppState& app){
                         scene::appendPreparedAttachment(std::move(preparedWeapon), *app.hiddenWorldActor, static_cast<std::size_t>(bone), app.assetCatalog.entries[app.classWorldWeaponAsset].name);
                         if(lowerText(app.assetCatalog.entries[app.classWorldWeaponAsset].game)=="pointblank")appendPointBlankLeftWorldWeapon(app,wDoc,*app.hiddenWorldActor,app.assetCatalog.entries[app.classWorldWeaponAsset].name);
                         configureLegacyWeaponOnPointBlank(app,*app.hiddenWorldActor,before,lowerText(app.assetCatalog.entries[app.classWorldWeaponAsset].game),app.playerWorldAnimationGame,app.weaponProfile.archetype);
+                        if(gameName=="mw")configureMwrWeaponOnCod4(app,*app.hiddenWorldActor,before,lowerText(app.assetCatalog.entries[app.classWorldWeaponAsset].game),app.weaponProfile.archetype);
                         appendWorldWeaponParts(app,viewWeaponIdx,app.classWorldWeaponAsset,preparedWeapon,*app.hiddenWorldActor,before);
                         if(before<app.hiddenWorldActor->attachments.size()&&lowerText(app.assetCatalog.entries[app.classWorldWeaponAsset].game)=="cs2"){
                             // CS2 world exports are authored around weapon_offset.
@@ -9049,7 +9107,7 @@ void equipClassSlot(AppState& app,int slot,AppState* notifyApp){
     logLoading(logger, std::string("[Slot ") + std::to_string(slot) + "] Assembling viewmodel weapon rig...", slot==0 ? 0.25f : 0.65f);
     equipViewWeapon(app,weapon,notifyApp);
     // Never cache a failed anatomical fit as a usable class slot.
-    if(app.assetCatalog.entries[app.classHandsAsset].game=="pointblank"&&weaponGame!="pointblank"&&weaponGame!="codm"&&weaponGame!="cs2"&&app.scene.viewHandsDriverGame.empty()){
+    if((app.assetCatalog.entries[app.classHandsAsset].game=="pointblank"||app.assetCatalog.entries[app.classHandsAsset].game=="codm")&&weaponGame!="pointblank"&&weaponGame!="codm"&&(weaponGame!="cs2"||app.assetCatalog.entries[app.classHandsAsset].game=="codm")&&app.scene.viewHandsDriverGame.empty()){
         app.classSlotRigs[slot].reset();app.activeClassSlot=-1;logLoading(logger,app.status,1.0f);return;
     }
     if(weaponGame=="codm"){
@@ -9160,10 +9218,34 @@ const std::vector<std::size_t>& botPoolWeapons(const AppState& app,const std::st
 
 bool drawBotPoolCategory(AppState& app,const char* label,bool& enabled,std::string& game,int& category){bool changed=false;ImGui::PushID(label);if(ImGui::Checkbox("##enabled",&enabled))changed=true;ImGui::SameLine();if(ImGui::TreeNodeEx(label,ImGuiTreeNodeFlags_DefaultOpen)){ImGui::BeginDisabled(!enabled);const auto games=rippedGames(app);if(ImGui::BeginCombo("Game",game.empty()?"All ripped games":game.c_str())){if(ImGui::Selectable("All ripped games",game.empty())){game.clear();changed=true;}for(const auto& value:games)if(ImGui::Selectable(value.c_str(),game==value)){game=value;changed=true;}ImGui::EndCombo();}const char* categories[]={"All classes","Assault rifles","SMGs","LMGs","Shotguns","Sniper rifles","Pistols / dual wield","Launchers","Special / equipment"};if(ImGui::Combo("Weapon class",&category,categories,static_cast<int>(std::size(categories))))changed=true;const auto& candidates=botPoolWeapons(app,game,category);ImGui::TextDisabled("%zu eligible Saluki weapons",candidates.size());ImGui::EndDisabled();ImGui::TreePop();}ImGui::PopID();return changed;}
 
-void ensureBotAnimationCache(AppState& app,const std::string& game){const auto key=lowerText(game);auto& documents=app.botAnimationCache[key];if(!documents.empty())return;std::optional<std::filesystem::path> folder;for(const auto& asset:app.assetCatalog.entries)if(lowerText(asset.game)==key){folder=animationFolderFor(asset);if(folder)break;}if(!folder)return;std::error_code error;for(std::filesystem::recursive_directory_iterator it(*folder,std::filesystem::directory_options::skip_permission_denied,error),end;it!=end;it.increment(error)){if(error){error.clear();continue;}if(!it->is_regular_file(error)||lowerText(it->path().extension().string())!=".cast")continue;const auto filename=lowerText(it->path().filename().string());if((!filename.starts_with("pb_")&&!filename.starts_with("mp_")&&!filename.starts_with("pt_"))||filename.find("dog")!=std::string::npos||filename.find("shepherd")!=std::string::npos||filename.find("vehicle")!=std::string::npos||filename.find("turret")!=std::string::npos)continue;scene::Animation metadata;scene::classifyAnimationName(filename,metadata);if(metadata.domain!=scene::AnimationDomain::PlayerBody&&metadata.domain!=scene::AnimationDomain::PlayerTorso)continue;auto animation=cast::Document::load(it->path());if(animation.valid())documents.push_back(std::move(animation));}}
+void ensureBotAnimationCache(AppState& app,const std::string& game){const auto key=lowerText(game);auto& documents=app.botAnimationCache[key];if(!documents.empty())return;std::optional<std::filesystem::path> folder;for(const auto& asset:app.assetCatalog.entries)if(lowerText(asset.game)==key){folder=animationFolderFor(asset);if(folder)break;}if(!folder&&!app.defaultSalukiDirectory.empty()){const auto candidate=salukiExportRoot(app.defaultSalukiDirectory)/key/"animations";if(std::filesystem::is_directory(candidate))folder=candidate;}if(!folder)return;std::error_code error;for(std::filesystem::recursive_directory_iterator it(*folder,std::filesystem::directory_options::skip_permission_denied,error),end;it!=end;it.increment(error)){if(error){error.clear();continue;}if(!it->is_regular_file(error)||lowerText(it->path().extension().string())!=".cast")continue;const auto filename=lowerText(it->path().filename().string());if((!filename.starts_with("pb_")&&!filename.starts_with("mp_")&&!filename.starts_with("pt_"))||filename.find("dog")!=std::string::npos||filename.find("shepherd")!=std::string::npos||filename.find("vehicle")!=std::string::npos||filename.find("turret")!=std::string::npos)continue;scene::Animation metadata;scene::classifyAnimationName(filename,metadata);if(metadata.domain!=scene::AnimationDomain::PlayerBody&&metadata.domain!=scene::AnimationDomain::PlayerTorso)continue;auto animation=cast::Document::load(it->path());if(animation.valid())documents.push_back(std::move(animation));}}
 
 std::optional<scene::Skeleton> playerSkeletonForGame(const AppState& app,const std::string& game){
+    const auto completeBody=[&](const assets::Catalog& catalog)->std::optional<scene::Skeleton>{
+        std::optional<scene::Skeleton> best;int bestScore=-1;
+        for(const auto& asset:catalog.entries)if(asset.role==assets::Role::PlayerModel&&lowerText(asset.game)==lowerText(game)){
+            const auto document=cast::Document::load(asset.path);if(!document.valid())continue;
+            auto skeleton=scene::buildScene(document,false).skeleton;int score=0;
+            for(const auto* name:{"j_hip_le","j_hip_ri","j_knee_le","j_knee_ri","j_ankle_le","j_ankle_ri","j_elbow_le","j_elbow_ri","j_wrist_le","j_wrist_ri"})score+=skeleton.boneByCanonicalName.contains(name);
+            if(score>bestScore){bestScore=score;best=std::move(skeleton);}if(score==10)break;
+        }
+        return best;
+    };
     const auto reference=[&](const assets::Catalog& catalog)->std::optional<scene::Skeleton>{
+        if(lowerText(game)=="aw"){
+            // AW clothing exports contain partial skeletons. A torso alone
+            // cannot drive a foreign body's boost-jump legs.
+            using Part=assets::character::Part;
+            for(const auto& base:catalog.entries)if(base.game==game&&assets::character::awPart(base.name)==Part::Torso){
+                auto reference=scene::buildScene(cast::Document::load(base.path),false);
+                for(const auto type:{Part::Pants,Part::Boots,Part::Gloves,Part::Head}){
+                    for(const auto& part:catalog.entries)if(part.game==game&&assets::character::awPart(part.name)==type&&assets::character::genderCompatible(base.name,part.name)){
+                        const auto doc=cast::Document::load(part.path);if(doc.valid())scene::appendRigModel(doc,reference,part.name);break;
+                    }
+                }
+                return reference.skeleton;
+            }
+        }
         // The exported CW arms retain the full native body hierarchy and are
         // the verified source reference even without a skinned player model.
         if(lowerText(game)=="bocw_sp")for(const auto& asset:catalog.entries)
@@ -9173,7 +9255,7 @@ std::optional<scene::Skeleton> playerSkeletonForGame(const AppState& app,const s
         return {};
     };
     if(auto native=reference(app.assetCatalog))return native;
-    for(const auto& asset:app.assetCatalog.entries)if(asset.role==assets::Role::PlayerModel&&lowerText(asset.game)==lowerText(game)){auto document=cast::Document::load(asset.path);if(document.valid())return scene::buildScene(document).skeleton;}
+    if(auto skeleton=completeBody(app.assetCatalog))return skeleton;
     // Supplemental clips may come from an installed but unselected game.
     // This lookup is cached for the assembly transaction, never per frame.
     {
@@ -9182,7 +9264,7 @@ std::optional<scene::Skeleton> playerSkeletonForGame(const AppState& app,const s
         assets::Catalog catalog;std::string error;
         if(!root.empty()&&assets::appendScan(root,game,catalog,error)){
             if(auto native=reference(catalog))return native;
-            for(const auto& asset:catalog.entries)if(asset.role==assets::Role::PlayerModel){auto document=cast::Document::load(asset.path);if(document.valid())return scene::buildScene(document).skeleton;}
+            if(auto skeleton=completeBody(catalog))return skeleton;
         }
     }
     return std::nullopt;
@@ -9250,7 +9332,7 @@ void loadSpBotScenarios(AppState& app,scene::CastScene& actorScene,const std::st
     app.botSpWalkClips.clear();
     app.botSpContextClips.clear();
     app.activeBotSystemMode=app.botSystemMode;
-    const auto libraryGame=lowerText(app.botAnimationGame.empty()?modelGame:app.botAnimationGame);
+    const auto libraryGame=app.botAnimationGame=="*"?std::string("*"):availableWorldAnimationGame(app,app.botAnimationGame.empty()?modelGame:app.botAnimationGame);
     if(app.activeBotSystemMode!=1&&libraryGame!="bo2"&&libraryGame!="bo2_sp"&&libraryGame!="bo2+bo2_sp"&&libraryGame!="*")return;
     app.botSpLoadStatus.clear();
     // SP is an additive library, independent of the selected locomotion set.
@@ -9543,6 +9625,7 @@ void rebuildBotActors(AppState &app) {
               app.assetCatalog.entries[worldIndex].name);
           if(lowerText(app.assetCatalog.entries[worldIndex].game)=="pointblank")appendPointBlankLeftWorldWeapon(app,weaponDocument,actorScene,app.assetCatalog.entries[worldIndex].name);
           configureLegacyWeaponOnPointBlank(app,actorScene,beforeAttachments,lowerText(app.assetCatalog.entries[worldIndex].game),app.botAnimationGame,profile.archetype);
+          if(model.game=="mw")configureMwrWeaponOnCod4(app,actorScene,beforeAttachments,lowerText(app.assetCatalog.entries[worldIndex].game),profile.archetype);
           appendWorldWeaponParts(app,weaponIndex,worldIndex,preparedWeapon,actorScene,beforeAttachments);
           if(lowerText(app.assetCatalog.entries[worldIndex].game)=="cs2")
             configureCs2WorldWeaponAttachment(actorScene,weaponDocument,beforeAttachments);
@@ -9567,6 +9650,7 @@ void rebuildBotActors(AppState &app) {
   } else
     animationGames.push_back(
         app.botAnimationGame.empty() ? model.game : app.botAnimationGame);
+  for(auto& game:animationGames)game=availableWorldAnimationGame(app,game);
   // BO2 and BO2_SP are a single bot library; legacy saved selections remain valid.
   const bool pbMovementFallback=std::find(animationGames.begin(),animationGames.end(),"pointblank")!=animationGames.end()&&std::find(animationGames.begin(),animationGames.end(),"bo2")==animationGames.end();
   if(pbMovementFallback)animationGames.push_back("bo2");
@@ -10190,7 +10274,7 @@ void steerSpBotOnMap(AppState& app,gameplay::bot::Actor& bot,float delta,float y
 
 void updateBotActors(AppState& app,float delta){
     diagnostic::Scope tracePhase(diagnostic::Phase::Bots);
-    app.playerMuzzleFlashTime=std::max(0.0f,app.playerMuzzleFlashTime-delta);app.hitmarkerTime=std::max(0.0f,app.hitmarkerTime-delta);
+    app.playerMuzzleFlashTime=std::max(0.0f,app.playerMuzzleFlashTime-delta);
     for(auto& time:app.dualMuzzleFlashTime)time=std::max(0.f,time-delta);
     const bool knifeWeapon=isKnifeWeapon(app);
     processPlayerKnifeAttack(app);
@@ -10219,7 +10303,7 @@ void updateBotActors(AppState& app,float delta){
             float distance=12000.f;
             if(app.loadedMap)if(const auto hit=gameplay::shots::stoppingSurface(*app.loadedMap,cameraOrigin,direction,distance,app.experimentalWallbangSurfaces))distance=scene::length(hit->position-cameraOrigin);
             if(direction.z<-.001f){const float floor=-cameraOrigin.z/direction.z;if(floor>0&&floor<distance)distance=floor;}
-            for(const auto& bot:app.bots){if(!bot.alive||(!(app.loadedMap&&app.experimentalWallbangSurfaces>0)&&!gameplay::bot::lineOfSight(app.actorPosition,bot.position)))continue;const auto offset=bot.position+scene::Vec3{0,0,app.botHeadHeight*.58f}-cameraOrigin;const float along=scene::dot(offset,direction);if(along>0&&along<distance&&scene::length(offset-direction*along)<bodyRadius)distance=along;}
+            for(const auto& bot:app.bots){if(!bot.alive||(!app.loadedMap&&!gameplay::bot::lineOfSight(app.actorPosition,bot.position)))continue;const auto offset=bot.position+scene::Vec3{0,0,app.botHeadHeight*.58f}-cameraOrigin;const float along=scene::dot(offset,direction);if(along>0&&along<distance&&scene::length(offset-direction*along)<bodyRadius)distance=along;}
             direction=scene::normalize(cameraOrigin+direction*distance-origin);
             // The actor-origin collision trace below still blocks shots through
             // cover even when the shoulder camera can see around it.
@@ -10270,7 +10354,7 @@ void updateBotActors(AppState& app,float delta){
         if(sniperWeapon){
             if(app.botActorScene && !app.bots.empty()){
                 for(auto& bot : app.bots){
-                    if(!bot.alive || (!(app.loadedMap&&app.experimentalWallbangSurfaces>0)&&!gameplay::bot::lineOfSight(app.actorPosition, bot.position))) continue;
+                    if(!bot.alive || (!app.loadedMap&&!gameplay::bot::lineOfSight(app.actorPosition, bot.position))) continue;
                     const scene::Vec3 bodyCenter = bot.position + scene::Vec3{0, 0, app.botHeadHeight * 0.58f};
                     const scene::Vec3 offset = bodyCenter - origin;
                     const float along = scene::dot(offset, direction);
@@ -10340,7 +10424,7 @@ void updateBotActors(AppState& app,float delta){
             bool headshot{};
             if(app.botActorScene && !app.bots.empty()){
                 for(auto& bot : app.bots){
-                    if(!bot.alive || (!(app.loadedMap&&app.experimentalWallbangSurfaces>0)&&!gameplay::bot::lineOfSight(app.actorPosition, bot.position))) continue;
+                    if(!bot.alive || (!app.loadedMap&&!gameplay::bot::lineOfSight(app.actorPosition, bot.position))) continue;
                     const scene::Vec3 bodyCenter = bot.position + scene::Vec3{0, 0, app.botHeadHeight * 0.58f};
                     const scene::Vec3 offset = bodyCenter - origin;
                     const float along = scene::dot(offset, direction);
@@ -13198,6 +13282,8 @@ auto available=ImGui::GetContentRegionAvail();
     else for(std::size_t i=0;i<app.bots.size();++i)app.equipmentHiddenBots.push_back(liveBotWeaponHidden(app,i));
     app.renderer.setHbao(app.hbao);app.renderer.setDepthOfField(app.dof);app.renderer.setVolumetricLighting(app.volumetric);
     app.renderer.setWater(app.water,takeSample?takeSample->time:app.waterSeconds);
+    app.renderer.setRain(app.rain,takeSample?takeSample->time:app.rainSeconds,app.loadedMap?&*app.loadedMap:nullptr);
+    app.renderer.setWetSurfaces(app.wet);app.renderer.setMuzzleLight(app.muzzleLight);
     app.renderer.setCubemapSurfaceMultipliers(app.viewmodelCubemapMultiplier,app.worldCubemapMultiplier);
     const bool hidePlayerWeapon=takeSample?((knownVisibility?(takeSample->visibility&take::HideWeapon)!=0:recordedWeaponHidden(takeSample->worldActor))):((playerVisibility&take::HideWeapon)!=0);
     app.renderer.setEquipmentVisibility(app.equipmentHiddenBots,hidePlayerWeapon);
@@ -13223,7 +13309,7 @@ auto available=ImGui::GetContentRegionAvail();
         animatedCamSample=take::interpolateDollyCamera(app.recordedTake.dollyCamera,app.takeTime*std::max(1.0f,app.recordedTake.sampleRate));
     }
     const auto* animatedCamPtr=animatedCamSample?&*animatedCamSample:nullptr;
-    app.hitmarkerTime=std::max(0.0f,app.hitmarkerTime-ImGui::GetIO().DeltaTime);
+    app.hitmarkerTime=std::max(0.0f,app.hitmarkerTime-ImGui::GetIO().DeltaTime/std::max(0.01f,app.hitmarkerDurationScale));
     const auto renderWithNavigation=[&](const gameplay::bot::NavigationGraph* navigation){
         app.renderer.render(app.scene,pose,viewProjection,renderWidth,renderHeight,app.showGrid,app.showSkeleton,app.wireframe,app.botActorScene?&*app.botActorScene:nullptr,app.botActorScene?renderedBotPoses:nullptr,app.botActorScene?&renderedBotVariants:nullptr,renderedWorldActorPose?&*app.hiddenWorldActor:nullptr,renderedWorldActorPose,showFirstPersonRig,app.loadedMap?&app.loadedMap->scene:nullptr,navigation,spawnOverlay,app.selectedNavigationNode,app.selectedNavigationBlock,app.navigationClickPlacement,campathOverlay,campathSelectedNode,animatedCamPtr);
         scene::Vec3 flashPos=renderedCameraPosition+renderedCameraForward*20.0f;
@@ -13271,7 +13357,8 @@ auto available=ImGui::GetContentRegionAvail();
                 }
             }
         }else{
-            for(const char* name:{"tag_flash","tag_flash_1","tag_flash1","tag_flash2","tag_flash_silenced","tag_muzzle","tag_barrel","j_barrel","tag_brass"})if(const auto found=app.scene.skeleton.boneByCanonicalName.find(name);found!=app.scene.skeleton.boneByCanonicalName.end()&&found->second<pose.size()){flashPos={pose[found->second].v[12],pose[found->second].v[13],pose[found->second].v[14]};break;}
+            const auto resolved=scene::resolveMuzzlePosition(app.scene,pose);
+            flashResolved=resolved.has_value();if(resolved)flashPos=*resolved;
         }
         app.lastMuzzleFlashPosition = flashPos;
         app.lastMuzzleFlashValid = flashResolved;
@@ -13298,7 +13385,7 @@ auto available=ImGui::GetContentRegionAvail();
                         const bool firstPerson=app.takeFirstPersonView&&showFirstPersonRig;
                         const auto* shotSample=app.recordedTake.sampleAt(shot.time);
                         if(firstPerson&&(!flashResolved||!shotSample||shotSample->weaponSlot!=takeSample->weaponSlot))continue;
-                        app.renderer.renderMuzzleFlash3D(firstPerson?flashPos:shot.muzzlePos, currentSize, rot, flashColor, viewProjection, renderedCameraPosition, firstPerson);
+                        app.renderer.renderMuzzleFlash3D(firstPerson?flashPos:shot.muzzlePos, currentSize, rot, flashColor, viewProjection, renderedCameraPosition, firstPerson,firstPerson?renderedCameraForward:shot.direction);
                     }
                 }
             }
@@ -13306,7 +13393,7 @@ auto available=ImGui::GetContentRegionAvail();
             if(app.scene.dualWield&&!useWorldMuzzle&&app.debugMuzzleFlash){
                 for(int side=0;side<2;++side)if(app.dualMuzzleFlashTime[side]>0)if(const auto muzzle=cadence::dual::muzzle(app.scene,pose,side)){
                     const float t=std::clamp(app.dualMuzzleFlashTime[side]/std::max(.001f,app.muzzleFlashDuration),0.f,1.f);
-                    app.renderer.renderMuzzleFlash3D(*muzzle,app.muzzleFlashSize*40.f*std::pow(t,app.muzzleFlashCurvePower),app.playerMuzzleFlashRotation,{app.muzzleFlashColor.x,app.muzzleFlashColor.y,app.muzzleFlashColor.z,app.muzzleFlashColor.w*t},viewProjection,renderedCameraPosition,showFirstPersonRig);
+                    app.renderer.renderMuzzleFlash3D(*muzzle,app.muzzleFlashSize*40.f*std::pow(t,app.muzzleFlashCurvePower),app.playerMuzzleFlashRotation,{app.muzzleFlashColor.x,app.muzzleFlashColor.y,app.muzzleFlashColor.z,app.muzzleFlashColor.w*t},viewProjection,renderedCameraPosition,showFirstPersonRig,renderedCameraForward);
                 }
             }else if(flashResolved&&app.playerMuzzleFlashTime>0.0f&&app.debugMuzzleFlash){
                 const float normTime=std::clamp(app.playerMuzzleFlashTime/std::max(0.001f,app.muzzleFlashDuration),0.0f,1.0f);
@@ -13314,7 +13401,7 @@ auto available=ImGui::GetContentRegionAvail();
                 const float currentSize=app.muzzleFlashSize*scaleFactor*40.0f;
                 const scene::Vec4 flashColor{app.muzzleFlashColor.x,app.muzzleFlashColor.y,app.muzzleFlashColor.z,app.muzzleFlashColor.w*normTime};
                 const float rot=app.playerMuzzleFlashRotation;
-                app.renderer.renderMuzzleFlash3D(flashPos,currentSize,rot,flashColor,viewProjection,renderedCameraPosition,!useWorldMuzzle && showFirstPersonRig);
+                app.renderer.renderMuzzleFlash3D(flashPos,currentSize,rot,flashColor,viewProjection,renderedCameraPosition,!useWorldMuzzle && showFirstPersonRig,renderedCameraForward);
             }
         }
         if(flashResolved&&app.debugMuzzleLine){
@@ -13331,7 +13418,7 @@ auto available=ImGui::GetContentRegionAvail();
                         const float currentSize=app.muzzleFlashSize*normTime*30.0f;
                         const scene::Vec4 flashColor{app.muzzleFlashColor.x,app.muzzleFlashColor.y,app.muzzleFlashColor.z,app.muzzleFlashColor.w*normTime};
                         const float bRot=static_cast<float>((app.bots[i].id*73u)%360u)*(scene::kPi/180.0f);
-                        app.renderer.renderMuzzleFlash3D(bFlashPos,currentSize,bRot,flashColor,viewProjection,renderedCameraPosition,false);
+                        app.renderer.renderMuzzleFlash3D(bFlashPos,currentSize,bRot,flashColor,viewProjection,renderedCameraPosition,false,{std::cos(app.bots[i].yaw),std::sin(app.bots[i].yaw),0});
                     }
                 }
             }
@@ -13666,20 +13753,9 @@ auto available=ImGui::GetContentRegionAvail();
         feedbackDraw->PopClipRect();
     }
     if(app.hitmarkerTime>0){
-        const ImVec2 center{(viewportImageMin.x+viewportImageMax.x)*0.5f,(viewportImageMin.y+viewportImageMax.y)*0.5f};
-        const float fade=std::clamp(app.hitmarkerTime/(app.hitmarkerKind==1?0.13f:0.24f),0.0f,1.0f);
-        const unsigned spriteId=(app.hitmarkerKind==3&&app.killmarkerTextureId)?app.killmarkerTextureId:app.hitmarkerTextureId;
-        if(spriteId){
-            const float size=36.0f+(app.hitmarkerKind==3?8.0f:0.0f);
-            const ImVec2 pMin{center.x-size*0.5f,center.y-size*0.5f},pMax{center.x+size*0.5f,center.y+size*0.5f};
-            const ImU32 tint=(app.hitmarkerKind==3&&!app.killmarkerTextureId)?IM_COL32(245,62,48,static_cast<int>(255*fade)):IM_COL32(255,255,255,static_cast<int>(255*fade));
-            feedbackDraw->AddImage(static_cast<ImTextureID>(spriteId),pMin,pMax,{0,0},{1,1},tint);
-        } else {
-            const float gap=5.0f,length=10.0f+(app.hitmarkerKind==3?3.0f:0.0f);
-            const ImU32 color=app.hitmarkerKind==3?IM_COL32(245,62,48,static_cast<int>(255*fade)):app.hitmarkerKind==2?IM_COL32(255,220,120,static_cast<int>(255*fade)):IM_COL32(245,245,245,static_cast<int>(255*fade));
-            const float signs[4][2]={{-1,-1},{1,-1},{-1,1},{1,1}};
-            for(const auto& sign:signs)feedbackDraw->AddLine({center.x+sign[0]*gap,center.y+sign[1]*gap},{center.x+sign[0]*(gap+length),center.y+sign[1]*(gap+length)},color,2.2f);
-        }
+        feedbackDraw->PushClipRect(viewportImageMin,viewportImageMax,true);
+        drawHitmarker(app,feedbackDraw,{(viewportImageMin.x+viewportImageMax.x)*.5f,(viewportImageMin.y+viewportImageMax.y)*.5f},app.hitmarkerKind,app.hitmarkerTime);
+        feedbackDraw->PopClipRect();
     }
     app.csgoCrosshairRecoilSpread = std::max(0.0f, app.csgoCrosshairRecoilSpread * std::exp(-ImGui::GetIO().DeltaTime * 9.0f));
     if (app.csgoClassicCrosshair && !sniperScopeActive && (!app.cameraEditMode || app.takeFirstPersonView)) {
@@ -14278,11 +14354,12 @@ void drawUi(AppState& app) {
     if(ImGui::IsItemHovered())uiHelp("Gameplay/replay preview resolution. Capture export resolution is unchanged.");
     ImGui::SameLine();ImGui::SetNextItemWidth(155);constexpr const char* toolbarPasses[]={"Lit","Albedo","Specular on black","Raw normal texture","Shaded normal direction","Alpha / camo mask","Decoded tangent normal","Depth","Viewmodel greenscreen","Clay view","Albedo + collision"};ImGui::Combo("##viewportPass",&app.renderDebugView,toolbarPasses,static_cast<int>(std::size(toolbarPasses)));
     ImGui::SameLine();
-    const float fpsControlsWidth=85.f;
+    const float fpsControlsWidth=165.f;
     const float fovControlsWidth=fpsControlsWidth+137.f+ImGui::CalcTextSize("FOV").x+ImGui::CalcTextSize("FOV scale").x+3.f*ImGui::GetStyle().ItemInnerSpacing.x+ImGui::GetStyle().ItemSpacing.x;
     if(ImGui::GetContentRegionAvail().x<fovControlsWidth)ImGui::NewLine();
     ImGui::SetCursorPosX(ImGui::GetCursorPosX()+std::max(0.f,ImGui::GetContentRegionAvail().x-fovControlsWidth));
     ImGui::Text("%.0f FPS",ImGui::GetIO().Framerate);ImGui::SameLine();
+    if(ImGui::Checkbox("VSync##toolbar",&app.vsync))glfwSwapInterval(app.vsync?1:0);ImGui::SameLine();
     ImGui::SetNextItemWidth(72.f);ImGui::DragFloat("FOV##toolbar",&app.viewmodelFov,.1f,1.f,160.f,"%.1f");ImGui::SameLine();
     ImGui::SetNextItemWidth(65.f);ImGui::DragFloat("FOV scale##toolbar",&app.viewmodelFovScale,.005f,.1f,3.f,"%.2fx");
     const float frameDelta=ImGui::GetIO().DeltaTime;
@@ -14752,43 +14829,6 @@ if(ImGui::CollapsingHeader("Muzzle & Ballistics Debug")){
                     ImGui::Checkbox("Debug muzzle trajectory line",&app.debugMuzzleLine);
 
                     }
-if(ImGui::CollapsingHeader("Hitmarker & Killmarker Sprites")){
-
-                    if(ImGui::Button("Load Hitmarker sprite...")){
-                        if(const auto path=chooseImageFile()){
-                            const unsigned id=app.renderer.loadTexture(*path,false,false);
-                            if(id){
-                                app.hitmarkerTextureId=id;
-                                app.hitmarkerTexturePath=*path;
-                                app.status="Loaded hitmarker sprite: "+path->filename().string();
-                            } else app.status="Failed to load hitmarker sprite";
-                        }
-                    }
-                    ImGui::SameLine();
-                    if(ImGui::Button("Clear##hitmarker")){
-                        app.hitmarkerTextureId=0;
-                        app.hitmarkerTexturePath.clear();
-                    }
-                    ImGui::TextDisabled("Hitmarker: %s",app.hitmarkerTexturePath.empty()?"Procedural white cross":app.hitmarkerTexturePath.filename().string().c_str());
-
-                    if(ImGui::Button("Load Killmarker sprite...")){
-                        if(const auto path=chooseImageFile()){
-                            const unsigned id=app.renderer.loadTexture(*path,false,false);
-                            if(id){
-                                app.killmarkerTextureId=id;
-                                app.killmarkerTexturePath=*path;
-                                app.status="Loaded killmarker sprite: "+path->filename().string();
-                            } else app.status="Failed to load killmarker sprite";
-                        }
-                    }
-                    ImGui::SameLine();
-                    if(ImGui::Button("Clear##killmarker")){
-                        app.killmarkerTextureId=0;
-                        app.killmarkerTexturePath.clear();
-                    }
-                    ImGui::TextDisabled("Killmarker: %s",app.killmarkerTexturePath.empty()?"Procedural red cross (or Hitmarker sprite)":app.killmarkerTexturePath.filename().string().c_str());
-                    
-                }
 }
                 if(debugSection==4){
                     if(app.loadedMap){
@@ -15005,7 +15045,6 @@ if(ImGui::CollapsingHeader("Grip-preserving sprint fallback")){
                         if(ImGui::IsItemHovered())uiHelp("Player shots on imported maps. 0 disables. Counts crossed faces; a closed wall usually uses two. No material or damage falloff. Session-only.");
                     }
 drawDayNightControls(app);
-drawWaterControls(app);
                     if(ImGui::CollapsingHeader("Testing & Automation")){
 
                     ImGui::Checkbox("Auto Bot Setup shortcut in Gameplay > Bots",&app.experimentalAutoBotSetup);
@@ -15244,6 +15283,7 @@ const auto path=argc>2?std::filesystem::u8path(argv[2]):std::filesystem::temp_di
         ImGui::NewFrame();
         if(app.workspaceMode!=2&&!app.takePreview&&app.dayNight.enabled&&(app.dayNight.running||app.dayNight.starAutoRotate)&&app.playing)app.dayNightSeconds+=std::max(0.f,ImGui::GetIO().DeltaTime*app.playbackSpeed);
         if(app.workspaceMode!=2&&!app.takePreview&&app.water.enabled&&app.water.animate&&app.playing)app.waterSeconds+=std::max(0.f,ImGui::GetIO().DeltaTime*app.playbackSpeed);
+        if(app.workspaceMode!=2&&!app.takePreview&&(app.rain.enabled||app.wet.ground||app.wet.enabled)&&app.rain.animate&&app.playing)app.rainSeconds+=std::max(0.f,ImGui::GetIO().DeltaTime*app.playbackSpeed);
 #ifdef _WIN32
         const bool winF1 = windowFocused && (GetAsyncKeyState(VK_F1) & 0x8000) != 0;
 #else

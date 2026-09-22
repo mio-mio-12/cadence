@@ -1,6 +1,22 @@
 // Resource uploads are deferred until the entire settings stream is valid.
-struct VisualPresetResources {bool sky{},lut{},impactSurface{},impactBot{},weaponFx{};};
+struct VisualPresetResources {bool sky{},lut{},impactSurface{},impactBot{},weaponFx{},visualImages{};};
 void copyVisualPresetSettings(AppState& to,const AppState& from){
+    map_alphaValues(to)=map_alphaValues(from);
+    hitmarker_shapeValues(to)=hitmarker_shapeValues(from);
+    hitmarker_colorsValues(to)=hitmarker_colorsValues(from);
+    camera_visualValues(to)=camera_visualValues(from);
+    camo_visualValues(to)=camo_visualValues(from);
+    material_visualValues(to)=material_visualValues(from);
+    lens_visualValues(to)=lens_visualValues(from);
+    lighting_visualValues(to)=lighting_visualValues(from);
+    campath_visualValues(to)=campath_visualValues(from);
+    water_placementValues(to)=water_placementValues(from);
+    sky_calibrationValues(to)=sky_calibrationValues(from);
+    to.camoPath=from.camoPath;to.specularImperfectionsPath=from.specularImperfectionsPath;
+    to.hitmarkerTexturePath=from.hitmarkerTexturePath;to.killmarkerTexturePath=from.killmarkerTexturePath;
+    to.weaponProfile.scopeOverlayImage=from.weaponProfile.scopeOverlayImage;
+    to.rain=from.rain;
+    to.wet=from.wet;to.muzzleLight=from.muzzleLight;
     to.actorOverlays=from.actorOverlays;
     to.ambientBlackbody=from.ambientBlackbody;
     to.ambientColor=from.ambientColor;
@@ -155,7 +171,7 @@ void copyVisualPresetSettings(AppState& to,const AppState& from){
     to.vignetteRadius=from.vignetteRadius;
     to.vignetteSoftness=from.vignetteSoftness;
     to.volumetric=from.volumetric;
-    static_cast<render::water::Appearance&>(to.water)=from.water;
+    to.water=from.water;
     to.nightSky=from.nightSky;
     to.dayNight=from.dayNight;to.dayNightSeconds=0;
     to.weaponCubemapBlur=from.weaponCubemapBlur;
@@ -166,13 +182,28 @@ void copyVisualPresetSettings(AppState& to,const AppState& from){
     weapon_smokeValues(to)=weapon_smokeValues(from);
     weapon_trailsValues(to)=weapon_trailsValues(from);
 }
-bool parseVisualPreset(AppState& app,std::istream& in,VisualPresetResources& resources){std::string signature,key;int version{};if(!(in>>signature>>version)||signature!="CASTVISUAL"||version<1||version>5)return false;app.actorOverlays={};app.cameraControls={};app.volumetric={};app.dayNight={};app.nightSky={};app.hbao={};app.dof={};app.viewmodelCubemapMultiplier=app.worldCubemapMultiplier=1.f;while(true){if(in.fail())return false;if(in.eof())break;in>>std::ws;if(in.eof())break;if(!(in>>key))return false;if(key=="crosshair"){if(!readVisualValues(in,crosshairValues(app)))return false;continue;}
+bool parseVisualPreset(AppState& app,std::istream& in,VisualPresetResources& resources){std::string signature,key;int version{};if(!(in>>signature>>version)||signature!="CASTVISUAL"||version<1||version>5)return false;app.rain={};app.wet={};app.muzzleLight={};app.actorOverlays={};app.cameraControls={};app.volumetric={};app.dayNight={};app.nightSky={};app.hbao={};app.dof={};app.viewmodelCubemapMultiplier=app.worldCubemapMultiplier=1.f;while(true){if(in.fail())return false;if(in.eof())break;in>>std::ws;if(in.eof())break;if(!(in>>key))return false;if(key=="crosshair"){if(!readVisualValues(in,crosshairValues(app)))return false;continue;}
+bool extended=false,valid=true;
+forEachExtendedVisualGroup(app,[&](const char* name,auto values){if(key==name){extended=true;valid=readVisualValues(in,values);}});
+if(extended){if(!valid)return false;continue;}
+if(key=="visual_images"){
+ std::string camo,imperfections,hit,kill,scope;
+ if(!(in>>std::quoted(camo)>>std::quoted(imperfections)>>std::quoted(hit)>>std::quoted(kill)>>std::quoted(scope)))return false;
+ app.camoPath=camo;app.specularImperfectionsPath=imperfections;app.hitmarkerTexturePath=hit;app.killmarkerTexturePath=kill;app.weaponProfile.scopeOverlayImage=scope;
+ resources.visualImages=true;continue;
+}
 if(key=="night_galaxy_noise"){if(!(in>>app.nightSky.galaxyNoiseAlgorithm>>app.nightSky.galaxyNoiseScale>>app.nightSky.galaxyNoiseDetail>>app.nightSky.galaxyNoiseContrast))return false;app.nightSky.sanitize();continue;}
 if(key=="night_sky"){if(!(in>>app.nightSky))return false;continue;}
 if(key=="water_appearance"){if(!(in>>static_cast<render::water::Appearance&>(app.water)))return false;continue;}
 if(key=="water_optics"){if(!(in>>app.water.optics))return false;continue;}
 if(key=="water_spectrum"){if(!(in>>app.water.crossSwell>>app.water.swellAngle>>app.water.swellLength>>app.water.seed))return false;app.water.sanitize();continue;}
 if(key=="water_surface"){if(!(in>>app.water.surface))return false;continue;}
+if(key=="rain_v1"){if(!(in>>app.rain))return false;continue;}
+if(key=="rain_style_v1"){if(!(in>>app.rain.style))return false;continue;}
+if(key=="rain_blocker_distance"){if(!(in>>app.rain.blockerDistance)||!std::isfinite(app.rain.blockerDistance))return false;continue;}
+if(key=="wet_surfaces_v1"){if(!(in>>app.wet))return false;continue;}
+if(key=="wet_detail_v1"){if(!(in>>app.wet.detail))return false;continue;}
+if(key=="muzzle_light_v1"){if(!(in>>app.muzzleLight))return false;continue;}
 if(key=="star_rotation"){if(!(in>>app.dayNight.starAutoRotate>>app.dayNight.starRotationSpeed))return false;continue;}
 if(key=="day_night"){if(!(in>>app.dayNight))return false;continue;}
 if(key=="actor_overlays"){if(!readVisualValues(in,actorOverlayValues(app)))return false;app.actorOverlays.sanitize();continue;}
@@ -203,6 +234,31 @@ bool loadVisualPreset(AppState& app,const std::filesystem::path& path){
     }
     copyVisualPresetSettings(app,*staged);
     std::string error;
+    if(resources.visualImages){
+        if(app.camoPath.empty())app.renderer.clearCamoTexture();else if(!app.renderer.setCamoTexture(app.camoPath,error)){app.renderer.clearCamoTexture();app.status=error;}
+        if(app.specularImperfectionsPath.empty())app.renderer.clearSpecularImperfectionsTexture();else if(!app.renderer.setSpecularImperfectionsTexture(app.specularImperfectionsPath,error)){app.renderer.clearSpecularImperfectionsTexture();app.status=error;}
+        app.hitmarkerTextureId=app.hitmarkerTexturePath.empty()?0:app.renderer.loadTexture(app.hitmarkerTexturePath,false,false);
+        app.killmarkerTextureId=app.killmarkerTexturePath.empty()?0:app.renderer.loadTexture(app.killmarkerTexturePath,false,false);
+        if((!app.hitmarkerTexturePath.empty()&&!app.hitmarkerTextureId)||(!app.killmarkerTexturePath.empty()&&!app.killmarkerTextureId))app.status="Could not load hitmarker image";
+        app.scopeOverlayKey.clear();app.weaponProfileDirty=true;
+        if(app.activeClassSlot>=0&&app.classSlotRigs[app.activeClassSlot])app.classSlotRigs[app.activeClassSlot]->profile=app.weaponProfile;
+    }
+    app.renderer.setSkyFaceCalibration(app.skyFaceSources,app.skyFaceQuarterTurns);
+    // Apply restored material controls even when their UI sections stay closed.
+    app.renderer.setIgnoreTextureAlpha(app.ignoreViewmodelTextureAlpha,app.ignoreMapTextureAlpha);
+    app.renderer.setAlphaOverlay(app.alphaOverlay,app.alphaOverlayIntensity);
+    app.renderer.setSpecularImperfectionParameters(app.specularImperfectionsStrength,app.specularImperfectionsScale,app.specularImperfectionsLow,app.specularImperfectionsHigh);
+    app.renderer.setAntialiasing(app.antialiasing);
+    app.renderer.setNormalMapIntensity(app.normalMapIntensity);
+    app.renderer.setDecalDepthBias(app.mapDecalDepthBias);
+    app.renderer.setKawaseSamples(app.bloomKawaseSamples,app.cubemapKawaseSamples);
+    app.renderer.setAlternateSpecular(app.alternateSpecularEnabled,app.alternateSpecularIntensity,app.alternateSpecularSharpness,app.alternateSpecularIntensity2,app.alternateSpecularSharpness2,app.viewmodelSpecularProfile,app.playermodelSpecularProfile,app.worldSpecularProfile);
+    app.renderer.setLensTintIntensity(app.lensTintIntensity);
+    app.renderer.setWorldLensParameters(app.worldLensAlpha,app.worldLensTint,app.worldLensTintIntensity,app.worldLensSpecularIntensity,app.worldLensCubemapIntensity);
+    app.renderer.setMaterialParameters(app.lensAlpha,app.lensTint,app.lensCubemapIntensity,app.specularIntensity,app.specularSharpness,app.specularIntensity2,app.specularSharpness2,app.lensSpecularIntensity,app.cubemapSpecular,app.cubemapSpecularIntensity,app.cubemapSpecularBlur,app.shadingModel,app.iw3DualLobe,app.awRoughnessScale,app.awRoughnessBias,app.awMetalness,app.awSpecularLevel,app.awDiffuseWrap,app.awClearcoat,app.awClearcoatRoughness,app.awEnvironmentIntensity);
+    app.renderer.setEmissiveTint(app.tritiumTint);
+    app.renderer.setShadowStyle(app.shadowIntensity,app.shadowBias,app.shadowNormalBias,app.shadowSoftness,app.shadowContrast,app.shadowTint);
+    app.renderer.setFog(app.fogEnabled,app.fogColor,app.fogStartMeters*gameplay::iw::kMetersToUnits,app.fogHalfDistanceMeters*gameplay::iw::kMetersToUnits,app.fogOpacity,app.fogSkyAmount,app.fogHeightEnabled,app.fogHeightMeters*gameplay::iw::kMetersToUnits,app.fogHeightFalloffMeters*gameplay::iw::kMetersToUnits);
     if(resources.lut){if(app.lutPath.empty())app.renderer.clearLutTexture();else if(!app.renderer.setLutTexture(app.lutPath,error))app.status=error;}
     if(resources.impactSurface){if(app.impactSurfacePath.empty())app.renderer.clearImpactSurfaceTexture();else if(!app.renderer.setImpactSurfaceTexture(app.impactSurfacePath,error))app.status=error;}
     if(resources.impactBot){if(app.impactBotPath.empty())app.renderer.clearImpactBotTexture();else if(!app.renderer.setImpactBotTexture(app.impactBotPath,error))app.status=error;}

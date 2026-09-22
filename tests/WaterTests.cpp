@@ -7,6 +7,12 @@ int main(){
     render::water::Settings s;s.height=123;s.enabled=true;s.waveHeight=std::numeric_limits<float>::quiet_NaN();
     s.radius=std::numeric_limits<float>::infinity();s.quality=99;s.sanitize();
     check(std::isfinite(s.waveHeight)&&s.radius==250&&s.quality==2,"invalid settings sanitized");
+    {auto manual=s;manual.radius=5000;manual.waveHeight=25;manual.roughness=2;manual.reflection=12;
+    manual.timeOffset=-100000;manual.seed=-32;manual.surface.foamDetail=3;manual.optics.crestLight=8;
+    manual.sanitize();check(manual.radius==5000&&manual.waveHeight==25&&manual.roughness==2&&manual.reflection==12&&manual.timeOffset==-100000&&manual.seed==-32&&manual.surface.foamDetail==3&&manual.optics.crestLight==8,"manual finite overrides preserved");
+    std::stringstream saved;saved<<static_cast<render::water::Appearance&>(manual);render::water::Appearance restored;saved>>restored;
+    check(restored.waveHeight==25&&restored.reflection==12&&restored.roughness==2,"manual overrides survive preset reload");
+    manual.wavelength=0;manual.swellLength=0;for(const auto& wave:render::water::waves(manual))check(std::isfinite(wave.k)&&std::isfinite(wave.omega),"zero wavelength is guarded locally");}
     std::stringstream text;text<<render::water::preset(2);
     text>>static_cast<render::water::Appearance&>(s);
     check(s.enabled&&s.height==123&&s.rain==.8f,"appearance presets preserve placement");

@@ -704,7 +704,9 @@ static bool loadImpl(
             const auto* matDef = matIdx < materials.size() ? &materials[matIdx] : nullptr;
             const std::string matName = matDef ? matDef->name : "default";
             const std::string canonicalMat = canonical(matName);
-            const bool skybox = !extension.present&&(isSkyboxMaterial(canonicalMat, matDef ? canonical(matDef->techset) : "") || isSkyboxMaterial(canonical(surf.name), ""));
+            const bool skybox = extension.present
+                ? (matIdx<extension.meta["visualMaterials"].size() && extension.meta["visualMaterials"][matIdx].value("sky",false))
+                : (isSkyboxMaterial(canonicalMat, matDef ? canonical(matDef->techset) : "") || isSkyboxMaterial(canonical(surf.name), ""));
             if (skybox) continue;
 
             const bool toolInvisible = !extension.present&&(isToolOrInvisibleMaterial(canonicalMat) || isToolOrInvisibleMaterial(surf.name));

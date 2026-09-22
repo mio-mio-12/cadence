@@ -54,6 +54,10 @@ std::optional<std::size_t> selectGroundWorldLocomotion(const scene::CastScene& a
         if((q.motion==M::Idle)!=(c.motion==M::Idle))continue;
         if(q.stance!=scene::Stance::Prone&&c.motion==M::Crawl)continue;
         const auto name=lowerText(c.sourceName);
+        // Short stance-adjustment shuffles are not sustained walking cycles.
+        // Their exact rifle/direction match otherwise beats genuine locomotion
+        // when ADS asks for Walk (notably BO2 clips on CODM bodies).
+        if(name.find("_shuffle_")!=std::string::npos)continue;
         if(c.weapon!=q.weapon&&(c.weapon==W::Launcher||c.weapon==W::Grenade||c.weapon==W::RiotShield||c.weapon==W::Equipment||c.weapon==W::Tablet||c.weapon==W::Radio||c.weapon==W::Briefcase))continue;
         if(name.find("_hold")!=std::string::npos||name.find("unarmed")!=std::string::npos||name.find("_in.")!=std::string::npos||name.find("_out.")!=std::string::npos)continue;
         const auto d=worldClipDirection(c);

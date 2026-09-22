@@ -84,7 +84,12 @@ inline bool fitPreparedHands(CastScene& native,const CastScene& reference,CastSc
         }
         const auto fallback=index(src,"b_Spine");
         for(size_t d=0;d<dst.bones.size();++d){
-            if(!mapped[d]){int p=dst.bones[d].parent;while(p>=0&&!mapped[p])p=dst.bones[p].parent;if(p>=0){deformation[d]=deformation[p];source[d]=source[p];adapter->helperRules.push_back(dst.bones[d].name+" follows "+dst.bones[p].name+" in fitted bind space");}else source[d]=static_cast<int>(fallback);}
+            if(!mapped[d]){int p=dst.bones[d].parent;
+                // CODM exports forearm roll as an upper-arm child, but its
+                // weighted sleeve belongs to the forearm, not the shoulder.
+                if(legacy.codmNativeCentimetres && (dst.bones[d].name=="j_elbow_bulge_le"||dst.bones[d].name=="j_elbow_bulge_ri"))
+                    p=static_cast<int>(index(dst,"j_elbow_"+dst.bones[d].name.substr(dst.bones[d].name.size()-2)));
+                while(p>=0&&!mapped[p])p=dst.bones[p].parent;if(p>=0){deformation[d]=deformation[p];source[d]=source[p];adapter->helperRules.push_back(dst.bones[d].name+" follows "+dst.bones[p].name+" in fitted bind space");}else source[d]=static_cast<int>(fallback);}
             fitted[d]=deformation[d]*dst.bones[d].restGlobal;
             for(float v:fitted[d].v)if(!std::isfinite(v))throw std::runtime_error("Non-finite fitted legacy bind");
             const auto s=static_cast<size_t>(source[d]);const auto driver=index(native.skeleton,src.bones[s].name);CodmRigBinding binding{driver,inverseAffine(src.bones[s].restGlobal)*fitted[d]};
@@ -113,6 +118,8 @@ inline bool fitPreparedHands(CastScene& native,const CastScene& reference,CastSc
 }
 inline bool fitLegacyHands(CastScene& native,const CastScene& reference,const cast::Document& legacyDocument,std::string& error){
     if(!native.codmNativeCentimetres&&!native.pointBlankNativeCentimetres){error="Normalized native reference required";return false;}
-    return fitPreparedHands(native,reference,buildScene(legacyDocument),legacyDocument.sourceName(),error);
+    auto skin=buildScene(legacyDocument);
+    if(skin.skeleton.boneByName.contains("b_LeftHand")&&!prepareLegacyNamedHands(skin,legacyDocument,error))return false;
+    return fitPreparedHands(native,reference,std::move(skin),legacyDocument.sourceName(),error);
 }
 }

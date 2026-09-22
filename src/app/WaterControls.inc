@@ -2,7 +2,6 @@ void drawWaterControls(AppState& app){
     if(!ImGui::CollapsingHeader("Water level"))return;
     auto& w=app.water;ImGui::PushID("experimental_water");
     ImGui::Checkbox("Enable water",&w.enabled);
-    uiHelp("Visual only. No collision or swimming. New maps disable water; placement is session-only.");
     ImGui::DragFloat("Height",&w.height,1.f,-1000000.f,1000000.f,"%.1f cm");
     if(ImGui::Button("At player feet"))w.height=app.actorPosition.z;
     ImGui::SameLine();if(ImGui::Button("At camera target"))w.height=app.cameraTarget.z;
@@ -11,7 +10,6 @@ void drawWaterControls(AppState& app){
         for(int n=0;n<5;++n)if(ImGui::Selectable(names[n]))static_cast<render::water::Appearance&>(w)=render::water::preset(n);
         ImGui::EndCombo();
     }
-    uiHelp("Water appearance is included in Visual presets. Loading a visual preset never changes height or enables water.");
     if(ImGui::TreeNode("Waves")){
         ImGui::SliderFloat("Wave height",&w.waveHeight,0,12,"%.2f m");
         ImGui::SliderFloat("Wavelength",&w.wavelength,1,100,"%.1f m");
@@ -38,14 +36,14 @@ void drawWaterControls(AppState& app){
         ImGui::TreePop();
     }
     if(ImGui::TreeNode("Material")){
-        ImGui::ColorEdit3("Deep water color",&w.color.x);
+        ImGui::ColorEdit3("Deep water color",&w.color.x,ImGuiColorEditFlags_HDR|ImGuiColorEditFlags_Float);
         ImGui::SliderFloat("Roughness",&w.roughness,.03f,1);
         ImGui::SliderFloat("Reflection",&w.reflection,0,3);
         ImGui::TreePop();
     }
     if(ImGui::TreeNode("Depth & crest lighting")){
         ImGui::Checkbox("Depth shading",&w.optics.depthEnabled);
-        ImGui::ColorEdit3("Shallow water color",&w.optics.shallow.x);
+        ImGui::ColorEdit3("Shallow water color",&w.optics.shallow.x,ImGuiColorEditFlags_HDR|ImGuiColorEditFlags_Float);
         ImGui::SliderFloat("Absorption distance",&w.optics.absorption,.1f,100,"%.2f m",ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Underwater visibility",&w.optics.transmission,0,1);
         ImGui::SliderFloat("Crest translucency",&w.optics.crestLight,0,3);

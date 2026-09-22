@@ -82,12 +82,13 @@ uniform mat4 uLight,uFarLight;
 uniform sampler2D uShadow,uFarShadow;
 uniform bool uShadows,uFarShadows;
 uniform float uShadowBias,uShadowStrength,uShadowDistance,uFarShadowDistance;
-float shadowTap(sampler2D tex,mat4 light){
+float shadowTap(sampler2D tex,mat4 light,float radius){
     vec4 p=light*vec4(vWorld,1);vec3 q=p.xyz/p.w*.5+.5;
     if(any(lessThan(q,vec3(0)))||any(greaterThan(q,vec3(1))))return 1;
     vec2 px=1.0/vec2(textureSize(tex,0));float lit=0;
+    float biasScale=(4.*radius-1.)*.5*length(vec3(light[0].z,light[1].z,light[2].z));
     for(int y=0;y<2;++y)for(int x=0;x<2;++x)
-        lit+=q.z-uShadowBias<=texture(tex,q.xy+(vec2(x,y)-.5)*px).r?1:0;
+        lit+=q.z-uShadowBias*biasScale<=texture(tex,q.xy+(vec2(x,y)-.5)*px).r?1:0;
     return mix(1,lit*.25,uShadowStrength);
 }
 float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
@@ -180,7 +181,7 @@ void main(){
     if(uDebug==7){fragColor=vec4(1);return;}
     if(uDebug==4||uDebug==6){fragColor=vec4(n*.5+.5,1);return;}
     if(uDebug!=0){fragColor=vec4(uColor,1);return;}
-    float nv=max(dot(n,view),.001),f=.02+.98*pow(1-nv,5);
+    float nv=clamp(dot(n,view),.001,1.0),f=.02+.98*pow(1-nv,5);
     vec3 refl=reflect(-view,n);
     vec3 tangent=normalize(cross(abs(refl.z)<.95?vec3(0,0,1):vec3(0,1,0),refl)),bitangent=cross(refl,tangent);
     float spread=uRoughness*uRoughness*.6;
@@ -188,13 +189,13 @@ void main(){
     env+=(environment(normalize(refl+tangent*spread))+environment(normalize(refl-tangent*spread))
         +environment(normalize(refl+bitangent*spread))+environment(normalize(refl-bitangent*spread)))*.15;
     vec3 light=normalize(-uSun),halfway=normalize(light+view);
-    float nl=max(dot(n,light),0),nh=max(dot(n,halfway),0),vh=max(dot(view,halfway),0);
-    float a=max(.002,uRoughness*uRoughness),a2=a*a,den=nh*nh*(a2-1)+1;
+    float nl=clamp(dot(n,light),0,1),nh=clamp(dot(n,halfway),0,1),vh=clamp(dot(view,halfway),0,1);
+    float a=max(.002,uRoughness*uRoughness),a2=a*a,den=max(1e-8,(1-nh*nh)+nh*nh*a2);
     float D=a2/(3.14159265*den*den),k=(uRoughness+1)*(uRoughness+1)/8;
     float G=(nv/(nv*(1-k)+k))*(nl/(nl*(1-k)+k));
     float shadow=1;
-    if(uShadows){if(distanceToCamera<uShadowDistance)shadow=shadowTap(uShadow,uLight);
-        else if(uFarShadows&&distanceToCamera<uFarShadowDistance)shadow=shadowTap(uFarShadow,uFarLight);}
+    if(uShadows){if(distanceToCamera<uShadowDistance)shadow=shadowTap(uShadow,uLight,max(400.,uShadowDistance));
+        else if(uFarShadows&&distanceToCamera<uFarShadowDistance)shadow=shadowTap(uFarShadow,uFarLight,max(400.,max(uShadowDistance,uFarShadowDistance)));}
     vec3 sun=uSunColor*shadow;
     // Thickness along the actual camera ray; opaque pre-water depth only.
     // This never samples the water's own attached depth texture.
@@ -253,7 +254,9 @@ void main(){
         float fog=(1-exp2(-max(0,distanceToCamera-uFogStart)*density/max(1,uFogHalf)))*uFogOpacity;
         color=mix(color,uFogColor,clamp(fog,0,1));
     }
-    fragColor=vec4(max(color,vec3(0)),1);
+    // Keep HDR highlights representable in the half-float scene buffer.
+    // Infinity entering bloom/tonemapping can turn a bright reflection black.
+    fragColor=vec4(clamp(color,vec3(0),vec3(60000)),1);
 }
 )GLSL";
 }

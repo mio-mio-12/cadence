@@ -3,6 +3,8 @@
 #include <iostream>
 #include <filesystem>
 #include <chrono>
+#include <fstream>
+#include <sstream>
 #define CHECK(x) do{if(!(x)){std::cerr<<"FAIL "<<__LINE__<<" "<<#x<<" "<<error<<'\n';return 1;}}while(false)
 static scene::Mesh box(scene::Vec3 lo,scene::Vec3 hi,scene::Vec4 color){
     scene::Mesh m;m.name="water_test_block";m.color=color;m.doubleSided=true;
@@ -92,6 +94,70 @@ int main(int argc,char** argv){
     CHECK(glGetError()==GL_NO_ERROR);
     renderer.setHbao({});renderer.setDepthOfField({});
     renderer.setFog(false,{},0,5000,1,0);
+    // Grazing, mirror-like water under extreme illumination must not put NaN
+    // or infinity into the half-float scene, even with manual slider overrides.
+    {const auto saved=water;water.waveHeight=0;water.detail=0;water.rain=0;water.foam=0;water.roughness=0;water.reflection=12;
+        renderer.setSun(true,false,{0,-.973f,-.23f},1000,0,{1,1,1},{1,1,1},512,7000,6000,camera,false,512,6000,9000,100);
+        render(0);glBindTexture(GL_TEXTURE_2D,static_cast<GLuint>(renderer.colorTexture()));
+        std::vector<float> hdr(1280*720*4);glGetTexImage(GL_TEXTURE_2D,0,GL_RGBA,GL_FLOAT,hdr.data());
+        for(float v:hdr)CHECK(std::isfinite(v));CHECK(glGetError()==GL_NO_ERROR);
+        CHECK(renderer.saveColorPng(out/"highlight_stress.png",error));water=saved;
+        renderer.setSun(true,true,{.3f,.45f,-.8f},2,.55f,{1,.92f,.8f},{.75f,.85f,1},1024,7000,6000,camera,false,512,6000,9000,100);
+    }
+    // RAINYWET / RAINYWET2 use gamma 32. Moving HDR reflections must stay
+    // finite through DOF; zero-weight samples must not poison nearby pixels.
+    {const auto saved=water;render::DepthOfFieldSettings extreme;
+        extreme.enabled=true;extreme.gamma=32;extreme.focusDistance=1000;extreme.focusRange=200;
+        extreme.nearRadius=0;extreme.farRadius=4.4f;extreme.nearTransition=1001;extreme.farTransition=2500;
+        extreme.bokehAmount=.5f;extreme.bokehThreshold=.8f;extreme.hollowness=.95f;extreme.anamorphic=1.51f;extreme.blades=6;extreme.samples=10;extreme.downsample=1;
+        renderer.setDepthOfField(extreme);
+        water.roughness=.01f;water.reflection=12;water.foam=2;
+        renderer.setSun(true,false,{0,-.973f,-.23f},100,0,{1,1,1},{1,1,1},512,7000,6000,camera,false,512,6000,9000,100);
+        for(int frame=0;frame<8;++frame){
+            render(frame*.137);
+            glBindTexture(GL_TEXTURE_2D,static_cast<GLuint>(renderer.colorTexture()));
+            std::vector<float> hdr(1280*720*4);glGetTexImage(GL_TEXTURE_2D,0,GL_RGBA,GL_FLOAT,hdr.data());
+            std::size_t invalid=0;for(float v:hdr)if(!std::isfinite(v))++invalid;
+            std::cout<<"gamma32 frame="<<frame<<" invalid channels="<<invalid<<std::endl;CHECK(invalid==0);
+        }
+        CHECK(renderer.saveColorPng(out/"gamma32_water.png",error));
+        renderer.setDepthOfField({});water=saved;
+        renderer.setSun(true,true,{.3f,.45f,-.8f},2,.55f,{1,.92f,.8f},{.75f,.85f,1},1024,7000,6000,camera,false,512,6000,9000,100);
+    }
+    // User weather/DOF values on a controlled moving-camera fixture, not the full user map.
+    {const auto saved=water;scene::glb::Map rainMap;rainMap.scene=map;
+        for(const char* name:{"RAINYWET","RAINYWET2"}){
+            std::ifstream preset(std::filesystem::path("Cadence Assets/visual_presets")/(std::string(name)+".castvisual"));
+            if(!preset)continue; // Private presets aren't required on other machines.
+            render::rain::Settings weather;render::WetSettings wet;render::DepthOfFieldSettings focus;
+            std::string line,key;while(std::getline(preset,line)){std::istringstream in(line);in>>key;
+                if(key=="dof")in>>focus;
+                else if(key=="rain_v1")in>>weather;
+                else if(key=="rain_style_v1")in>>weather.style;
+                else if(key=="wet_surfaces_v1")in>>wet;
+                else if(key=="wet_detail_v1")in>>wet.detail;
+                else if(key=="water_appearance")in>>static_cast<render::water::Appearance&>(water);
+                else if(key=="water_optics")in>>water.optics;
+                else if(key=="water_surface")in>>water.surface;
+                else if(key=="water_spectrum")in>>water.crossSwell>>water.swellAngle>>water.swellLength>>water.seed;
+            }
+            renderer.setDepthOfField(focus);renderer.setWetSurfaces(wet);water.enabled=true;
+            const auto frame=[&](int n){const double t=4+n/30.;const scene::Vec3 eye=camera+scene::Vec3{float(n)*6,float(n)*3,0};
+                const auto direction=scene::normalize(forward+scene::Vec3{std::sin(n*.03f)*.2f,0,0});
+                const auto moving=scene::perspective(65*scene::kPi/180,16.f/9,1,100000)*scene::lookAtDirection(eye,direction,{0,0,1});
+                renderer.setCameraPosition(eye);renderer.setEnvironmentCamera(direction,{0,0,1},65,16.f/9);
+                renderer.setRain(weather,t,&rainMap);renderer.setWater(water,t);
+                renderer.render(empty,{},moving,1280,720,false,false,false,nullptr,nullptr,nullptr,nullptr,nullptr,false,&map);
+            };
+            for(int n=0;n<60;++n){frame(n);CHECK(glGetError()==GL_NO_ERROR);
+                if(n%15==0)CHECK(renderer.saveColorPng(out/(std::string(name)+"_moving_"+std::to_string(n)+".png"),error));
+            }
+            frame(24);CHECK(renderer.readColorRgba(first,error));frame(56);frame(24);CHECK(renderer.readColorRgba(repeat,error));CHECK(first==repeat);
+            std::cout<<name<<" moving rain/water/DOF + seek PASS"<<std::endl;
+        }
+        renderer.setRain({},0);renderer.setWetSurfaces({});renderer.setDepthOfField({});water=saved;
+        renderer.setCameraPosition(camera);renderer.setEnvironmentCamera(forward,{0,0,1},65,16.f/9);
+    }
     for(int n=0;n<3;++n){water.quality=n;render(.5);}
     // Measure synchronous completed renders, not CPU submission alone.
     for(int n=0;n<4;++n){water.enabled=n!=0;water.quality=1;static_cast<render::water::Appearance&>(water)=render::water::preset(n==2?2:n==3?3:0);

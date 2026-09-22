@@ -1,3 +1,4 @@
+#include "VisualPresetGroups.inc"
 // Shared serialization for visual presets and crosshair-only presets.
 // Parse into value tuples first so a malformed record never partially applies.
 template<class Tuple> void writeVisualValues(std::ostream& out,const Tuple& values){
@@ -50,4 +51,3 @@ void drawCrosshairPresets(AppState& app){
     ImGui::SameLine();
     if(ImGui::Button("Load default##crosshair"))app.status=loadCrosshairPreset(app,directory/"default.crosshair")?"Loaded default crosshair":"No valid default crosshair";
 }
-

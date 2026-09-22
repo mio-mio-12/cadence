@@ -15,7 +15,7 @@ struct Optics {
     float absorption{4.f}, transmission{.65f}, crestLight{.65f};
     float foamCoverage{.48f}, foamScale{1.4f}, shoreFoam{.55f}, shoreWidth{.5f};
     void sanitize(){
-        const auto c=[](float& v,float lo,float hi,float d){v=std::isfinite(v)?std::clamp(v,lo,hi):d;};
+        const auto c=[](float& v,float,float,float d){if(!std::isfinite(v))v=d;};
         c(shallow.x,0,1,.035f);c(shallow.y,0,1,.48f);c(shallow.z,0,1,.43f);
         c(absorption,.1f,100,4);c(transmission,0,1,.65f);c(crestLight,0,3,.65f);
         c(foamCoverage,0,1,.48f);c(foamScale,.1f,10,1.4f);c(shoreFoam,0,2,.55f);c(shoreWidth,.01f,5,.5f);
@@ -49,11 +49,10 @@ struct Appearance {
     scene::Vec3 color{.025f,.13f,.17f};
     float rain{0.f}, rainScale{.55f}, rainSpeed{1.f};
     void sanitize(){
-        const auto clamp=[](float& v,float lo,float hi,float fallback){v=std::isfinite(v)?std::clamp(v,lo,hi):fallback;};
+        const auto clamp=[](float& v,float,float,float fallback){if(!std::isfinite(v))v=fallback;};
         optics.sanitize();
         surface.sanitize();
         clamp(crossSwell,0,1,.35f);clamp(swellAngle,-180,180,65);clamp(swellLength,.5f,4,1.7f);
-        seed=std::clamp(seed,0,10000);
         clamp(waveHeight,0,12,.65f);clamp(wavelength,1,100,18);clamp(choppiness,0,8,.8f);
         clamp(direction,-360,360,35);clamp(spread,0,1,.65f);clamp(speed,0,4,1);
         clamp(roughness,.03f,1,.18f);clamp(reflection,0,3,1);clamp(detail,0,2,.35f);clamp(foam,0,2,.35f);
@@ -67,9 +66,9 @@ struct Settings : Appearance {
     int quality{1};
     void sanitize(){
         Appearance::sanitize();
-        height=std::isfinite(height)?std::clamp(height,-1000000.f,1000000.f):0;
-        radius=std::isfinite(radius)?std::clamp(radius,25.f,2000.f):250.f;
-        timeOffset=std::isfinite(timeOffset)?std::clamp(timeOffset,-86400.f,86400.f):0;
+        height=std::isfinite(height)?height:0;
+        radius=std::isfinite(radius)?radius:250.f;
+        timeOffset=std::isfinite(timeOffset)?timeOffset:0;
         quality=std::clamp(quality,0,2);
     }
 };
@@ -116,7 +115,7 @@ inline std::array<Wave,waveCount> waves(Appearance a){
     for(int i=0;i<waveCount;++i){
         const bool secondary=i>=12;const int band=secondary?i-12:i/3;
         const float angle=(a.direction+(secondary?a.swellAngle:0)+a.spread*(secondary?45.f:90.f)*(random()*2-1))*scene::kPi/180;
-        const float wavelength=100*a.wavelength*(secondary?a.swellLength:1)*std::pow(secondary?.72f:.48f,float(band))*(.76f+.48f*random());
+        const float wavelength=std::max(.001f,std::abs(100*a.wavelength*(secondary?a.swellLength:1)*std::pow(secondary?.72f:.48f,float(band))*(.76f+.48f*random())));
         auto& w=result[i];w={std::cos(angle),std::sin(angle),amplitude*weight(i),
             2*scene::kPi/wavelength,std::sqrt(981.f*2*scene::kPi/wavelength),random()*2*scene::kPi};
     }

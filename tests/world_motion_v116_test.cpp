@@ -7,6 +7,12 @@
 std::string lowerText(std::string text){for(auto& c:text)c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));return text;}
 #include "../src/app/WorldMotionV116.inc"
 int main(){
+    {
+        scene::CastScene s;
+        for(const auto name:{"pb_rifle_stand_shuffle_f.cast","pb_walk_forward.cast"}){scene::Animation c;scene::classifyAnimationName(name,c);c.sourceName=name;c.sourceGame="bo2";c.tracks.emplace_back();s.animations.push_back(c);}
+        scene::AnimationQuery q;q.motion=scene::MotionRole::Walk;q.weapon=scene::WeaponClass::Rifle;q.stance=scene::Stance::Stand;q.direction=scene::Direction::Forward;q.ads=true;
+        assert(selectGroundWorldLocomotion(s,q)==1);
+    }
     assert(std::abs(worldMovementFacing(0,{100,100,0},scene::Direction::Forward)-scene::kPi*.25f)<.0001f);
     assert(std::abs(worldMovementFacing(0,{100,-100,0},scene::Direction::Forward)+scene::kPi*.25f)<.0001f);
     assert(std::abs(worldMovementFacing(0,{0,-100,0},scene::Direction::Right))<.0001f);

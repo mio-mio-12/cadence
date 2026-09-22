@@ -16,6 +16,7 @@ int main(int argc,char** argv){
         scene::Mesh mesh;mesh.forceAlpha=true;mesh.alphaTest=true;mesh.decal=true;std::string e;
         const auto check=[&](bool value,const char* message){if(!value){std::cerr<<message<<": "<<e<<'\n';std::exit(1);}};
         check(scene::codm::applyCodmMaterial(record,package,mesh,e),"CODM material parse failed");
+        record["sky"]=true;check(scene::codm::applyCodmMaterial(record,package,mesh,e)&&mesh.weatherNonBlocking,"Authored sky must not block weather");record.erase("sky");
         check(mesh.materialPolicyExplicit&&mesh.gltfPbr&&!mesh.forceAlpha&&!mesh.alphaTest&&!mesh.decal&&mesh.ignoreAlbedoAlpha,"Explicit opaque did not clear heuristics");
         check(mesh.color.x==0.2f&&mesh.normalProfile==3&&mesh.specularPath.filename()=="mr.png","PBR factors/channels not retained");
         record["alpha"]="MASK";record["cutoff"]=0.67;record["doubleSided"]=true;

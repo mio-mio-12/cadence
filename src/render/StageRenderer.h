@@ -8,6 +8,8 @@
 #include "render/Hbao.h"
 #include "render/VolumetricLighting.h"
 #include "render/Water.h"
+#include "render/RainField.h"
+#include "render/SurfaceWeather.h"
 #include "render/DayNight.h"
 #include "render/NightSky.h"
 #include "render/DepthOfField.h"
@@ -43,6 +45,10 @@ public:
     void setVolumetricLighting(VolumetricLightingSettings settings){settings.sanitize();volumetric_=settings;}
     void setWater(water::Settings settings,double time){settings.sanitize();water_=settings;waterTime_=std::isfinite(time)?time:0;}
     const std::string& waterError()const{return waterError_;}
+    void setRain(rain::Settings settings,double time,const scene::glb::Map* map=nullptr){settings.sanitize();rain_=settings;rainTime_=std::isfinite(time)?time:0;rainMap_=map;}
+    const std::string& rainError()const{return rainError_;}
+    void setWetSurfaces(WetSettings settings){settings.sanitize();wet_=settings;}
+    void setMuzzleLight(MuzzleLightSettings settings){muzzleLight_=settings;}
     const std::string& volumetricLightingError()const{return volumetricError_;}
     double gpuFrameMilliseconds() const { return gpuTimer_.milliseconds(); }
     void setCubemapSurfaceMultipliers(float viewmodel,float world){viewmodelCubemapMultiplier_=std::isfinite(viewmodel)?std::clamp(viewmodel,0.f,4.f):1.f;worldCubemapMultiplier_=std::isfinite(world)?std::clamp(world,0.f,4.f):1.f;}
@@ -183,7 +189,7 @@ public:
 
     [[nodiscard]] std::uintptr_t colorTexture() const noexcept { return colorTexture_; }
 
-    void renderMuzzleFlash3D(scene::Vec3 position, float size, float rotation, scene::Vec4 color, const scene::Mat4& viewProjection, scene::Vec3 cameraPos, bool firstPerson = true);
+    void renderMuzzleFlash3D(scene::Vec3 position, float size, float rotation, scene::Vec4 color, const scene::Mat4& viewProjection, scene::Vec3 cameraPos, bool firstPerson = true,scene::Vec3 direction={});
     void renderDebugLine3D(scene::Vec3 start, scene::Vec3 end, scene::Vec4 color, const scene::Mat4& viewProjection);
     void updateAndRenderSmokeCurve(float deltaSeconds, scene::Vec3 muzzlePos, scene::Vec3 muzzleForward, bool isEmitting, const scene::Mat4& viewProjection, scene::Vec3 cameraPos, float lifetime, float startWidth, float endWidth, float taperingExp, float blastSpeed, float riseSpeed, float dispersion, scene::Vec4 color, scene::Vec3 wind = {}, int curveResolution = 3,int emitter=0);
     void clearSmokeCurve();
@@ -268,6 +274,23 @@ public:
 
 private:
     void renderWater(const scene::Mat4&,const scene::Mat4&,const scene::Mat4&);
+    void renderRain(const scene::Mat4&);
+    void prepareRainShelter();
+    WetSettings wet_{};
+    MuzzleLightSettings muzzleLight_{};
+    void renderMuzzleLight(scene::Vec3,scene::Vec4,const scene::Mat4&,scene::Vec3,scene::Vec3);
+    unsigned muzzleLightProgram_{},muzzleLightFramebuffer_{};
+    unsigned rainShelterProgram_{},rainShelterFramebuffer_{},rainShelterTexture_{},rainShelterDepth_{};
+    bool rainShelterValid_{},rainShelterReady_{};
+    scene::Vec3 rainShelterCenter_{},rainShelterSlope_{};
+    float rainShelterExtent_{},rainShelterCeiling_{};
+    rain::Settings rain_{};
+    rain::Field rainField_{};
+    const scene::glb::Map* rainMap_{};
+    double rainTime_{};
+    unsigned rainProgram_{},rainFramebuffer_{},rainLaneTexture_{};
+    unsigned rainBackground_{};int rainBackgroundWidth_{},rainBackgroundHeight_{};
+    std::string rainError_;
     water::Settings water_{};
     double waterTime_{};
     unsigned waterProgram_{},waterVao_{},waterVertices_{},waterIndices_{};
@@ -330,7 +353,7 @@ private:
     struct SmokeEmitter {std::vector<SmokePoint> points;float taper{};scene::Vec3 lastPosition{};bool hasLastPosition{};float timer{};};
     std::array<SmokeEmitter,2> smokeEmitters_;
 
-    struct GpuMesh { unsigned vao{},vertexBuffer{},indexBuffer{},wireIndexBuffer{},texture{},normalTexture{},specularTexture{},metalnessTexture{},roughnessTexture{},emissiveTexture{}; int indexCount{},wireIndexCount{}; scene::Mat4 model; scene::Vec4 color; bool specularGlossiness{};bool skinned{},camoBlend{},camoUseAlpha{true},camoMaskUseful{},hideWhenCamo{},lens{},eyeOverlay{},emissive{},forceAlpha{},decal{},decalMultiply{},decalAdditive{},alphaTest{},ignoreAlbedoAlpha{},source2Material{},viewmodelWeapon{},gltfPbr{},materialPolicyExplicit{},doubleSided{},unlit{},useVertexColor{}; float alphaCutoff{.35f},materialDepthBias{};int renderQueue{-1},sourceBlend{-1},destinationBlend{-1}; float metallicFactor{},roughnessFactor{1.0f},transmissionFactor{},indexOfRefraction{1.5f};scene::Vec3 emissiveFactor{};std::int32_t attachmentIndex{-1},actorVariant{-1}; SurfaceSortKey sortKey; visibility::MeshBounds cullBounds; scene::Vec3 aabbMin{}, aabbMax{}; bool hasBounds{false}; };
+    struct GpuMesh { bool rainExcluded{}; unsigned vao{},vertexBuffer{},indexBuffer{},wireIndexBuffer{},texture{},normalTexture{},specularTexture{},metalnessTexture{},roughnessTexture{},emissiveTexture{}; int indexCount{},wireIndexCount{}; scene::Mat4 model; scene::Vec4 color; bool specularGlossiness{};bool skinned{},camoBlend{},camoUseAlpha{true},camoMaskUseful{},hideWhenCamo{},lens{},eyeOverlay{},emissive{},forceAlpha{},decal{},decalMultiply{},decalAdditive{},alphaTest{},ignoreAlbedoAlpha{},source2Material{},viewmodelWeapon{},gltfPbr{},materialPolicyExplicit{},doubleSided{},unlit{},useVertexColor{}; float alphaCutoff{.35f},materialDepthBias{};int renderQueue{-1},sourceBlend{-1},destinationBlend{-1}; float metallicFactor{},roughnessFactor{1.0f},transmissionFactor{},indexOfRefraction{1.5f};scene::Vec3 emissiveFactor{};std::int32_t attachmentIndex{-1},actorVariant{-1}; SurfaceSortKey sortKey; visibility::MeshBounds cullBounds; scene::Vec3 aabbMin{}, aabbMax{}; bool hasBounds{false}; };
     void setShadowMaterial(const GpuMesh& mesh);
     struct MeshUniformLocations {
         int explicitMaterial{-1},unlit{-1},vertexColor{-1},alphaCutoff{-1},hasEmissionMap{-1};

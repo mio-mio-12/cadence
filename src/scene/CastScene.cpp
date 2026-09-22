@@ -393,6 +393,20 @@ const auto* material=childHash(model,refs[0]);
         const auto colorIdentity=canonicalName(result.albedo.string());
         result.emissive=result.emissive||isEmissiveMaterialIdentity(colorIdentity);
         result.forceAlpha=result.lens||result.emissive||result.eyeOverlay;
+        // Native CAST material sidecars explicitly distinguish soft opacity
+        // from opaque textures whose alpha stores auxiliary surface data.
+        if(normalizedSource.find("/codm/")!=std::string::npos&&!result.albedo.empty()){
+            auto sidecar=result.albedo;auto stem=sidecar.stem().string();
+            if(stem.ends_with("_albedo")){
+                stem.resize(stem.size()-7);sidecar=sidecar.parent_path()/(stem+".json");
+                const auto info=codm::metadata(sidecar);
+                if(info.is_object()&&info.contains("alphaMode")&&info["alphaMode"].is_string()){
+                    const auto mode=info["alphaMode"].get<std::string>();
+                    if(mode=="blend"){result.forceAlpha=true;result.ignoreAlbedoAlpha=false;}
+                    else if(mode=="opaque"){result.forceAlpha=false;result.ignoreAlbedoAlpha=true;}
+                }
+            }
+        }
         result.camoBlend=weaponSource&&!result.forceAlpha&&!result.excluded;
     };
     for (const auto slot : {"albedo","diffuse"}) {
@@ -1417,6 +1431,10 @@ std::optional<Vec3> resolveMuzzlePosition(const CastScene& value,const std::vect
         const auto p=transformPoint(matrix,{});if(std::isfinite(p.x)&&std::isfinite(p.y)&&std::isfinite(p.z))return p;
     }
     const auto finite=[](Vec3 p){return std::isfinite(p.x)&&std::isfinite(p.y)&&std::isfinite(p.z);};
+    for(const auto& part:value.rigParts)if(part.muzzleParent&&*part.muzzleParent<pose.size()){
+        const auto p=transformPoint(pose[*part.muzzleParent]*part.muzzleOffset,{});
+        if(finite(p))return p;
+    }
     for(const auto& attachment:value.attachments)if(attachment.muzzleLocal&&attachment.boneIndex<pose.size()){
         const auto p=transformPoint(pose[attachment.boneIndex]*attachment.localMatrix(),*attachment.muzzleLocal);
         if(finite(p))return p;
@@ -1624,6 +1642,19 @@ std::size_t appendRigModel(const cast::Document& document,CastScene& scene,std::
         mesh.name=name+" / "+mesh.name;mesh.attachmentIndex=-1;mesh.viewmodelWeapon=viewmodelWeaponPart;scene.meshes.push_back(std::move(mesh));
     }
     scene.rigParts.push_back({name,before,scene.meshes.size()-before,std::move(partRoots)});
+    // H1 clips carry a generic tag_flash channel that can disagree with the
+    // model's actual barrel. Preserve the authored model socket in its animated
+    // parent frame; no per-weapon offsets and no replacement animation tracks.
+    if(partProfile.starts_with("wpn_h1_")&&partProfile.find("_vm")!=std::string::npos){
+        const auto flash=imported.skeleton.boneByCanonicalName.find("tag_flash");
+        if(flash!=imported.skeleton.boneByCanonicalName.end()){
+            const auto& socket=imported.skeleton.bones[flash->second];
+            if(socket.parent>=0&&std::size_t(socket.parent)<boneMap.size()){
+                auto& part=scene.rigParts.back();part.muzzleParent=boneMap[socket.parent];
+                part.muzzleOffset=inverseAffine(imported.skeleton.bones[socket.parent].restGlobal)*socket.restGlobal;
+            }
+        }
+    }
     for(auto& warning:imported.warnings)scene.warnings.push_back("Rig model '"+name+"': "+warning);
     return scene.meshes.size()-before;
 }
@@ -1664,6 +1695,11 @@ std::optional<std::size_t> findBestAnimation(const CastScene& scene,const Animat
         }
         if(query.action==ActionRole::Death&&query.direction!=Direction::Any&&clip.direction!=Direction::Any&&clip.direction!=query.direction)continue;
         int score=100;
+        // COD4's multiplayer crouch holds pair with the shoot family. The
+        // rifle_fire sequences are different authored poses, not substitutes
+        // for that hold (including when aiming).
+        if(clip.sourceGame=="mw"&&query.action==ActionRole::Fire&&query.stance==Stance::Crouch&&
+           (clip.sourceName=="pt_crouch_shoot.cast"||clip.sourceName=="pt_crouch_shoot_ads.cast"))score+=25;
         if(query.motion!=MotionRole::Unknown)score+=clip.motion==query.motion?60:-18;
         if(query.stance!=Stance::Any)score+=clip.stance==query.stance?35:(clip.stance==Stance::Any?8:-14);
         if(query.direction!=Direction::Any)score+=clip.direction==query.direction?45:(clip.direction==Direction::Any?10:-16);

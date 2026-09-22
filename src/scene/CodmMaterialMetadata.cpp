@@ -40,6 +40,7 @@ bool applyCodmMaterial(const Json& j,const std::filesystem::path& directory,Mesh
         // Validate on a material-only temporary; do not duplicate large geometry arrays.
         Mesh out;
         out.materialPolicyExplicit=true;out.gltfPbr=true;out.normalProfile=3;
+        out.weatherNonBlocking=flag(j,"sky",false);
         const auto alpha=j.value("alpha",std::string("OPAQUE"));
         if(alpha!="OPAQUE"&&alpha!="MASK"&&alpha!="BLEND")throw std::runtime_error("Unknown material alpha mode");
         const auto blend=j.value("blend",std::string("alpha"));

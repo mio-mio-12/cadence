@@ -740,5 +740,27 @@ int main(){
         failures+=!expect(std::abs(rig.sampleLocalPose(0,5)[0].position.x-14)<.001f,"mount offset survives absolute animation tracks");
         failures+=!expect(std::abs(rig.sampleLocalPose(99,0)[0].position.x-7)<.001f,"unanimated mount is not applied twice");
     }
+    {
+        scene::CastScene rig;scene::RigPart part;part.muzzleParent=0;part.muzzleOffset=scene::translation({22,0,8});rig.rigParts.push_back(part);
+        const std::vector<scene::Mat4> pose{scene::translation({100,200,300})};
+        const auto muzzle=scene::resolveMuzzlePosition(rig,pose);
+        failures+=!expect(muzzle&&std::abs(muzzle->x-122)<.001f&&std::abs(muzzle->z-308)<.001f,"model muzzle follows animated parent");
+    }
+    {
+        scene::CastScene actor;
+        for(const auto name:{"pt_crouch_rifle_fire.cast","pt_crouch_shoot.cast","pt_crouch_rifle_fire_ads.cast","pt_crouch_shoot_ads.cast"}){
+            scene::Animation clip;scene::classifyAnimationName(name,clip);clip.sourceName=name;clip.sourceGame="mw";clip.tracks.resize(1);actor.animations.push_back(clip);
+        }
+        scene::AnimationQuery q;q.domain=scene::AnimationDomain::PlayerTorso;q.action=scene::ActionRole::Fire;q.stance=scene::Stance::Crouch;q.weapon=scene::WeaponClass::Rifle;
+        failures+=!expect(scene::findBestAnimation(actor,q)==1,"COD4 crouch fire matches multiplayer rifle hold");
+        q.ads=true;failures+=!expect(scene::findBestAnimation(actor,q)==3,"COD4 aimed crouch fire matches aimed multiplayer hold");
+    }
+    {
+        const auto source=(std::filesystem::path(__FILE__).parent_path()/"fixtures/codm/models/test.cast").string();
+        const auto soft=scene::buildScene(cast::Document::parse(animatedTriangle("unclassified_fx","root","materials/soft_albedo.png"),source));
+        const auto solid=scene::buildScene(cast::Document::parse(animatedTriangle("unclassified_body","root","materials/solid_albedo.png"),source));
+        failures+=!expect(soft.meshes.size()==1&&soft.meshes[0].forceAlpha&&!soft.meshes[0].ignoreAlbedoAlpha,"CODM soft alpha follows exported metadata without material-name heuristics");
+        failures+=!expect(solid.meshes.size()==1&&!solid.meshes[0].forceAlpha&&solid.meshes[0].ignoreAlbedoAlpha,"CODM opaque material retains auxiliary albedo alpha");
+    }
     if(!failures)std::cout<<"All Cast scene tests passed.\n";return failures?1:0;
 }

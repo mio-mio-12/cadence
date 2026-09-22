@@ -27,6 +27,19 @@ inline void normalizeToCentimetres(CastScene& s,float fitScale=1.f){
     s.bounds.minimum=s.bounds.minimum*factor;s.bounds.maximum=s.bounds.maximum*factor;
     s.codmNativeCentimetres=true;
 }
+inline bool prepareLegacyNamedHands(CastScene& skin,const cast::Document& document,std::string& error){
+    if(!nativeMetres(document.sourceName(),error))return false;
+    normalizeToCentimetres(skin,presentationScale);
+    skin.skeleton.boneByName.clear();skin.skeleton.boneByCanonicalName.clear();
+    for(std::size_t i=0;i<skin.skeleton.bones.size();++i){auto& b=skin.skeleton.bones[i];
+        for(auto side:{std::pair{"Left","le"},std::pair{"Right","ri"}}){const std::string p="b_"+std::string(side.first),d=side.second;
+            for(auto joint:{std::pair{"Arm","shoulder"},std::pair{"ForeArm","elbow"},std::pair{"ForeArmRoll","elbow_bulge"},std::pair{"Hand","wrist"}})if(b.name==p+joint.first)b.name="j_"+std::string(joint.second)+"_"+d;
+            for(auto finger:{std::pair{"Thumb","thumb"},std::pair{"Index","index"},std::pair{"Middle","mid"},std::pair{"Ring","ring"},std::pair{"Pinky","pinky"}})for(int j=1;j<=3;++j)if(b.name==p+finger.first+std::to_string(j))b.name="j_"+std::string(finger.second)+"_"+d+"_"+std::to_string(j-1);
+        }
+        skin.skeleton.boneByName[b.name]=i;skin.skeleton.boneByCanonicalName[canonicalName(b.name)]=i;
+    }
+    return true;
+}
 inline bool assemble(const cast::Document& weapon,const cast::Document& hands,CastScene& out,std::string& error){
     if(!nativeMetres(weapon.sourceName(),error)||!nativeMetres(hands.sourceName(),error))return false;
     auto driver=buildScene(weapon),skin=buildScene(hands);if(driver.meshes.empty()||skin.meshes.empty()){error="CODM native mesh missing";return false;}

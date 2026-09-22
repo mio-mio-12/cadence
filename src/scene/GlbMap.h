@@ -46,6 +46,9 @@ struct Map {
     std::vector<AuthoredCollider> authoredColliders;
     std::vector<CollisionTriangle> authoredTriggerTriangles;
     std::vector<CollisionTriangle> collision;
+    // Authored movement hulls may close visible openings. Shots use a separate
+    // immutable geometry index; physics and navigation retain the authored hulls.
+    std::shared_ptr<Map> shotGeometry;
     float boundsMinX{-10000.0f}, boundsMinY{-10000.0f}, boundsMaxX{10000.0f}, boundsMaxY{10000.0f};
     int gridWidth{0}, gridHeight{0};
     std::vector<std::vector<std::uint32_t>> gridCollision;
@@ -92,6 +95,9 @@ struct Map {
     [[nodiscard]] float navigationGroundHeight(float x,float y,float referenceZ,float fallback,float footprintRadius) const;
     [[nodiscard]] std::optional<Vec3> raycastWalkable(Vec3 origin,Vec3 direction,float maxDistance) const;
     [[nodiscard]] std::optional<RaycastHit> raycastSurface(Vec3 origin,Vec3 direction,float maxDistance) const;
+    [[nodiscard]] std::optional<RaycastHit> raycastShot(Vec3 origin,Vec3 direction,float maxDistance) const {
+        return shotGeometry ? shotGeometry->raycastSurface(origin,direction,maxDistance) : raycastSurface(origin,direction,maxDistance);
+    }
     [[nodiscard]] bool lineOfSight(Vec3 from,Vec3 to) const;
     [[nodiscard]] bool navigationSegmentClear(Vec3 from,Vec3 to,float radius,float height,float stepHeight) const;
     [[nodiscard]] Vec3 constrainMove(Vec3 oldPosition,Vec3 proposed,float radius,float height,float stepHeight,Vec3* outContactNormal=nullptr) const;

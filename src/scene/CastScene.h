@@ -64,6 +64,7 @@ struct Mesh {
     bool gltfPbr{};
     // Explicit imported material policy; legacy CoD heuristics remain unchanged.
     bool materialPolicyExplicit{};
+    bool weatherNonBlocking{};
     bool doubleSided{};
     bool unlit{};
     bool useVertexColor{};
@@ -232,6 +233,8 @@ struct RigPart {
     std::size_t firstMesh{};
     std::size_t meshCount{};
     std::vector<std::size_t> rootBones;
+    std::optional<std::size_t> muzzleParent;
+    Mat4 muzzleOffset=Mat4::identity();
 };
 
 struct CodmRigBinding { std::size_t source{}; Mat4 offset=Mat4::identity(); std::size_t rollSource{static_cast<std::size_t>(-1)}; Mat4 rollOffset=Mat4::identity(); float rollWeight{}; };

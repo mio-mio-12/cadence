@@ -5,8 +5,10 @@ namespace scene::pointblank {
 // Only the PB skin/binds are fitted once. Its native files stay untouched.
 inline bool fitToCod(CastScene& driver,const cast::Document& pbHands,std::string& error){
  auto reference=driver,skin=buildScene(pbHands);const auto originalMap=driver.skeleton.boneByName;
- if(!skin.skeleton.boneByName.contains("L Hand")){error="Not Point Blank viewhands";return false;}
- for(const auto* side:{"L UpperArm","R UpperArm"}){
+ const bool codmHands=skin.skeleton.boneByName.contains("b_LeftHand");
+ if(codmHands&&!codm::prepareLegacyNamedHands(skin,pbHands,error))return false;
+ if(!codmHands&&!skin.skeleton.boneByName.contains("L Hand")){error="Not supported replacement viewhands";return false;}
+ for(const auto* side:codmHands?std::initializer_list<const char*>{"j_shoulder_le","j_shoulder_ri"}:std::initializer_list<const char*>{"L UpperArm","R UpperArm"}){
   const auto arm=skin.skeleton.boneByName.find(side);float weight=0;
   if(arm!=skin.skeleton.boneByName.end())for(const auto& mesh:skin.meshes)for(const auto& vertex:mesh.vertices)for(std::size_t k=0;k<vertex.weights.size();++k)if(vertex.weights[k]>0){
    auto b=vertex.bones[k];std::size_t remaining=skin.skeleton.bones.size();while(b<skin.skeleton.bones.size()&&remaining--){if(b==arm->second){weight+=vertex.weights[k];break;}const auto parent=skin.skeleton.bones[b].parent;if(parent<0)break;b=static_cast<std::size_t>(parent);}

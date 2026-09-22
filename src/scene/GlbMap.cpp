@@ -150,6 +150,27 @@ bool visitRanges(const CollisionRangeIndex& index,std::size_t cell,
 } // namespace
 
 void Map::buildCollisionIndex(){
+    shotGeometry.reset();
+    if(authoredCollision.present && !scene.meshes.empty()){
+        auto geometry=std::make_shared<Map>();
+        for(const auto& mesh:scene.meshes){
+            if(mesh.weatherNonBlocking || mesh.color.w<=.001f || mesh.forceAlpha || mesh.decal || mesh.decalAdditive || mesh.decalMultiply || mesh.lens)continue;
+            for(std::size_t i=0;i+2<mesh.indices.size();i+=3){
+                const auto a=mesh.indices[i],b=mesh.indices[i+1],c=mesh.indices[i+2];
+                if(a>=mesh.vertices.size()||b>=mesh.vertices.size()||c>=mesh.vertices.size())continue;
+                if(mesh.useVertexColor && std::max({mesh.vertices[a].color.w,mesh.vertices[b].color.w,mesh.vertices[c].color.w})<=.001f)continue;
+                CollisionTriangle t;
+                t.a=transformPoint(mesh.modelTransform,mesh.vertices[a].position);
+                t.b=transformPoint(mesh.modelTransform,mesh.vertices[b].position);
+                t.c=transformPoint(mesh.modelTransform,mesh.vertices[c].position);
+                const auto n=cross(t.b-t.a,t.c-t.a);if(length(n)<1e-7f)continue;t.normal=normalize(n);
+                t.minimum={std::min({t.a.x,t.b.x,t.c.x}),std::min({t.a.y,t.b.y,t.c.y}),std::min({t.a.z,t.b.z,t.c.z})};
+                t.maximum={std::max({t.a.x,t.b.x,t.c.x}),std::max({t.a.y,t.b.y,t.c.y}),std::max({t.a.z,t.b.z,t.c.z})};
+                t.blocking=true;geometry->collision.push_back(t);
+            }
+        }
+        geometry->buildCollisionIndex();shotGeometry=std::move(geometry);
+    }
     static std::atomic<std::uint64_t> nextRevision{1};
     collisionRevision=nextRevision.fetch_add(1,std::memory_order_relaxed);
     globalCollision.clear();
@@ -818,6 +839,7 @@ bool load(const std::filesystem::path& path,Map& map,std::string& error,float sc
         if(!node.mesh)continue;const Mat4 world=nodeMatrix(&node,scaleMultiplier);for(cgltf_size primitiveIndex=0;primitiveIndex<node.mesh->primitives_count;++primitiveIndex){const auto& primitive=node.mesh->primitives[primitiveIndex];if(primitive.type!=cgltf_primitive_type_triangles)continue;const cgltf_accessor *positions{},*normals{},*uvs{},*colors{};for(cgltf_size attributeIndex=0;attributeIndex<primitive.attributes_count;++attributeIndex){const auto& attribute=primitive.attributes[attributeIndex];if(attribute.type==cgltf_attribute_type_position)positions=attribute.data;else if(attribute.type==cgltf_attribute_type_normal)normals=attribute.data;else if(attribute.type==cgltf_attribute_type_texcoord&&attribute.index==0)uvs=attribute.data;else if(attribute.type==cgltf_attribute_type_color&&attribute.index==0)colors=attribute.data;}if(!positions||positions->count==0)continue;
             std::string nodeName=node.name?node.name:(node.mesh->name?node.mesh->name:"mesh");const std::string canonicalName=canonical(nodeName);const std::string materialName=primitive.material&&primitive.material->name?primitive.material->name:"";const std::string canonicalMaterial=canonical(materialName);
             Mesh mesh;
+            if(canonicalMaterial=="sky"||canonicalMaterial.find("skybox")!=std::string::npos||canonicalMaterial.find("skydome")!=std::string::npos||canonicalName=="sky"||canonicalName.find("skybox")!=std::string::npos||canonicalName.find("skydome")!=std::string::npos)continue;
             mesh.name =
                 "GLB / " +
                 std::string(materialName.empty() ? nodeName : materialName);
@@ -841,8 +863,10 @@ bool load(const std::filesystem::path& path,Map& map,std::string& error,float sc
                 try{
                   const auto extras=codm::parseJson(primitive.material->extras.data);
                   mesh.sourceMaterialMetadata=std::make_shared<const std::string>(extras.dump());
+                  if(extras.value("sky",false))continue;
                   if(extras.contains("codm")){
                     const auto& codm=extras.at("codm");
+                    if(codm.value("sky",false))continue;
                     mesh.decal=codm.value("decal",false);
                     // The compiler already encoded additive as GLB alpha preview.
                     // Do not reinterpret this approximation as a second additive pass.

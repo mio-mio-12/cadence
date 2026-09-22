@@ -1,4 +1,5 @@
 bool preparePointBlankCodHands(AppState& app,const cast::Document& hands,std::string game,scene::CastScene& output,std::string& error){
+ if(game=="bocw_sp"||game=="cs2")game="bo2";
  if(game!="bo2"&&game!="bo"&&game!="mw"&&game!="mw2"&&game!="mw3"&&game!="ghosts"&&game!="aw"&&game!="iw_sp"&&game!="mwr")return false;
  const auto choose=[&](const assets::Catalog& catalog)->std::filesystem::path{
   const assets::Asset* best=nullptr;int score=-1;
