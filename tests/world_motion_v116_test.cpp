@@ -20,6 +20,15 @@ int main(){
     assert(worldMovementFacing(.7f,{0,0,0},scene::Direction::Forward)==.7f);
     assert(std::abs(worldMovementFacing(0,{-100,0,0},scene::Direction::Forward))<.0001f);
     assert(std::abs(worldMovementFacing(0,{-100,100,0},scene::Direction::BackwardLeft))<.0001f);
+    for(const auto authored:{scene::Direction::Any,scene::Direction::Forward}){
+        assert(std::abs(worldPresentationMovementFacing(0,{0,100,0},authored,scene::MotionRole::Jump,scene::Direction::Left))<.0001f);
+        assert(std::abs(worldPresentationMovementFacing(0,{0,-100,0},authored,scene::MotionRole::Jump,scene::Direction::Right))<.0001f);
+        assert(std::abs(worldPresentationMovementFacing(0,{100,100,0},authored,scene::MotionRole::Jump,scene::Direction::Forward)-scene::kPi*.25f)<.0001f);
+        assert(std::abs(worldPresentationMovementFacing(0,{-100,0,0},authored,scene::MotionRole::Jump,scene::Direction::Backward))<.0001f);
+        assert(worldPresentationMovementFacing(.7f,{0,0,0},authored,scene::MotionRole::Jump,scene::Direction::Any)==.7f);
+    }
+    for(const auto motion:{scene::MotionRole::Walk,scene::MotionRole::Run,scene::MotionRole::Sprint,scene::MotionRole::Crawl,scene::MotionRole::Slide,scene::MotionRole::Climb})
+        assert(worldPresentationMovementFacing(0,{0,100,0},scene::Direction::Forward,motion,scene::Direction::Left)==worldMovementFacing(0,{0,100,0},scene::Direction::Forward));
     const auto facing=smoothWorldFacingOffset(0,scene::kPi*.5f,1.f/60);
     assert(facing>0&&facing<scene::kPi*.5f);
     assert(smoothWorldFacingOffset(.3f,1.f,0)==.3f);

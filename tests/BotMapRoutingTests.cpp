@@ -55,6 +55,18 @@ static void follow(BotMapRoute& r,scene::Vec3 p,scene::Vec3 goal,const World& w)
 }
 int main() {
     {
+        World w;BotMapRoute peer,r;
+        assert(search(peer,{0,0,0},{9000,0,0},w).status==MapRouteStatus::Following);
+        assert(joinMapRoute(r,{8800,50,0},{9000,0,0},peer,w));
+        assert(r.status==MapRouteStatus::Following&&r.path.back().x==9000);
+        r.reset();World wall{{{8850,-100,8950,100}}};
+        assert(!joinMapRoute(r,{8800,0,0},{9000,0,0},peer,wall));
+        assert(!joinMapRoute(r,{8800,0,100},{9000,0,0},peer,w));
+        assert(!joinMapRoute(r,{8800,0,0},{9000,0,100},peer,w));
+        peer.path={{8800,0,0},{9000,0,0}};
+        assert(!joinMapRoute(r,{8800,0,0},{9000,0,0},peer,wall));
+    }
+    {
         BotMapRoute r;World w;w.ledge=true;
         MapRouteBudget budget;budget.maxQueries=1;
         assert(updateMapRoute(r,{0,0,0},{400,0,0},.008f,w,0,budget).status==MapRouteStatus::Searching);
@@ -187,7 +199,7 @@ int main() {
     }
     {
         BotMapRoute r;World w;
-        assert(search(r,{0,0,0},{9000,0,0},w).status==MapRouteStatus::Unreachable);
+        assert(search(r,{0,0,0},{25000,0,0},w).status==MapRouteStatus::Unreachable);
         assert(r.totalExpanded==0);
     }
     {
@@ -207,8 +219,10 @@ int main() {
         for(int i=0;i<2000&&!r.preview;++i)updateMapRoute(r,{0,0,0},{500,0,0},.008f,w,24,budget);
         assert(r.status==MapRouteStatus::Searching&&r.preview);
         const auto calls=w.calls;budget.maxQueries=0;
-        for(int i=0;i<200&&r.status!=MapRouteStatus::Idle;++i)updateMapRoute(r,{0,0,0},{500,0,0},.008f,w,24,budget);
-        assert(r.status==MapRouteStatus::Idle&&!r.preview&&w.calls==calls);
+        const auto searches=r.searches,expanded=r.totalExpanded;
+        for(int i=0;i<200;++i)updateMapRoute(r,{0,0,0},{500,0,0},.008f,w,24,budget);
+        assert(r.status==MapRouteStatus::Searching&&!r.preview&&w.calls==calls);
+        assert(r.searches==searches&&r.totalExpanded==expanded&&!r.nodes.empty());
     }
     {
         BotMapRoute r;World w;r.status=MapRouteStatus::Arrived;r.goal={500,0,0};r.lastPosition={560,0,0};

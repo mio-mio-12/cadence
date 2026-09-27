@@ -8,7 +8,7 @@ void appendSupplementalWorldMotion(AppState& app,scene::CastScene& actor){
         std::error_code ec;auto path=root/game/"animations"/relative;
         if(!std::filesystem::is_regular_file(path,ec))path=root/"exported_files"/game/"animations"/relative;
         if(!std::filesystem::is_regular_file(path,ec))return;
-        auto document=cast::Document::load(path);if(!document.valid())return;
+        auto document=pointBlankReferenceDocument(path);if(!document.valid())return;
         const auto first=actor.animations.size();
         const auto targetGame=app.classWorldModelAsset<app.assetCatalog.entries.size()?lowerText(app.assetCatalog.entries[app.classWorldModelAsset].game):std::string{};
         // Supplemental AW/Ghosts actions need the same reference-frame bridge

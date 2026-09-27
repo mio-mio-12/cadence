@@ -15,6 +15,30 @@ int main(int argc,char** argv){
     auto state=std::make_unique<AppState>();auto& app=*state;std::string error;
     app.window=window;app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
     if(!app.renderer.initialize(error))return 3;
+    if(argc>2&&std::string(argv[2])=="default"){
+        const std::string game=argc>3?argv[3]:"bo2";
+        if(!assets::appendScan(app.defaultSalukiDirectory/game,game,app.assetCatalog,error))return 4;
+        if(!cadence::loadout_defaults::applyBo2TestingDefaults(app.assetCatalog,app.classPrimaryAsset,app.classSecondaryAsset,app.classViewhandsOverride,app.classFaction))return 5;
+        const auto start=std::chrono::steady_clock::now();
+        loadBothClassSlots(app);
+        while(app.pendingClassFuture){processPendingClassLoad(app);glfwPollEvents();std::this_thread::sleep_for(std::chrono::milliseconds(1));}
+        if(!app.classGpuResident||!app.classSlotRigs[0]||!app.classSlotRigs[1]){std::cerr<<app.status;return 10;}
+        std::cout<<"DEFAULT CLASS "<<game<<" loaded in "<<std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count()<<" seconds: "<<app.assetCatalog.entries[app.classPrimaryAsset].name<<" + "<<app.assetCatalog.entries[app.classSecondaryAsset].name<<" hands="<<app.assetCatalog.entries[app.classViewhandsOverride].name<<'\n';
+        std::ofstream fingerprint(output/"fingerprint.txt");
+        for(int slot=0;slot<2;++slot){const auto& rig=*app.classSlotRigs[slot];
+            const auto* view=slot==app.activeClassSlot?&app.scene:&rig.scene;
+            const auto& world=slot==app.activeClassSlot?app.hiddenWorldActor:rig.worldActor;
+            for(const auto* s:{view,world?&*world:nullptr})if(s){
+                std::uint64_t hash=1469598103934665603ull;
+                const auto bytes=[&](const void* p,size_t n){for(size_t i=0;i<n;++i){hash^=static_cast<const unsigned char*>(p)[i];hash*=1099511628211ull;}};
+                for(const auto& mesh:s->meshes){for(const auto& v:mesh.vertices){bytes(&v.position,sizeof(v.position));bytes(&v.normal,sizeof(v.normal));bytes(&v.uv,sizeof(v.uv));bytes(v.bones.data(),sizeof(v.bones));bytes(v.weights.data(),sizeof(v.weights));}bytes(mesh.indices.data(),mesh.indices.size()*sizeof(std::uint32_t));}
+                for(size_t i=0;i<s->animations.size();++i){const auto& a=s->animations[i];bytes(a.sourceName.data(),a.sourceName.size());bytes(&a.durationFrames,sizeof(a.durationFrames));for(float t:{0.f,.37f,.9f})for(const auto& m:s->samplePose(i,t*a.durationFrames))bytes(m.v.data(),sizeof(m.v));}
+                for(const auto& a:s->attachments){bytes(&a.position,sizeof(a.position));bytes(&a.rotationDegrees,sizeof(a.rotationDegrees));bytes(&a.scale,sizeof(a.scale));bytes(&a.boneIndex,sizeof(a.boneIndex));}
+                fingerprint<<slot<<' '<<s->meshes.size()<<' '<<s->animations.size()<<' '<<hash<<'\n';
+            }
+        }
+        state.reset();glfwDestroyWindow(window);glfwTerminate();return 0;
+    }
     for(const auto* game:{"bo2","bo2_sp","mw3","codm","pointblank","bocw_sp"}){
         if(std::filesystem::exists(app.defaultSalukiDirectory/game)&&!assets::appendScan(app.defaultSalukiDirectory/game,game,app.assetCatalog,error))return 4;
     }

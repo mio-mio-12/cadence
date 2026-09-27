@@ -8,7 +8,7 @@ namespace render {
 struct HbaoSettings {
     bool enabled{},preview{},weaponBackgroundHalo{};
     bool separateTransparent{true};
-    bool beforeFog{}; // Optional fog-aware composition; old presets retain their appearance.
+    bool beforeFog{true}; // Legacy serialized field; surface AO now always precedes atmosphere.
     float transparentGap{8.f}; // World-space separation, never camera distance.
     float radius{60.f},intensity{1.5f},power{1.8f},biasDegrees{10.f},falloff{1.f};
     int directions{8},steps{6},blurRadius{4};

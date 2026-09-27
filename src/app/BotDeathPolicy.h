@@ -37,6 +37,7 @@ inline std::vector<BotDeathChoice> prepareBotDeaths(const scene::CastScene& scen
         const auto& a=scene.animations[i];
         if(a.action!=scene::ActionRole::Death||a.tracks.empty())continue;
         const auto key=deathKey(a.sourceName.empty()?a.name:a.sourceName);
+        if(a.sourceGame=="eldewrito"&&(key.find("airborne_dead")!=std::string::npos||key.find("landing_dead")!=std::string::npos))continue; // Explicit action-set opt-in; not ordinary standing deaths.
         if(key.find("vertigo")!=std::string::npos||key.find("fall_death")!=std::string::npos||key.find("falling")!=std::string::npos||key.find("vehicle")!=std::string::npos)continue;
         const bool sp=key.starts_with("ai_");
         if(key.find("explos")!=std::string::npos||key.find("explode")!=std::string::npos||key.find("blast")!=std::string::npos||key.find("grenade")!=std::string::npos)continue;

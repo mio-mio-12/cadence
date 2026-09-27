@@ -13,7 +13,7 @@ struct Trace {
 // Continuous swept AABB/triangle SAT. Unlike constrainMove this checks the
 // entire path, including ceilings and walkable faces. Feet are the origin.
 inline Trace sweep(const scene::glb::Map& map, scene::Vec3 start,
-                   scene::Vec3 end, float radius, float height) {
+                   scene::Vec3 end, float radius, float height, bool ceilingsOnly=false) {
     using namespace scene;
     Trace result; result.end=end;
     const Vec3 ext{radius,radius,height*0.5f};
@@ -50,6 +50,7 @@ inline Trace sweep(const scene::glb::Map& map, scene::Vec3 start,
     const float epsilon=std::max(0.001f,coordinate*std::numeric_limits<float>::epsilon()*4.0f);
     for(auto index:candidates) {
         const auto& t=map.collision[index];
+        if(ceilingsOnly&&std::abs(t.normal.z)<.05f)continue;
         if(t.maximum.x<lo.x||t.minimum.x>hi.x||t.maximum.y<lo.y||t.minimum.y>hi.y||t.maximum.z<lo.z||t.minimum.z>hi.z)continue;
         const Vec3 edges[]{t.b-t.a,t.c-t.b,t.a-t.c};
         std::array<Vec3,13> axes{{{1,0,0},{0,1,0},{0,0,1},cross(edges[0],edges[1])}};
@@ -78,6 +79,7 @@ inline Trace sweep(const scene::glb::Map& map, scene::Vec3 start,
         }
         if(miss||leave<0||enter>result.fraction)continue;
         if(strictInside){result.startSolid=true;result.fraction=0;result.end=start;return result;}
+        if(ceilingsOnly&&normal.z>=-.05f)continue;
         if(enter<-epsilon||dot(delta,normal)>=-epsilon)continue;
         result.fraction=std::max(0.0f,enter-epsilon/-dot(delta,normal));
         result.normal=normal;

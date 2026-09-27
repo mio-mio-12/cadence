@@ -76,6 +76,7 @@ struct Mesh {
     std::filesystem::path emissivePath;
     std::shared_ptr<const std::string> sourceMaterialMetadata;
     bool specularGlossiness{}; // Authored linear RGB F0 / alpha gloss, not metallic-roughness.
+    bool dielectricByDefault{};
     float metallicFactor{};
     float roughnessFactor{1.0f};
     float transmissionFactor{};
@@ -221,6 +222,7 @@ struct Attachment {
     float camoLumaHigh{1.0f};
     float camoLumaGamma{1.0f};
     float camoLumaContrast{1.0f};
+    std::filesystem::path sourceModelPath; // Runtime provenance; take manifests already store model paths.
 
     [[nodiscard]] Mat4 localMatrix() const {
         const Vec3 radians=rotationDegrees*(kPi/180.0f);
@@ -235,6 +237,12 @@ struct RigPart {
     std::vector<std::size_t> rootBones;
     std::optional<std::size_t> muzzleParent;
     Mat4 muzzleOffset=Mat4::identity();
+    std::filesystem::path sourceModelPath;
+};
+struct MuzzleAnchor {
+    std::size_t bone{};
+    Vec3 local{};
+    int side{};
 };
 
 struct CodmRigBinding { std::size_t source{}; Mat4 offset=Mat4::identity(); std::size_t rollSource{static_cast<std::size_t>(-1)}; Mat4 rollOffset=Mat4::identity(); float rollWeight{}; };
@@ -245,7 +253,9 @@ struct CodmRigAdapter {
     std::vector<std::string> helperRules;
 };
 struct CastScene {
+    std::filesystem::path sourceModelPath;
     bool dualWield{};
+    std::vector<MuzzleAnchor> muzzleAnchors; // Load-time imported barrel anchors, no added animation bones.
     std::array<std::size_t,2> dualFireClips{static_cast<std::size_t>(-1),static_cast<std::size_t>(-1)};
     // Original local bind at the moment a user starts editing a rig mount.
     std::unordered_map<std::size_t,Transform> rigMountReferences;
@@ -268,6 +278,9 @@ struct CastScene {
     std::unordered_map<std::size_t,RuntimePoseAdapter> runtimePoseAdapters;
     bool codmNativeCentimetres{};
     bool pointBlankNativeCentimetres{};
+    float importedTranslationScale{1.f};
+    std::string importedBodyIdentity;
+    std::string importedViewGame;
     std::string pointBlankWeaponStem;
     float codmTranslationFactor{100.f};
     std::string codmNativeWeaponStem;
@@ -279,6 +292,7 @@ struct CastScene {
     [[nodiscard]] std::vector<Transform> sampleLocalPose(std::size_t animationIndex, float frame) const;
     void sampleLocalPoseInto(std::size_t animationIndex,float frame,std::vector<Transform>& output) const;
     [[nodiscard]] std::vector<Mat4> globalPose(const std::vector<Transform>& localPose) const;
+    void globalPoseInto(const std::vector<Transform>& localPose,std::vector<Mat4>& output) const;
     [[nodiscard]] std::vector<Mat4> samplePose(std::size_t animationIndex, float frame) const;
     [[nodiscard]] std::vector<Transform> sampleBlendedLocalPose(std::size_t fromAnimation,float fromFrame,std::size_t toAnimation,float toFrame,float alpha) const;
     [[nodiscard]] std::vector<Mat4> sampleBlendedPose(std::size_t fromAnimation, float fromFrame,
@@ -290,6 +304,7 @@ struct CastScene {
                                                      bool suppressRootMotion=true,const std::vector<Transform>* baseOverride=nullptr) const;
     [[nodiscard]] std::vector<Mat4> sampleLayerStack(std::size_t baseAnimation,float baseFrame,const std::vector<PoseLayer>& layers) const;
     [[nodiscard]] std::vector<Transform> sampleLocalPoseSlots(std::size_t baseAnimation,float baseFrame,const std::vector<PoseSlot>& slots) const;
+    void sampleLocalPoseSlotsInto(std::size_t baseAnimation,float baseFrame,const std::vector<PoseSlot>& slots,std::vector<Transform>& output) const;
     [[nodiscard]] std::vector<Mat4> samplePoseSlots(std::size_t baseAnimation,float baseFrame,const std::vector<PoseSlot>& slots) const;
     [[nodiscard]] std::vector<Mat4> sampleRootRelativePose(std::size_t animationIndex,float frame,
                                                           const std::vector<Transform>& rootReference) const;
@@ -310,7 +325,7 @@ struct ClassificationOverride {
 void applyClassificationOverride(Animation& animation, const ClassificationOverride& override);
 
 [[nodiscard]] CastScene buildScene(const cast::Document& document,bool prepareViewmodel=true);
-[[nodiscard]] std::optional<Vec3> resolveMuzzlePosition(const CastScene& scene,const std::vector<Mat4>& globalPose);
+[[nodiscard]] std::optional<Vec3> resolveMuzzlePosition(const CastScene& scene,const std::vector<Mat4>& globalPose,int actorVariant=-1,int side=0);
 std::size_t appendAnimations(const cast::Document& document, CastScene& scene);
 bool composeIwSprintOffset(CastScene& scene,std::size_t animation,std::size_t idle);
 // T6 swaps authored incoming dummy magazines for installed magazines on reload exit.

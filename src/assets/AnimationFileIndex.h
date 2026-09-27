@@ -33,9 +33,9 @@ public:
             if (it->is_directory(error)) complete = stampDirectory(index, it->path()) && complete;
             if (error) { complete = false; error.clear(); }
             if (it->is_regular_file(error) && it->path().extension() == ".cast") {
-                Entry entry{it->path(), lower(it->path().filename().string()), {}};
+                Entry entry{it->path(), lower(pathText(it->path().filename())), {}};
                 for (auto parent = entry.path.parent_path(); parent != folder && !parent.empty(); parent = parent.parent_path())
-                    entry.lowerParents.push_back(lower(parent.filename().string()));
+                    entry.lowerParents.push_back(lower(pathText(parent.filename())));
                 index.files.push_back(std::move(entry));
             }
             if (error) { complete = false; error.clear(); }
@@ -63,6 +63,7 @@ public:
     std::size_t scans() const { return scans_; }
 
 private:
+    static std::string pathText(const std::filesystem::path& path){const auto text=path.u8string();return {text.begin(),text.end()};}
     struct Folder {
         std::vector<Entry> files;
         std::map<std::filesystem::path, std::filesystem::file_time_type> directories;

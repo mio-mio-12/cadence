@@ -71,6 +71,8 @@ int main(int argc,char** argv) {
         const auto vp=scene::orthographic(-radius,radius,-radius,radius,.05f,radius*5)*scene::lookAt(camera,center,{0,0,1});
         while(glGetError()!=GL_NO_ERROR){}
         renderer.render(value,pose,vp,512,512,false,false,false);
+        renderer.renderMuzzleFlash3D(*nativeMuzzle,2.f,0,{1,.7f,.2f,1},vp,camera,false);
+        renderer.renderDebugLine3D(*nativeMuzzle-scene::Vec3{0,0,2},*nativeMuzzle+scene::Vec3{0,0,2},{0,1,0,1},vp);
         const auto glError=glGetError();
         std::vector<std::uint8_t> pixels;
         if(!renderer.readColorRgba(pixels,error))return 1;

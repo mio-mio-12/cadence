@@ -64,6 +64,11 @@ int main(){
     Actor sprint;sprint.spWantsMove=true;sprint.spSprintWanted=true;sprint.spMoveThrottle=1;sprint.spPhase=SpPhase::Search;sprint.spMoveGoal={worldUnits(500),0,0};
     steerSpMovement(sprint,{worldUnits(50),0,0},.01f);
     check(sprint.input.sprint,"short route waypoint suppressed long search sprint");
+    steerSpMovement(sprint,{15,0,0},.01f);
+    check(sprint.input.forward>0,"stopped short of an intermediate corner waypoint");
+    steerSpMovement(sprint,{-100,100,0},.01f,true);
+    check(std::abs(sprint.input.forward)+std::abs(sprint.input.right)>.1f,"crowd sidestep waits for a full body turn");
+    check(movementThrottleTarget(Input{.13f,0})==1&&movementThrottleTarget(Input{})==0,"slow crowd input was discarded or idle input moved");
     Actor jumper;jumper.spWantsMove=true;jumper.input.forward=1;auto jumpConfig=config;jumpConfig.spJumpChance=1;
     check(!applySpTacticalJump(jumper,jumpConfig,.01f,true),"idle/patrol jumped without combat or traversal intent");
     jumper.targetVisible=jumper.spCombatMoving=true;jumper.velocity={200,0,0};

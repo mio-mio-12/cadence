@@ -4,8 +4,67 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <chrono>
+#include <stdexcept>
+
+namespace {
+bool uriLoadFixtures(){
+    namespace fs=std::filesystem;
+    const auto root=fs::temp_directory_path()/("cadence_map_uri_"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto package=root/"package";fs::create_directories(package);
+    struct Cleanup{fs::path path;~Cleanup(){std::error_code ec;fs::remove_all(path,ec);}}cleanup{root};
+    const float vertices[]{-1,0,-1,1,0,-1,0,0,1};
+    const auto buffer=[&](const fs::path& path){fs::create_directories(path.parent_path());std::ofstream out(path,std::ios::binary);out.write(reinterpret_cast<const char*>(vertices),sizeof(vertices));};
+    const auto load=[&](const std::string& bufferUri,const std::string& imageUri,scene::glb::Map& map,std::string& error){
+        {std::ofstream out(package/"triangle.gltf");
+         out<<R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0}]}],"buffers":[{"uri":")"<<bufferUri<<R"(","byteLength":36}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[-1,0,-1],"max":[1,0,1]}],"images":[{"uri":")"<<imageUri<<R"("}],"textures":[{"source":0}],"materials":[{"pbrMetallicRoughness":{"baseColorTexture":{"index":0}}}]})";}
+        return scene::glb::load(package/"triangle.gltf",map,error,1,false);
+    };
+    try{
+        struct Case{const char* raw;const char* actual;};
+        const Case cases[]{
+            {"space%20buffer.dat","space buffer.dat"},
+            {R"(json\u0020buffer.dat)","json buffer.dat"},
+            {R"(caf\u00e9.dat)","caf\xc3\xa9.dat"},
+            {R"(face\ud83d\ude00.dat)","face\xf0\x9f\x98\x80.dat"},
+            {R"(nested\/data)","nested/data"},
+            {"percent%25.dat","percent%.dat"},
+            {"%252e%252e/literal.dat","%2e%2e/literal.dat"}
+        };
+        for(const auto& item:cases){
+            buffer(package/fs::u8path(item.actual));
+            // Also exercise JSON + percent decoding for image paths; the map
+            // loader records this path without needing a renderer/image codec.
+            const auto image=package/fs::u8path("image caf\xc3\xa9%.png");std::ofstream(image).put('\0');
+            scene::glb::Map map;std::string error;
+            if(!load(item.raw,R"(image%20caf\u00e9%25.png)",map,error)||map.scene.meshes.empty()||map.scene.meshes.front().vertices.size()!=3||!fs::equivalent(map.scene.meshes.front().albedoPath,image))
+                throw std::runtime_error(std::string("URI fixture ")+item.raw+": "+error);
+        }
+        buffer(root/"outside.dat");buffer(package/"valid.dat");
+        for(const auto* unsafe:{"../outside.dat","%2e%2e%2foutside.dat","%2e%2e%5coutside.dat","valid.dat%00ignored",R"(valid.dat\u0000ignored)","C%3a/escape.dat","%2fescape.dat"}){
+            scene::glb::Map map;std::string error;
+            if(load(unsafe,"safe.png",map,error)||error.empty())throw std::runtime_error(std::string("Unsafe buffer accepted: ")+unsafe);
+            if(load("valid.dat",unsafe,map,error)||error.empty())throw std::runtime_error(std::string("Unsafe image accepted: ")+unsafe);
+        }
+        std::cout<<"Actual GLTF URI loading: JSON Unicode/space/slash, percent once, extensionless and rejected traversal/NUL passed\n";
+        return true;
+    }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return false;}
+}
+}
 
 int main(int argc,char** argv){
+    if(!uriLoadFixtures())return 1;
+    {scene::glb::Map special;special.buildCollisionIndex();
+     if(special.hasLadderTriangles||special.hasBounceTriangles||special.hasBoostTriangles)return 1;
+     scene::glb::CollisionTriangle tri;tri.a={-100,-100,0};tri.b={100,-100,0};tri.c={0,100,0};
+     tri.minimum={-100,-100,0};tri.maximum={100,100,0};tri.normal={0,0,1};
+     tri.ladder=tri.bounce=tri.speedboost2=true;special.collision.push_back(tri);special.buildCollisionIndex();
+     if(!special.hasLadderTriangles||!special.hasBounceTriangles||!special.hasBoostTriangles)return 1;
+     if(!special.isBounceSurface(0,0,0,20)||special.speedBoostTier(0,0,0,20)!=2||!special.findLadderContact({0,0,0},20,72))return 1;
+     special.collision[0].ladder=special.collision[0].bounce=special.collision[0].speedboost2=false;
+     special.buildCollisionIndex();
+     if(special.findLadderContact({0,0,0},20,72)||special.isBounceSurface(0,0,0,20)||special.speedBoostTier(0,0,0,20))return 1;
+    }
     {
         const auto package=std::filesystem::current_path()/"codm_material_policy_fixture";
         std::filesystem::create_directories(package/"images");

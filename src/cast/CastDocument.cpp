@@ -1,4 +1,5 @@
 #include "cast/CastDocument.h"
+#include "content/AssetPaths.h"
 
 #include <algorithm>
 #include <array>
@@ -224,7 +225,8 @@ std::string Node::displayName() const {
     return nodeTypeName(identifier);
 }
 
-Document Document::load(const std::filesystem::path& path) {
+Document Document::load(const std::filesystem::path& original) {
+    const auto path=cadence::content::resolve(original);
     std::ifstream stream(path, std::ios::binary | std::ios::ate);
     if (!stream) {
         Document result;
@@ -250,7 +252,9 @@ Document Document::load(const std::filesystem::path& path) {
         result.diagnostics_.push_back({Severity::Error, 0, "unable to read complete file"});
         return result;
     }
-    return parse(std::move(bytes), path.string());
+    auto result=parse(std::move(bytes), path.string());
+    if(result.valid())cadence::content::observeDocument(path);
+    return result;
 }
 
 Document Document::parse(std::vector<std::byte> bytes, std::string sourceName) {

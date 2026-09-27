@@ -1,5 +1,6 @@
 #include "take/Take.h"
 #include "take/DollyCamera.h"
+#include "take/PoseInterpolation.h"
 
 #include <cmath>
 #include <filesystem>
@@ -9,6 +10,11 @@
 namespace { bool expect(bool value,const char* message){if(!value)std::cerr<<"FAILED: "<<message<<'\n';return value;} }
 
 int main(){
+    scene::Skeleton affineRig;affineRig.bones.resize(3);affineRig.bones[0].parent=-1;affineRig.bones[1].parent=0;affineRig.bones[2].parent=1;
+    auto affine=scene::trs({1,2,3},scene::fromEulerRadians({.2f,.7f,.4f}),{1.4f,.7f,1.2f});affine.v[4]+=.4f;
+    auto mirrored=scene::trs({2,3,4},scene::fromEulerRadians({.6f,.2f,.8f}),{-1,1,1});
+    std::vector<scene::Mat4> fitted{affine,affine*mirrored,affine*mirrored*scene::translation({4,5,6})};
+    for(float alpha:{.001f,.25f,.5f,.75f,.999f}){auto pose=take::interpolatePose(fitted,fitted,alpha,&affineRig);for(size_t i=0;i<pose.size();++i)for(int k=0;k<16;++k)if(!expect(std::abs(pose[i].v[k]-fitted[i].v[k])<.0001f,"fractional replay retains affine cross-rig hand corrections"))return 1;}
     int failures{};take::Take original;original.sampleRate=30;original.boneCount=1;original.actor.baseModel="models/viewhands.cast";original.actor.rigModels={"models/rifle.cast","models/mag.cast"};original.worldActor.baseModel="models/player.cast";original.worldBoneCount=1;original.actorSlots[0]=original.actor;original.actorSlots[1].baseModel="models/viewhands.cast";original.actorSlots[1].rigModels={"models/pistol.cast"};original.worldActorSlots[0]=original.worldActor;original.worldActorSlots[1].baseModel="models/player.cast";original.worldActorSlots[1].attachedModels.push_back({"models/pistol_world.cast","tag_weapon"});original.botActor.baseModel="models/enemy.cast";original.botBoneCount=1;original.botCount=2;
     take::AttachedModel attachment;attachment.path="models/silencer.cast";attachment.bone="tag_silencer";attachment.position={1,2,3};attachment.rotationDegrees={4,5,6};attachment.scale={0.5f,0.5f,0.5f};original.actor.attachedModels.push_back(attachment);original.actor.hiddenBones={"tag_sights"};original.actor.viewmodelCamera=true;original.actor.viewmodelFov=72;original.actor.viewmodelFovScale=1.1f;
     for(int i=0;i<3;++i){take::Sample sample;sample.time=i/30.0f;sample.weaponSlot=static_cast<std::uint8_t>(i==2?1:0);sample.camera.target={static_cast<float>(i),2,3};sample.camera.distance=5+i;sample.camera.fov=65.0f+i*5.0f;sample.camera.adsBlend=i*0.5f;
@@ -111,6 +117,12 @@ int main(){
     failures+=!expect(restored.samples[0].visibility==take::VisibilityKnown&&restored.samples[1].visibility==visible.samples[1].visibility&&restored.samples[1].bots[0].visibility==visible.samples[1].bots[0].visibility&&restored.samples[1].worldActor.visibility==visible.samples[1].worldActor.visibility,"scope, equipment, and per-bot visibility stay independent");
     failures+=!expect(restored.botActor.rigModelVariants==visible.botActor.rigModelVariants&&restored.shots.size()==visible.shots.size(),"version15 preserves assembly and effects");
     failures+=!expect(take::save(restored,path,error)&&fileVersion()==15,"reopened two-slot v15 take can be saved again");
+    auto neutral=original;neutral.neutralGunPosition=true;
+    failures+=!expect(take::save(neutral,path,error)&&fileVersion()==16,"neutral gun-position takes use v16 without visual-setting payload");
+    failures+=!expect(take::load(path,restored,error)&&restored.neutralGunPosition,"neutral pose semantics survive save/load");
+    failures+=!expect(restored.samples[0].pose[0].v==neutral.samples[0].pose[0].v,"neutral poses round-trip unchanged");
+    restored.clear();failures+=!expect(!restored.neutralGunPosition,"clear resets pose semantics");
+    failures+=!expect(take::save(original,path,error)&&take::load(path,restored,error)&&!restored.neutralGunPosition,"legacy poses retain baked-mount semantics");
     std::filesystem::resize_file(path,40);
     failures+=!expect(!take::load(path,restored,error),"truncated new-format take rejected");
     visible.samples[0].visibility=255;

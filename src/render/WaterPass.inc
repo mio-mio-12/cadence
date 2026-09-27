@@ -3,7 +3,7 @@ void StageRenderer::renderWater(const scene::Mat4& vp,const scene::Mat4& light,c
     if(!water_.enabled||viewmodelCapture_)return;
     if(!waterProgram_){
         if(!waterError_.empty())return;
-        waterProgram_=compileProgram(kWaterVertex,kWaterFragment,waterError_);if(!waterProgram_)return;
+        waterProgram_=compileProgram(kWaterVertex,kWaterFragment.c_str(),waterError_);if(!waterProgram_)return;
     }
     // Snapshot opaque/decal color and depth before drawing the water, including
     // MSAA resolve. Match stencil depth formats, otherwise depth blits are illegal.
@@ -88,6 +88,7 @@ void StageRenderer::renderWater(const scene::Mat4& vp,const scene::Mat4& light,c
         waterIndexCount_=static_cast<int>(indices.size());waterResolution_=resolution;
     }
     glapi::UseProgram(waterProgram_);glapi::BindVertexArray(waterVao_);
+    configureWeatherCloud(waterProgram_);
     const auto loc=[&](const char* n){return uniformLocation(waterProgram_,n);};
     const auto f=[&](const char* n,float v){glapi::Uniform1f(loc(n),v);};
     const auto i=[&](const char* n,int v){glapi::Uniform1i(loc(n),v);};

@@ -16,6 +16,13 @@ struct ColdWarWorldPose {
     // Empty for existing adapters, so their behavior is unchanged.
     std::vector<bool> globalTranslation;
     std::vector<Mat4> sourceActionReference,targetActionReference;
+    struct FingerBinding {
+        int sourceParent{-1},targetParent{-1};
+        Quat inverseSourceRestRelative{},targetRestRelative{},basis{};
+    };
+    // Optional anatomical digit deltas for imported bodies only. Empty for
+    // all existing adapters; translations and main wrist mapping are unchanged.
+    std::vector<FingerBinding> fingerBindings;
     Quat actionBasis{};
     // Immutable import-time data; fallback supports older manually built adapters.
     std::vector<unsigned char> boneFlags;
@@ -46,7 +53,9 @@ struct ColdWarWorldPose {
         if(!sourceActionReference.empty()){
             std::vector<Mat4> globals(local.size());
             for(size_t i=0;i<local.size();++i){const auto parent=target.bones[i].parent;const auto pg=parent>=0?globals[parent]:Mat4::identity();const int s=i<sourceBones.size()?sourceBones[i]:-1;
-                if(s>=0&&i<targetActionReference.size()){
+                const bool finger=s>=0&&i<fingerBindings.size()&&fingerBindings[i].sourceParent>=0&&
+                    std::size_t(fingerBindings[i].sourceParent)<sourceGlobal.size()&&fingerBindings[i].targetParent>=0&&std::size_t(fingerBindings[i].targetParent)<i;
+                if(s>=0&&i<targetActionReference.size()&&!finger){
                     Vec3 p,scale;Quat q;decomposeAffine(sourceGlobal[s],p,q,scale);
                     const auto desired=multiply(multiply(actionBasis,q),rotationOffsets[i]);Vec3 pp,ps;Quat pq;decomposeAffine(pg,pp,pq,ps);
                     local[i].rotation=normalize(multiply(Quat{-pq.x,-pq.y,-pq.z,pq.w},desired));
@@ -57,6 +66,16 @@ struct ColdWarWorldPose {
                         const auto fitted=basis*sourceGlobal[s]*(sourceActionInverse.empty()?inverseAffine(sourceActionReference[s]):sourceActionInverse[s])*(sourceActionInverse.empty()?inverseAffine(basis):cachedActionBasisInverse)*targetActionReference[i];
                         local[i].position=transformPoint(inverseAffine(pg),transformPoint(fitted,{}));
                     }
+                }
+                if(finger){
+                    const auto& f=fingerBindings[i];
+                    const auto orientation=[](const Mat4& m){Vec3 p,s;Quat q;decomposeAffine(m,p,q,s);return normalize(q);};
+                    const auto conjugate=[](Quat q){return Quat{-q.x,-q.y,-q.z,q.w};};
+                    const auto sourceRelative=multiply(conjugate(orientation(sourceGlobal[f.sourceParent])),orientation(sourceGlobal[s]));
+                    const auto delta=multiply(f.inverseSourceRestRelative,sourceRelative);
+                    const auto transported=multiply(multiply(f.basis,delta),conjugate(f.basis));
+                    const auto desired=multiply(multiply(orientation(globals[f.targetParent]),f.targetRestRelative),transported);
+                    local[i].rotation=normalize(multiply(conjugate(orientation(pg)),desired));
                 }
                 globals[i]=pg*trs(local[i].position,local[i].rotation,local[i].scale);
             }return finish();

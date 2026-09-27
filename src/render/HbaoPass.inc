@@ -1,8 +1,8 @@
 // Included inside namespace render after GL helpers are available.
 void StageRenderer::configureAoFog(unsigned program,const scene::Mat4& vp,bool foreground){
     const auto loc=[&](const char* name){return uniformLocation(program,name);};
-    glapi::Uniform1i(loc("uAoBeforeFog"),hbao_.enabled&&hbao_.beforeFog&&fogEnabled_);
-    if(!hbao_.enabled||!hbao_.beforeFog||!fogEnabled_)return;
+    glapi::Uniform1i(loc("uAoBeforeFog"),hbao_.enabled&&fogEnabled_);
+    if(!hbao_.enabled||!fogEnabled_)return;
     const float px=std::sqrt(vp.v[0]*vp.v[0]+vp.v[4]*vp.v[4]+vp.v[8]*vp.v[8]);
     const float py=std::sqrt(vp.v[1]*vp.v[1]+vp.v[5]*vp.v[5]+vp.v[9]*vp.v[9]);
     glapi::Uniform2f(loc("uAoFogInvProjection"),1.f/std::max(.001f,px),1.f/std::max(.001f,py));

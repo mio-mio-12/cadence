@@ -1,6 +1,10 @@
 #include "scene/PoseEvaluationScratch.h"
 #include "scene/CastScene.h"
+#include "content/AssetPaths.h"
 #include "scene/PointBlankNative.h"
+#include "scene/ImportedNative.h"
+#include "scene/ImportedBody.h"
+#include "scene/ImportedMuzzle.h"
 #include "scene/T6Magazine.h"
 #include "scene/T6SharedTextures.h"
 #include "scene/NativeBoneNames.h"
@@ -323,13 +327,18 @@ const auto* material=childHash(model,refs[0]);
     auto normalizedSource=document.sourceName();std::transform(normalizedSource.begin(),normalizedSource.end(),normalizedSource.begin(),[](unsigned char c){return c=='\\'?'/' : static_cast<char>(std::tolower(c));});
     const bool awViewWeapon=containsAny(sourceLower,{"/aw/models/vm_","\\aw\\models\\vm_"})&&!containsAny(sourceLower,{"vm_view_arms","viewhands"});
     const bool source2Weapon=normalizedSource.find("/cs2/models/weapons/")!=std::string::npos;
+    const bool importedUtf8=containsAny(normalizedSource,{"/cs1.6/","/cz/","/cscz/","/css/","/csnz/","/cso2/","/eldewrito/"});
+    const auto texturePath=[&](const std::string& value){return importedUtf8?std::filesystem::u8path(value):std::filesystem::path(value);};
     const bool coldWarWeapon=std::filesystem::path(document.sourceName()).filename().string().starts_with("wpn_t9_");
     const bool weaponSource=source2Weapon||(containsAny(sourceLower,{"wpn_","weapon_","viewmodel"})||awViewWeapon)&&!containsAny(sourceLower,{"viewhands","view_hands"});
     Surface result;result.materialName=materialName;result.eyeOverlay=containsAny(canonicalMaterial,{"cornea","shiny_lense_eye","shiny_lens_eye","eye_overlay","eye_gloss","eye_wet","eye_clearcoat"});result.lens=containsAny(canonicalMaterial,{"lens","lense","glass"});result.emissive=isEmissiveMaterialIdentity(canonicalMaterial);result.forceAlpha=result.lens||result.emissive||result.eyeOverlay;result.ignoreAlbedoAlpha=source2Weapon&&!result.forceAlpha;result.excluded=weaponSource&&containsAny(canonicalMaterial,{"clan_tag","clantag","player_icon","emblem"});result.camoBlend=weaponSource&&!result.forceAlpha&&!result.excluded;result.camoUseAlpha=!source2Weapon;
     const auto resolveFile=[&](std::filesystem::path raw)->std::filesystem::path{
         if(raw.empty())return {};
         const auto modelFolder=std::filesystem::path(document.sourceName()).parent_path();
-        auto direct=raw.is_relative()?modelFolder/raw:raw;if(coldWarWeapon)direct=coldwar_textures::accessible(direct);if(std::filesystem::exists(direct))return direct.lexically_normal();
+        auto direct=cadence::content::resolveFor(raw.is_relative()?modelFolder/raw:raw,std::filesystem::path(document.sourceName()));if(coldWarWeapon)direct=coldwar_textures::accessible(direct);if(std::filesystem::exists(direct))return direct.lexically_normal();
+        // Native Source-family texture names may be outside the Windows ANSI
+        // code page. Do not pass them through CoD's narrow-string fallbacks.
+        if(importedUtf8)return direct.lexically_normal();
         // Saluki sometimes stores only the image asset name in normal/specular
         // slots (notably DSR50) while the PNG lives in _images/mc/<material>/.
         auto folder=materialName;if(folder.rfind("mc_",0)==0)folder.erase(0,3);
@@ -343,7 +352,7 @@ const auto* material=childHash(model,refs[0]);
         const auto shared=t6_shared_textures::resolve(std::filesystem::path(document.sourceName()),direct.lexically_normal());
         return coldWarWeapon?coldwar_textures::fallback(std::filesystem::path(document.sourceName()),materialName,shared):shared;
     };
-    const auto mapPath=[&](const char* slot)->std::filesystem::path{const auto surfaceRefs=uints(document,*material,slot);if(surfaceRefs.empty())return {};const auto* value=childHash(*material,surfaceRefs[0]);if(!value||value->identifier!=kFile)return {};return resolveFile(std::filesystem::path(text(*value,"p")));};
+    const auto mapPath=[&](const char* slot)->std::filesystem::path{const auto surfaceRefs=uints(document,*material,slot);if(surfaceRefs.empty())return {};const auto* value=childHash(*material,surfaceRefs[0]);if(!value||value->identifier!=kFile)return {};return resolveFile(texturePath(text(*value,"p")));};
     result.normal=mapPath("normal");result.specular=mapPath("specular");
     result.metalness=mapPath("metalness");result.roughness=mapPath("roughness");
     if(source2Weapon){
@@ -390,7 +399,8 @@ const auto* material=childHash(model,refs[0]);
         // tritium identity only through the color texture (or its mc folder).
         // Classify from both sources so the global tint reaches every weapon,
         // rather than relying on a per-model exception list.
-        const auto colorIdentity=canonicalName(result.albedo.string());
+        const auto colorUtf8=result.albedo.u8string();
+        const auto colorIdentity=canonicalName(importedUtf8?std::string(colorUtf8.begin(),colorUtf8.end()):result.albedo.string());
         result.emissive=result.emissive||isEmissiveMaterialIdentity(colorIdentity);
         result.forceAlpha=result.lens||result.emissive||result.eyeOverlay;
         // Native CAST material sidecars explicitly distinguish soft opacity
@@ -416,7 +426,7 @@ const auto* material=childHash(model,refs[0]);
         if (!value) continue;
         if(value->identifier==kColor){const auto rgba=floats(document,*value,"rgba");if(rgba.size()>=4)result.color={rgba[0],rgba[1],rgba[2],rgba[3]};ensureExportedMaps();finalizeSurface();return result;}
         if(value->identifier==kFile){
-            result.color={1,1,1,1};result.albedo=resolveFile(std::filesystem::path(text(*value,"p")));ensureExportedMaps();finalizeSurface();return result;
+            result.color={1,1,1,1};result.albedo=resolveFile(texturePath(text(*value,"p")));if(!importedUtf8)ensureExportedMaps();finalizeSurface();return result;
         }
     }
     ensureExportedMaps();finalizeSurface();return result;
@@ -784,6 +794,7 @@ void classifyAnimationName(std::string_view input,Animation& animation) {
 CastScene buildScene(const cast::Document& document,bool prepareViewmodel) {
     CastScene result;
     if(!document.valid()){result.warnings.push_back("Cannot build a scene from an invalid Cast document");return result;}
+    result.sourceModelPath=std::filesystem::path(document.sourceName());
     for(const auto& root:document.roots()) for(const auto& model:root.children) {
         if(model.identifier!=kModel)continue;
         const auto* skeletonNode=childOf(model,kSkeleton);
@@ -801,6 +812,14 @@ CastScene buildScene(const cast::Document& document,bool prepareViewmodel) {
     if(containsAny(canonicalName(document.sourceName()),{"juggernaut","jugg"}))if(const auto head=result.skeleton.boneByCanonicalName.find("j_head");head!=result.skeleton.boneByCanonicalName.end())for(auto& mesh:result.meshes)if(containsAny(canonicalName(mesh.materialName),{"jugg_head","headgear"}))for(auto& vertex:mesh.vertices){vertex.bones={static_cast<std::uint32_t>(head->second),0,0,0};vertex.weights={1,0,0,0};}
     if(prepareViewmodel)prepareColdWarViewmodel(result,std::filesystem::path(document.sourceName()).filename().string());
     if(pointblank::exportedByPb2cast(document))pointblank::normalize(result);
+    if(imported::dewExport(document)){
+        imported::normalizeDew(result);
+        if(result.skeleton.boneByName.contains("pelvis")&&result.skeleton.boneByName.contains("l_thigh"))result.importedBodyIdentity=std::filesystem::path(document.sourceName()).stem().string();
+    }
+    if(assets::imported::sourceFamily(imported::gameForPath(std::filesystem::path(document.sourceName()))))imported::normalizeSourceBody(result);
+    imported::addViewCamera(document,result);
+    imported::prepareMuzzleAnchors(result,std::filesystem::path(document.sourceName()));
+    if(assets::imported::supported(imported::gameForPath(std::filesystem::path(document.sourceName()))))for(auto& mesh:result.meshes)mesh.dielectricByDefault=true;
     codm::prepareWorldBody(result,std::filesystem::path(document.sourceName()));
     if(containsAny(canonicalName(std::filesystem::path(document.sourceName()).generic_string()),{"/codm/"})){
         std::string nativeError;
@@ -880,6 +899,10 @@ static void attachColdWarWorldPoses(const cast::Document& document,CastScene& ta
 
 std::size_t appendAnimations(const cast::Document& document,CastScene& scene) {
     const auto before=scene.animations.size();
+    if(!scene.importedBodyIdentity.empty()&&imported::dewExport(document)){
+        const auto filename=std::filesystem::path(document.sourceName()).filename().string();
+        if(!filename.starts_with(scene.importedBodyIdentity+"_"))return 0;
+    }
     if(scene.codmNativeCentimetres){
         bool hasAnimation=false;for(const auto& root:document.roots())for(const auto& node:root.children)hasAnimation|=node.identifier==kAnimation;
         if(!hasAnimation)return 0;
@@ -890,6 +913,11 @@ std::size_t appendAnimations(const cast::Document& document,CastScene& scene) {
     }
     for(const auto& root:document.roots()) for(const auto& node:root.children)
         if(node.identifier==kAnimation) scene.animations.push_back(buildAnimation(document,node,scene.skeleton,scene.warnings));
+    if(assets::imported::sourceFamily(scene.importedViewGame)&&!scene.rigParts.empty())for(std::size_t i=before;i<scene.animations.size();++i){
+        auto& a=scene.animations[i];
+        if(const auto action=assets::imported::diagnosticAction(scene.importedViewGame,scene.rigParts.front().name,a.sourceName);!action.empty())
+            classifyAnimationName("viewmodel_"+action,a);
+    }
     if(scene.codmNativeCentimetres){
         for(std::size_t i=before;i<scene.animations.size();++i){auto& a=scene.animations[i];for(auto& t:a.tracks)if(t.property<=TrackProperty::TranslationZ)for(auto& v:t.scalarValues)v*=scene.codmTranslationFactor;if(a.viewmodelCameraReference)for(int k:{12,13,14})a.viewmodelCameraReference->v[k]*=scene.codmTranslationFactor;}
         const auto path=std::filesystem::path(document.sourceName());const auto cameraPath=path.parent_path()/(path.stem().string()+"_camera.cast");std::error_code ec;
@@ -915,6 +943,11 @@ std::size_t appendAnimations(const cast::Document& document,CastScene& scene) {
                 auto& action=scene.animations[before];for(auto track:camera.tracks)if(track.boneIndex==scene.skeleton.boneByName.at("tag_camera")){track.boneIndex=scene.skeleton.boneByName.at("codm_camera_motion");if(track.property<=TrackProperty::TranslationZ)for(auto& v:track.scalarValues)v*=scene.codmTranslationFactor;action.tracks.push_back(std::move(track));}
             }}
         }
+    }
+    if(scene.importedTranslationScale!=1.f&&imported::dewExport(document))for(size_t i=before;i<scene.animations.size();++i){
+        auto& a=scene.animations[i];for(auto& t:a.tracks)if(t.property<=TrackProperty::TranslationZ)for(auto& v:t.scalarValues)v*=scene.importedTranslationScale;
+        if(a.name.starts_with("first_person:")){classifyAnimationName("viewmodel_"+a.name.substr(13),a);a.domain=AnimationDomain::ViewModel;}
+        else if(const auto semantic=assets::imported::dewBodySemantic(a.sourceName,a.name);!semantic.empty())classifyAnimationName(semantic,a);
     }
     if(scene.pointBlankNativeCentimetres&&pointblank::animationPath(document))for(size_t i=before;i<scene.animations.size();++i){
         auto& action=scene.animations[i];pointblank::classifyPlayer(action);for(auto& t:action.tracks)if(t.property<=TrackProperty::TranslationZ)for(auto& v:t.scalarValues)v*=100.f;
@@ -958,9 +991,16 @@ std::size_t appendAnimations(const cast::Document& document,CastScene& scene) {
             // relative to its idle reference, never its placement or arm roots.
             if((scene.pointBlankWeaponStem=="viewmodel_knife_M-9_Dual"||scene.pointBlankWeaponStem=="viewmodel_knife_M-9_Dual_PBNC")&&(suffix=="Change"||suffix=="Attack_A"||suffix=="Attack_B")){
                 auto folder=path.parent_path();while(!folder.empty()&&folder.filename()!="animations"&&folder!=folder.root_path())folder=folder.parent_path();
-                const auto donorFolder=folder/"viewmodel"/"kunai";const std::string donorStem="viewmodel_knife_Kunai_Dual_";
+                const std::string donorStem="viewmodel_knife_Kunai_Dual_";
+                auto donorFolder=folder/"viewmodel"/"kunai";
+                // Both legacy categorized and current flat exports are supported.
+                for(const auto& candidate:{path.parent_path(),folder,folder/"viewmodel"/"kunai"}){
+                    std::error_code ec;
+                    if(std::filesystem::is_regular_file(candidate/(donorStem+suffix+".cast"),ec)){donorFolder=candidate;break;}
+                }
                 const auto loadClip=[&](const std::filesystem::path& file)->std::optional<Animation>{std::error_code ec;if(!std::filesystem::is_regular_file(file,ec))return {};const auto doc=cast::Document::load(file);for(const auto&r:doc.roots())for(const auto&n:r.children)if(n.identifier==kAnimation)return buildAnimation(doc,n,scene.skeleton,scene.warnings);return {};};
                 auto donor=loadClip(donorFolder/(donorStem+suffix+".cast")),donorIdle=loadClip(donorFolder/(donorStem+"AttackIdle.cast")),targetIdle=loadClip(path.parent_path()/(prefix+"AttackIdle.cast"));
+                if(!donor||!donorIdle)scene.warnings.push_back("Point Blank M9 spin fallback unavailable: export Kunai Dual "+suffix+" and AttackIdle viewmodel clips");
                 if(donor&&donorIdle&&targetIdle&&donor->durationFrames==action.durationFrames&&donor->framerate==action.framerate){
                     const auto findTrack=[](const Animation&a,size_t bone,TrackProperty prop)->const Track*{for(const auto&t:a.tracks)if(t.boneIndex==bone&&t.property==prop)return &t;return nullptr;};bool used=false;
                     for(const auto name:{"pb2cast_weapon__AnimationDummy","pb2cast_weapon__left__AnimationDummy"})if(const auto it=scene.skeleton.boneByName.find(name);it!=scene.skeleton.boneByName.end()){
@@ -1008,6 +1048,10 @@ std::size_t appendAnimations(const cast::Document& document,CastScene& scene) {
         }
     }
     attachColdWarWorldPoses(document,scene,before);
+    if(assets::imported::sourceFamily(imported::gameForPath(std::filesystem::path(document.sourceName())))){
+        imported::normalizeSourceBodyAnimations(scene,before);
+        if(imported::bodyLayout(scene.skeleton))for(auto i=before;i<scene.animations.size();++i)imported::classifySourceBodyAnimation(scene.animations[i]);
+    }
     return scene.animations.size()-before;
 }
 
@@ -1417,7 +1461,15 @@ std::optional<float> mechanismReadyFrame(const CastScene& scene,std::size_t anim
     return static_cast<float>(std::min<std::size_t>(animation.durationFrames,lastDifferent+1));
 }
 
-std::optional<Vec3> resolveMuzzlePosition(const CastScene& value,const std::vector<Mat4>& pose) {
+std::optional<Vec3> resolveMuzzlePosition(const CastScene& value,const std::vector<Mat4>& pose,int actorVariant,int side) {
+    for(const auto& anchor:value.muzzleAnchors)if(anchor.side==side&&anchor.bone<pose.size()){
+        const auto p=transformPoint(pose[anchor.bone],anchor.local);
+        if(std::isfinite(p.x)&&std::isfinite(p.y)&&std::isfinite(p.z))return p;
+    }
+    if(const auto socket=imported::nativeSocket(value.skeleton,"tag_flash");socket&&*socket<pose.size()){
+        const auto p=transformPoint(pose[*socket],{});
+        if(std::isfinite(p.x)&&std::isfinite(p.y)&&std::isfinite(p.z))return p;
+    }
     if(value.pointBlankNativeCentimetres)if(auto it=value.skeleton.boneByName.find("pb2cast_weapon__FXDummy");it!=value.skeleton.boneByName.end()&&it->second<pose.size()){
         auto matrix=pose[it->second];
         // A shared animation can contain the unsuppressed FXDummy offset even
@@ -1436,6 +1488,7 @@ std::optional<Vec3> resolveMuzzlePosition(const CastScene& value,const std::vect
         if(finite(p))return p;
     }
     for(const auto& attachment:value.attachments)if(attachment.muzzleLocal&&attachment.boneIndex<pose.size()){
+        if(actorVariant>=0&&attachment.firstMesh<value.meshes.size()&&value.meshes[attachment.firstMesh].actorVariant>=0&&value.meshes[attachment.firstMesh].actorVariant!=actorVariant)continue;
         const auto p=transformPoint(pose[attachment.boneIndex]*attachment.localMatrix(),*attachment.muzzleLocal);
         if(finite(p))return p;
     }
@@ -1460,6 +1513,7 @@ std::size_t appendPreparedAttachment(CastScene&& imported,CastScene& scene,std::
     if(boneIndex>=scene.skeleton.bones.size())return 0;
     if(imported.meshes.empty())return 0;
     Attachment attachment;attachment.name=std::move(name);attachment.boneIndex=boneIndex;
+    attachment.sourceModelPath=imported.sourceModelPath;
     std::vector<Mat4> importedPose;for(const auto& bone:imported.skeleton.bones)importedPose.push_back(bone.restGlobal);
     attachment.muzzleLocal=resolveMuzzlePosition(imported,importedPose);
     attachment.firstMesh=scene.meshes.size();attachment.meshCount=imported.meshes.size();
@@ -1495,6 +1549,18 @@ bool sameRigGeometry(const CastScene& a,const CastScene& b){
 std::size_t appendRigModel(const cast::Document& document,CastScene& scene,std::string name,std::optional<Mat4> sourceMount,float uniformScale){
     (void)sourceMount;
     if(!document.valid())return 0;auto imported=buildScene(document);if(imported.meshes.empty())return 0;
+    const auto importedPath=std::filesystem::path(document.sourceName());
+    const auto nativeGame=imported::gameForPath(importedPath);
+    if(!scene.importedViewGame.empty()&&scene.importedViewGame==nativeGame&&scene.rigParts.empty()&&
+       assets::imported::role(nativeGame,assets::imported::utf8(importedPath.stem()))==assets::Role::ViewWeapon){
+        const auto weaponMeshes=imported.meshes.size();std::vector<std::size_t> roots;
+        for(std::size_t i=0;i<imported.skeleton.bones.size();++i)if(imported.skeleton.bones[i].parent<0)roots.push_back(i);
+        CastScene assembled;std::string error;
+        if(!imported::assemblePrepared(std::move(imported),scene,assembled,error)){scene.warnings.push_back("Native assembly: "+error);return 0;}
+        assembled.rigParts.push_back({name,0,weaponMeshes,std::move(roots)});
+        assembled.rigParts.back().sourceModelPath=std::filesystem::path(document.sourceName());
+        scene=std::move(assembled);return weaponMeshes;
+    }
     if(std::abs(uniformScale-1.0f)>1e-4f){
         for(auto& mesh:imported.meshes)for(auto& vertex:mesh.vertices)vertex.position=vertex.position*uniformScale;
         for(auto& bone:imported.skeleton.bones){
@@ -1642,6 +1708,8 @@ std::size_t appendRigModel(const cast::Document& document,CastScene& scene,std::
         mesh.name=name+" / "+mesh.name;mesh.attachmentIndex=-1;mesh.viewmodelWeapon=viewmodelWeaponPart;scene.meshes.push_back(std::move(mesh));
     }
     scene.rigParts.push_back({name,before,scene.meshes.size()-before,std::move(partRoots)});
+    scene.rigParts.back().sourceModelPath=std::filesystem::path(document.sourceName());
+    for(const auto& anchor:imported.muzzleAnchors)if(anchor.bone<boneMap.size())scene.muzzleAnchors.push_back({boneMap[anchor.bone],anchor.local*uniformScale,anchor.side});
     // H1 clips carry a generic tag_flash channel that can disagree with the
     // model's actual barrel. Preserve the authored model socket in its animated
     // parent frame; no per-weapon offsets and no replacement animation tracks.
@@ -1770,7 +1838,12 @@ void CastScene::sampleLocalPoseInto(std::size_t animationIndex,float frame,std::
 }
 
 std::vector<Mat4> CastScene::globalPose(const std::vector<Transform>& localPose) const {
-    std::vector<Mat4> globals(localPose.size());
+    std::vector<Mat4> globals;globalPoseInto(localPose,globals);return globals;
+}
+void CastScene::globalPoseInto(const std::vector<Transform>& localPose,std::vector<Mat4>& globals) const {
+    // Retain capacity, but preserve the freshly initialized destination used by
+    // the allocating API even for exports with forward parent references.
+    globals.assign(localPose.size(),Mat4{});
     for(std::size_t i=0;i<localPose.size();++i){
         const auto matrix=trs(localPose[i].position,localPose[i].rotation,localPose[i].scale);
         const auto parent=skeleton.bones[i].parent;
@@ -1780,7 +1853,6 @@ std::vector<Mat4> CastScene::globalPose(const std::vector<Transform>& localPose)
             const auto& b=codmRigAdapter->bindings[i-codmRigAdapter->firstBone];if(b.source<i){globals[i]=globals[b.source]*b.offset;if(b.rollSource<i&&b.rollWeight>0){Vec3 p0,p1,s0,s1;Quat q0,q1;decomposeAffine(globals[i],p0,q0,s0);decomposeAffine(globals[b.rollSource]*b.rollOffset,p1,q1,s1);globals[i]=trs(lerp(p0,p1,b.rollWeight),slerp(q0,q1,b.rollWeight),lerp(s0,s1,b.rollWeight));}}
         }
     }
-    return globals;
 }
 
 std::vector<Mat4> CastScene::samplePose(std::size_t animationIndex,float frame) const {
@@ -1883,7 +1955,10 @@ std::vector<Mat4> CastScene::sampleLayerStack(std::size_t baseAnimation,float ba
 }
 
 std::vector<Transform> CastScene::sampleLocalPoseSlots(std::size_t baseAnimation,float baseFrame,const std::vector<PoseSlot>& slots) const {
-    auto base=sampleLocalPose(baseAnimation,baseFrame);
+    std::vector<Transform> base;sampleLocalPoseSlotsInto(baseAnimation,baseFrame,slots,base);return base;
+}
+void CastScene::sampleLocalPoseSlotsInto(std::size_t baseAnimation,float baseFrame,const std::vector<PoseSlot>& slots,std::vector<Transform>& base) const {
+    sampleLocalPoseInto(baseAnimation,baseFrame,base);
     using pose_detail::Channels;pose_detail::Lease lease;auto& buffer=lease.workspace;
     for(const auto& slot:slots){
         if(buffer.samples.size()<slot.nodes.size())buffer.samples.resize(slot.nodes.size());
@@ -1915,7 +1990,6 @@ std::vector<Transform> CastScene::sampleLocalPoseSlots(std::size_t baseAnimation
             }
         }
     }
-    return base;
 }
 
 std::vector<Mat4> CastScene::samplePoseSlots(std::size_t baseAnimation,float baseFrame,const std::vector<PoseSlot>& slots) const {

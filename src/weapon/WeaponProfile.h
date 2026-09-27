@@ -111,6 +111,9 @@ struct Profile {
     // Camera-local offset for the complete first-person rig. The gameplay
     // camera is deliberately not moved with it.
     scene::Vec3 gunPosition{};
+    float viewmodelFovMultiplier{1.f};
+    float sprintBobMultiplier{1.f};
+    bool flipViewmodel{};
     bool separateAdsPosition{};
     scene::Vec3 adsGunPosition{};
     // Standard keys are idle, fire, ads_fire, reload, reload_empty,

@@ -11,5 +11,14 @@ int main(){
     }
     auto r=cadence::viewportLayout(1920,1200,true,16.f/9,.5f,false,1,1);expect(r.renderWidth==960&&r.renderHeight==540&&r.top==60);
     const float nan=std::numeric_limits<float>::quiet_NaN();r=cadence::viewportLayout(nan,-5,true,nan,nan,false,0,0);expect(r.renderWidth>=1&&r.renderHeight>=1&&std::isfinite(r.width));
+    for(float height:{1.f,100.f,720.f,1080.f})for(float strip:{0.f,180.f,700.f}){
+        const auto split=cadence::replayStripLayout(height,strip);
+        expect(split.imageHeight>=1.f&&split.stripHeight>=0.f);
+        expect(std::abs(split.imageHeight+split.stripHeight-height)<.001f);
+        const auto image=cadence::viewportLayout(1280.f,split.imageHeight,true,16.f/9.f,1.f,false,1,1);
+        expect(image.top+image.height<=split.imageHeight+.001f);
+        const auto capture=cadence::viewportLayout(1280.f,split.imageHeight,true,16.f/9.f,1.f,true,3840,2160);
+        expect(capture.renderWidth==3840&&capture.renderHeight==2160);
+    }
     std::cout<<"Viewport/export layout failures: "<<failures<<'\n';return failures?1:0;
 }

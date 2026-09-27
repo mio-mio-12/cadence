@@ -18,5 +18,8 @@ int main(){
     cache.pool(c,"bo2",2,build);assert(builds==4);
     add("wpn_t9_ar_damage_view_LOD0","t9");assert(!cache.isColdWarVariant(c,c.entries[2]));
     c.clear();assert(cache.pool(c,"bo2",2,[]{return std::vector<std::size_t>{};}).empty());
+    add("magnum_7952_fp_1_20984_weapon","eldewrito");add("magnum_7952_fp_0_20976_weapon","eldewrito");add("magnum_7952_fp_1_20984_dual_weapon","eldewrito");
+    assert(cache.isImportedVariant(c,c.entries[0]));assert(!cache.isImportedVariant(c,c.entries[1]));assert(!cache.isImportedVariant(c,c.entries[2]));
+    add("magnum_7952_fp_0_20976_dual_weapon","eldewrito");assert(cache.isImportedVariant(c,c.entries[2]));assert(!cache.isImportedVariant(c,c.entries[3]));
     std::cout<<"PASS stable index, base preference, absent base, pool keys, mutation invalidation\n";
 }

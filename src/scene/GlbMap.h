@@ -42,6 +42,8 @@ struct Map {
     authored::Data gameplay;
     CastScene scene;
     std::uint64_t collisionRevision{};
+    // Rebuilt alongside the collision grid; unindexed maps retain full queries.
+    bool hasLadderTriangles{true},hasBounceTriangles{true},hasBoostTriangles{true};
     AuthoredCollisionMetadata authoredCollision;
     std::vector<AuthoredCollider> authoredColliders;
     std::vector<CollisionTriangle> authoredTriggerTriangles;
@@ -108,7 +110,9 @@ struct Map {
         bool hit{false};
     };
     [[nodiscard]] SurfContact findSurfContact(Vec3 position, float radius, float height, float searchMargin) const;
-    [[nodiscard]] std::optional<Vec3> mantleTarget(Vec3 position,Vec3 forward,float radius,float height,float stepHeight,float maxHeight,float checkRange,float minHeight=-std::numeric_limits<float>::max(),bool useAuthored=true) const;
+    // Stack-local to one acquisition attempt; never retain across collision edits.
+    struct MantleGround {const Map* owner{};Vec3 position{};float radius{},stepHeight{},ground{};};
+    [[nodiscard]] std::optional<Vec3> mantleTarget(Vec3 position,Vec3 forward,float radius,float height,float stepHeight,float maxHeight,float checkRange,float minHeight=-std::numeric_limits<float>::max(),bool useAuthored=true,MantleGround* sharedGround=nullptr) const;
     [[nodiscard]] bool isBounceSurface(float x, float y, float z, float radius) const;
     [[nodiscard]] int speedBoostTier(float x, float y, float z, float radius) const;
     [[nodiscard]] std::optional<Vec3> findLadderContact(Vec3 position, float radius, float height) const;

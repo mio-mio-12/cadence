@@ -3,9 +3,16 @@
 
 namespace take {
 inline scene::Mat4 interpolateTransform(const scene::Mat4& a,const scene::Mat4& b,float t){
+    if(t<=0)return a;if(t>=1)return b;
     scene::Vec3 ap,as,bp,bs;scene::Quat aq,bq;
     scene::decomposeAffine(a,ap,aq,as);scene::decomposeAffine(b,bp,bq,bs);
-    return scene::trs(scene::lerp(ap,bp,t),scene::slerp(aq,bq,t),scene::lerp(as,bs,t));
+    const auto ar=scene::trs(ap,aq,as),br=scene::trs(bp,bq,bs);
+    auto result=scene::trs(scene::lerp(ap,bp,t),scene::slerp(aq,bq,t),scene::lerp(as,bs,t));
+    // Cross-rig hand fitting carries affine bind corrections (including shear).
+    // TRS alone discards them even between identical recorded frames, splaying
+    // hands during fractional playback. Match the live affine blend policy.
+    for(int i=0;i<16;++i)result.v[i]+=(a.v[i]-ar.v[i])*(1-t)+(b.v[i]-br.v[i])*t;
+    return result;
 }
 inline bool invertiblePose(const scene::Mat4& m){
     const float determinant=m.v[0]*(m.v[5]*m.v[10]-m.v[9]*m.v[6])-m.v[4]*(m.v[1]*m.v[10]-m.v[9]*m.v[2])+m.v[8]*(m.v[1]*m.v[6]-m.v[5]*m.v[2]);

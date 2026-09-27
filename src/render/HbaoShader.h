@@ -12,8 +12,8 @@ uniform int uDirections,uSteps,uBlurRadius,uMode;
 uniform bool uForeground,uWeaponBackgroundHalo;
 uniform vec2 uViewmodelDepthRange;
 bool foreground(float raw){return uForeground&&raw<.0400001;}
-float depthAt(vec2 uv){float z=texture(uDepth,uv).r;vec2 range=vec2(uNear,uFar);if(foreground(z)){z=clamp(z/.04,0.0,1.0);range=uViewmodelDepthRange;}return 2.0*range.x*range.y/(range.y+range.x-(z*2.0-1.0)*(range.y-range.x));}
-vec3 positionAt(vec2 uv){float z=depthAt(uv);return vec3((uv*2.0-1.0)*uInvProjection*z,-z);}
+float depthFromRaw(float z){vec2 range=vec2(uNear,uFar);if(foreground(z)){z=clamp(z/.04,0.0,1.0);range=uViewmodelDepthRange;}return 2.0*range.x*range.y/(range.y+range.x-(z*2.0-1.0)*(range.y-range.x));}
+vec3 positionFromRaw(vec2 uv,float raw){float z=depthFromRaw(raw);return vec3((uv*2.0-1.0)*uInvProjection*z,-z);}
 bool outside(vec2 uv){return any(lessThan(uv,vec2(0)))||any(greaterThan(uv,vec2(1)));}
 void main(){
  vec2 uv=vScreen*.5+.5;
@@ -25,12 +25,16 @@ void main(){
   }color=vec4(sum/weights,center.g,0,1);return;
  }
  float raw=texture(uDepth,uv).r;bool fg=foreground(raw);if(raw>=.9999999){color=vec4(1,uFar,0,1);return;}
- vec3 p=positionAt(uv),l=positionAt(clamp(uv-vec2(uTexel.x,0),vec2(0),vec2(1))),r=positionAt(clamp(uv+vec2(uTexel.x,0),vec2(0),vec2(1)));
- vec3 d=positionAt(clamp(uv-vec2(0,uTexel.y),vec2(0),vec2(1))),u=positionAt(clamp(uv+vec2(0,uTexel.y),vec2(0),vec2(1)));
- if(foreground(texture(uDepth,uv-vec2(uTexel.x,0)).r)!=fg)l=p;
- if(foreground(texture(uDepth,uv+vec2(uTexel.x,0)).r)!=fg)r=p;
- if(foreground(texture(uDepth,uv-vec2(0,uTexel.y)).r)!=fg)d=p;
- if(foreground(texture(uDepth,uv+vec2(0,uTexel.y)).r)!=fg)u=p;
+ vec2 lUv=clamp(uv-vec2(uTexel.x,0),vec2(0),vec2(1)),rUv=clamp(uv+vec2(uTexel.x,0),vec2(0),vec2(1));
+ vec2 dUv=clamp(uv-vec2(0,uTexel.y),vec2(0),vec2(1)),uUv=clamp(uv+vec2(0,uTexel.y),vec2(0),vec2(1));
+ // Reuse each raw sample for layer classification and position reconstruction.
+ // The depth texture is clamp-to-edge, including the former unclamped layer tests.
+ float lRaw=texture(uDepth,lUv).r,rRaw=texture(uDepth,rUv).r,dRaw=texture(uDepth,dUv).r,uRaw=texture(uDepth,uUv).r;
+ vec3 p=positionFromRaw(uv,raw),l=positionFromRaw(lUv,lRaw),r=positionFromRaw(rUv,rRaw),d=positionFromRaw(dUv,dRaw),u=positionFromRaw(uUv,uRaw);
+ if(foreground(lRaw)!=fg)l=p;
+ if(foreground(rRaw)!=fg)r=p;
+ if(foreground(dRaw)!=fg)d=p;
+ if(foreground(uRaw)!=fg)u=p;
  vec3 dx=length(r-p)<1e-6?p-l:length(p-l)<1e-6?r-p:abs(r.z-p.z)<abs(p.z-l.z)?r-p:p-l;
  vec3 dy=length(u-p)<1e-6?p-d:length(p-d)<1e-6?u-p:abs(u.z-p.z)<abs(p.z-d.z)?u-p:p-d;
  vec3 n=cross(dx,dy);float nl=length(n);if(nl<1e-8){color=vec4(1,fg?p.z:-p.z,0,1);return;}n/=nl;if(dot(n,-p)<0)n=-n;
@@ -46,9 +50,9 @@ void main(){
   float tangent=atan(-dot(n.xy,ray),max(.001,n.z));float horizon=sin(clamp(tangent+uBias,-1.5707,1.5707));float baseline=horizon,occlusion=0;
   for(int stepIndex=1;stepIndex<=12;++stepIndex){if(stepIndex>uSteps)break;
    float pixels=max(1.0,(float(stepIndex)-.5+.5*noise)*radiusPixels/float(uSteps));vec2 qUv=uv+round(ray*pixels)*uTexel;
-   if(outside(qUv)||texture(uDepth,qUv).r>=.9999999)continue;bool sampleFg=foreground(texture(uDepth,qUv).r);
+   if(outside(qUv))continue;float sampleRaw=texture(uDepth,qUv).r;if(sampleRaw>=.9999999)continue;bool sampleFg=foreground(sampleRaw);
    if(sampleFg!=fg&&!(uWeaponBackgroundHalo&&!fg&&sampleFg))continue;
-   vec3 v=positionAt(qUv)-p;
+   vec3 v=positionFromRaw(qUv,sampleRaw)-p;
    // Intentional old-school screen-space halo, not physical contact shadow:
    // project the foreground silhouette near the background receiver plane.
    if(sampleFg!=fg)v=vec3((qUv-uv)*2.0*uInvProjection*(-p.z),uRadius*.35);

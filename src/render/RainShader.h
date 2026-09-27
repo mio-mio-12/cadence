@@ -22,6 +22,7 @@ uniform vec4 uSplashStyle,uSplashShape;
 uniform mat4 uVP;
 uniform vec3 uCamera,uSlope;
 uniform float uPhase,uSpeed,uRadius,uWidth,uShutter,uDensity,uSplashSize,uSplashAmount;
+uniform int uRainLayers;
 uniform vec2 uViewport;
 uniform bool uSplashes;
 uniform vec3 uNoiseTime;
@@ -56,9 +57,10 @@ vec3 trajectory(vec4 b,float z,float secondsBack){
     return p+offset*contact;
 }
 void main(){
-    int particle=gl_VertexID/6,lane=particle/16,drop=particle%16;
+    int particle=gl_VertexID/6,group=particle/16,lane=group/uRainLayers,layer=group%uRainLayers,drop=particle%16;
     vec4 b=texelFetch(uLanes,ivec2(lane%256,(lane/256)*2),0);
     vec4 n=texelFetch(uLanes,ivec2(lane%256,(lane/256)*2+1),0);
+    if(layer>0){b.w=hash(b.w*971.+float(layer)*13.17);if(drop>=12){vAlpha=0.;vUV=vec2(0);vWorld=vec3(0);vAge=0.;vSeed=0.;vMode=0;gl_Position=vec4(2,2,2,1);return;}}
     // Disabled impact types need no shelter lookup or trajectory evaluation.
     if((drop>=12&&drop<14&&!uSplashes)||(drop>=14&&!uWallMist)){
         vAlpha=0.;vUV=vec2(0);vWorld=vec3(0);vAge=0.;vSeed=0.;vMode=0;gl_Position=vec4(2,2,2,1);return;
@@ -82,7 +84,7 @@ void main(){
         }}
     if(dot(n.xyz,vec3(uSlope.xy,-1))>0.)n.xyz=-n.xyz;
     vUV=corners[gl_VertexID%6];vMode=drop<12?0:drop<14?drop-11:3;vSeed=b.w;
-    float seed=hash(b.w*900.+float(drop));vAlpha=seed<uDensity?1.:0.;vAge=0.;
+    float seed=hash(b.w*900.+float(drop));vAlpha=seed<max(0.,uDensity-float(layer))?1.:0.;vAge=0.;
     vec3 velocity=vec3(uSlope.xy,-1)*uSpeed;
     vec3 p;
     if(vMode==0){

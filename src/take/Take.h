@@ -140,6 +140,8 @@ struct ActorManifest {
 };
 
 struct Take {
+    // v16 poses omit the editable gun-position offset; no visual settings are serialized.
+    bool neutralGunPosition{};
     float sampleRate{30.0f};
     std::size_t boneCount{};
     ActorManifest actor;

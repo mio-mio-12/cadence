@@ -31,11 +31,22 @@ inline std::optional<size_t> clip(const scene::CastScene& s,const std::string& p
 inline std::optional<size_t> sideClip(const scene::CastScene&s,const std::string&p,const std::string&key,int side,bool pb){
  const std::string hand=side?"left":"right",shortHand=side?"l":"r";
  if(pb)return clip(s,p,key+"_"+hand);
+ if(p.ends_with("_dual_first_person_dual_")){
+  const auto action=key=="pullout"?"ready":key=="putaway"?"put_away":key=="reload"?"reload_full":key.c_str();
+  std::optional<size_t> best;std::string bestName;
+  for(size_t i=0;i<s.animations.size();++i){const auto name=lower(std::filesystem::path(s.animations[i].sourceName).stem().string());
+   const auto begin=p+action;const auto marker=name.rfind("__"+hand+"_");
+   if(!name.starts_with(begin+"_")||marker==std::string::npos||s.animations[i].tracks.empty())continue;
+   const auto id=std::string_view(name).substr(marker+hand.size()+3);
+   if(id.empty()||!std::all_of(id.begin(),id.end(),[](unsigned char c){return std::isdigit(c)!=0;}))continue;
+   if(!best||name<bestName){best=i;bestName=name;}
+  }return best;
+ }
  for(const auto& suffix:{"dw_"+hand+"_"+key,key+"_"+shortHand,"akimbo_"+shortHand+"_"+key,"akimbo_"+key+"_"+shortHand,key+"_akimbo_"+shortHand})if(auto i=clip(s,p,suffix))return i;
  if(p.starts_with("viewmodel_"))return clip(s,"viewmodel_akimbo_"+p.substr(10),key+"_"+shortHand);return {};
 }
-inline bool isLeftArm(std::string n){n=lower(n);return n.starts_with("l ")||n.find("_le")!=std::string::npos;}
-inline bool isRightArm(std::string n){n=lower(n);return n.starts_with("r ")||n.find("_ri")!=std::string::npos;}
+inline bool isLeftArm(std::string n){n=lower(n);return n.starts_with("l ")||n.starts_with("l_")||n.find("_le")!=std::string::npos;}
+inline bool isRightArm(std::string n){n=lower(n);return n.starts_with("r ")||n.starts_with("r_")||n.find("_ri")!=std::string::npos;}
 inline bool under(const scene::CastScene&s,size_t b,const std::unordered_set<size_t>& roots){for(int i=static_cast<int>(b);i>=0;i=s.skeleton.bones[i].parent)if(roots.contains(i))return true;return false;}
 inline bool prepare(scene::CastScene& s,weapon::Profile& p,std::string prefix,bool mw3,std::string& error){
  if(s.dualWield)return true;
@@ -48,6 +59,8 @@ inline bool prepare(scene::CastScene& s,weapon::Profile& p,std::string prefix,bo
   if(n.starts_with(leftPrefix)){auto source=s.skeleton.boneByName.find(s.skeleton.bones[i].name.substr(leftPrefix.size()));if(source!=s.skeleton.boneByName.end())leftMap[source->second]=i;}
   if(n=="j_gun"||n=="tag_weapon"||n=="pb2cast_weapon__gundummy")rightRoots.insert(i);
   if(n=="j_gun1"||n=="tag_weapon1"||n=="pb2cast_weapon__left__gundummy"||n.starts_with(leftPrefix))leftRoots.insert(i);
+  if(n.starts_with("dew2cast_weapon__right__"))rightRoots.insert(i);
+  if(n.starts_with("dew2cast_weapon__left__"))leftRoots.insert(i);
  }
  auto part=[&](size_t index,int side,bool shared){auto a=s.animations[index];a.notifications.clear();a.tracks.clear();
   for(auto t:s.animations[index].tracks){const auto& name=s.skeleton.bones[t.boneIndex].name;bool arm=side?isLeftArm(name):isRightArm(name);
@@ -76,6 +89,7 @@ inline bool prepare(scene::CastScene& s,weapon::Profile& p,std::string prefix,bo
  p.animations.erase("ads_up");p.animations.erase("ads_down");p.stats.hideWeaponOnAds=false;p.stats.boltAction=false;p.archetype=weapon::Archetype::DualWield;s.dualWield=true;return true;
 }
 inline std::optional<scene::Vec3> muzzle(const scene::CastScene&s,const std::vector<scene::Mat4>&pose,int side){
+ if(!s.muzzleAnchors.empty())return scene::resolveMuzzlePosition(s,pose,-1,side);
  const std::array<std::string,3> names=side?std::array<std::string,3>{"dual_left_tag_flash","tag_flash1","pb2cast_weapon__left__FXDummy"}:std::array<std::string,3>{"tag_flash","tag_flash_1","pb2cast_weapon__FXDummy"};
  for(auto& name:names)if(auto it=s.skeleton.boneByName.find(name);it!=s.skeleton.boneByName.end()&&it->second<pose.size())return scene::transformPoint(pose[it->second],{});return {};
 }

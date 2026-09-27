@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 namespace scene::c2m {
-struct LoadOptions {bool allowApproximateCollision{};unsigned primitiveSegments{16};std::uint64_t solidLayerMask{0xffffffffffffffffull};};
+struct LoadOptions {bool allowApproximateCollision{};unsigned primitiveSegments{16};std::uint64_t solidLayerMask{0xffffffffffffffffull};bool renderGeometryCollision{};};
 }
 namespace scene::glb {
 struct AuthoredCollider {

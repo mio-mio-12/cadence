@@ -1,4 +1,5 @@
 #include "render/RainBlockers.h"
+#include "content/AssetPaths.h"
 #include "render/ShadowCoverage.h"
 #ifdef _WIN32
 #define NOMINMAX
@@ -9,12 +10,15 @@
 
 #include "render/StageRenderer.h"
 #include "render/ForegroundDepth.h"
+#include "render/ViewmodelProjection.h"
+#include "render/NativeViewhandSkinning.h"
 #include "render/DayNightSky.h"
 #include "render/MeshUniformCache.h"
 #include "render/HbaoShader.h"
 #include "render/VolumetricLightingShader.h"
 #include "render/WaterShader.h"
 #include "render/RainShader.h"
+#include "render/WeatherShader.h"
 #include "render/WetShader.h"
 #include "render/AoFogShader.h"
 #include "render/DepthOfFieldShader.h"
@@ -132,6 +136,7 @@ uniform bool uHasMetalnessMap;
 uniform float uWeaponMetalnessOverride;
 uniform vec4 uWeaponMetalnessDiffuse;
 uniform bool uSource2Material;
+uniform bool uDielectricByDefault;
 uniform sampler2D uRoughnessMap;
 uniform bool uHasRoughnessMap;
 )GLSL" R"GLSL(
@@ -218,6 +223,7 @@ uniform bool uShadowEnabled;
 uniform vec3 uSunDirection;
 uniform float uSunIntensity;
 uniform float uSunAmbient;
+uniform vec2 uWeaponLightingMultipliers;
 uniform vec3 uSunColor;
 uniform vec3 uAmbientColor;
 uniform vec3 uCameraPosition;
@@ -247,15 +253,36 @@ uniform float uFarShadowBlend;
 uniform float uShadowSpecularMultiplier;
 out vec4 color;
 uniform vec2 uShadowDepthScale;
+uniform bool uShadowContributionElision;
+uniform bool uDiscardedDecalLightingElision;
 float sampleShadowMap(sampler2D shadowMap,vec4 lightPosition,vec3 normal,float depthScale){
     vec3 projected=lightPosition.xyz/lightPosition.w*0.5+0.5;
     if(projected.z<=0.0||projected.z>=1.0||projected.x<=0.0||projected.x>=1.0||projected.y<=0.0||projected.y>=1.0)return 1.0;
     float bias=(uShadowBias+uShadowNormalBias*0.01*(1.0-dot(normalize(normal),normalize(-uSunDirection))))*depthScale;
     vec2 texel=1.0/vec2(textureSize(shadowMap,0));float visible=0.0;
-    for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x)visible+=(projected.z-bias<=texture(shadowMap,projected.xy+vec2(x,y)*texel*uShadowSoftness).r)?1.0:0.0;
+    // Depth targets have one level and LINEAR min/mag filtering. Explicit
+    // level zero avoids implicit derivatives inside spatial fade branches.
+    for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x){vec2 uv=projected.xy+vec2(x,y)*texel*uShadowSoftness;float depth=uShadowContributionElision?textureLod(shadowMap,uv,0.0).r:texture(shadowMap,uv).r;visible+=(projected.z-bias<=depth)?1.0:0.0;}
     return visible/9.0;
 }
 float shadowVisibility(vec3 normal){
+    if(uShadowContributionElision){
+        if(!uShadowEnabled||clamp(uShadowIntensity,0.0,1.0)==0.0)return 1.0;
+        float distanceToCamera=length(vWorldPosition-uCameraPosition),worldVisibility;
+        if(!uFarShadowEnabled){
+            float nearWeight=1.0-smoothstep(uShadowFadeStart,uShadowDistance,distanceToCamera);
+            float nearShadow=nearWeight==0.0?1.0:sampleShadowMap(uShadowMap,vLightPosition,normal,uShadowDepthScale.x);
+            worldVisibility=mix(1.0,nearShadow,nearWeight);
+        }else{
+            float blend=max(0.001,uFarShadowBlend),nearWeight=1.0-smoothstep(uFarShadowStart-blend,uFarShadowStart+blend,distanceToCamera),farWeight=smoothstep(uFarShadowStart-blend,uFarShadowStart+blend,distanceToCamera)*(1.0-smoothstep(uFarShadowDistance-blend,uFarShadowDistance,distanceToCamera));
+            float nearShadow=nearWeight==0.0?1.0:sampleShadowMap(uShadowMap,vLightPosition,normal,uShadowDepthScale.x);
+            float farShadow=farWeight>0.001?sampleShadowMap(uFarShadowMap,vFarLightPosition,normal,uShadowDepthScale.y):1.0;
+            worldVisibility=mix(1.0,nearShadow,nearWeight)*(1.0-farWeight)+farShadow*farWeight;
+        }
+        if(uViewmodelSurface&&uViewmodelSelfShadows)worldVisibility*=sampleShadowMap(uViewmodelShadowMap,vViewmodelLightPosition,normal,1.0);
+        worldVisibility=clamp((worldVisibility-.5)*uShadowContrast+.5,0.0,1.0);
+        return mix(1.0,worldVisibility,clamp(uShadowIntensity,0.0,1.0));
+    }
     if(!uShadowEnabled)return 1.0;float distanceToCamera=length(vWorldPosition-uCameraPosition);float nearShadow=sampleShadowMap(uShadowMap,vLightPosition,normal,uShadowDepthScale.x),worldVisibility;if(!uFarShadowEnabled)worldVisibility=mix(1.0,nearShadow,1.0-smoothstep(uShadowFadeStart,uShadowDistance,distanceToCamera));else {float blend=max(0.001,uFarShadowBlend),nearWeight=1.0-smoothstep(uFarShadowStart-blend,uFarShadowStart+blend,distanceToCamera),farWeight=smoothstep(uFarShadowStart-blend,uFarShadowStart+blend,distanceToCamera)*(1.0-smoothstep(uFarShadowDistance-blend,uFarShadowDistance,distanceToCamera));float farShadow=farWeight>0.001?sampleShadowMap(uFarShadowMap,vFarLightPosition,normal,uShadowDepthScale.y):1.0;worldVisibility=mix(1.0,nearShadow,nearWeight)*(1.0-farWeight)+farShadow*farWeight;}if(uViewmodelSurface&&uViewmodelSelfShadows)worldVisibility*=sampleShadowMap(uViewmodelShadowMap,vViewmodelLightPosition,normal,1.0);worldVisibility=clamp((worldVisibility-.5)*uShadowContrast+.5,0.0,1.0);return mix(1.0,worldVisibility,clamp(uShadowIntensity,0.0,1.0));
 }
 mat3 cotangentFrame(vec3 normal,vec3 position,vec2 uv){vec3 dp1=dFdx(position),dp2=dFdy(position);vec2 duv1=dFdx(uv),duv2=dFdy(uv);vec3 dp2perp=cross(dp2,normal),dp1perp=cross(normal,dp1);vec3 tangent=dp2perp*duv1.x+dp1perp*duv2.x,bitangent=dp2perp*duv1.y+dp1perp*duv2.y;float scale=inversesqrt(max(dot(tangent,tangent),dot(bitangent,bitangent)));return mat3(tangent*scale,bitangent*scale,normal);}
@@ -276,7 +303,7 @@ vec3 codSpecularLobe(vec3 f0,float exponent,float intensity,vec3 n,vec3 l,vec3 v
 vec3 awSpecular(vec3 f0,float roughness,vec3 n,vec3 l,vec3 v){vec3 h=normalize(l+v);float ndl=max(dot(n,l),0.0),ndv=max(dot(n,v),0.0),ndh=max(dot(n,h),0.0),vdh=clamp(dot(v,h),0.0,1.0),a=max(.025,roughness*roughness),a2=a*a,d=a2/(3.14159265*pow(max(.0001,ndh*ndh*(a2-1.0)+1.0),2.0)),k=pow(roughness+1.0,2.0)/8.0,g=(ndl/(ndl*(1.0-k)+k))*(ndv/(ndv*(1.0-k)+k));vec3 f=f0+(vec3(1)-f0)*pow(1.0-vdh,5.0);return f*d*g*ndl/max(.001,4.0*ndl*ndv);}
 )GLSL" R"GLSL(
 vec3 film(vec3 rgb){if(!uFilmEnabled)return rgb;float l=dot(rgb,vec3(.2126,.7152,.0722));rgb=mix(rgb,vec3(l),clamp(uFilmDesaturation,-1.0,1.0));rgb=(rgb-.5)*uFilmContrast+.5+uFilmBrightness;vec3 tint=mix(uFilmDarkTint,uFilmLightTint,clamp(l,0.0,1.0));if(uFilmMidTintEnabled)tint=mix(tint,uFilmMidTint,clamp(1.0-abs(l*2.0-1.0),0.0,1.0));rgb*=tint;if(uBloomEnabled){vec3 bright=max(rgb-vec3(uBloomThreshold),vec3(0));rgb+=bright*bright/(bright+vec3(.25))*uBloomIntensity;}if(uVignetteEnabled){vec2 uv=gl_FragCoord.xy/max(uViewportSize,vec2(1));float d=length((uv-.5)*vec2(uViewportSize.x/uViewportSize.y,1));float v=smoothstep(uVignetteRadius,max(uVignetteRadius+.001,uVignetteRadius+uVignetteSoftness),d);rgb*=1.0-v*clamp(uVignetteIntensity,0.0,1.0);}if(uFilmInvert)rgb=vec3(1)-rgb;return max(rgb,vec3(0));}
-)GLSL" + std::string(kWetShader) + R"GLSL(
+)GLSL" + std::string(kWetShader) + kWeatherCloud + R"GLSL(
 void main() {
     if(vVisible<0.5)discard;
     if(uActorOverlay>0){
@@ -296,7 +323,7 @@ void main() {
         vec3 n=normalize(vNormal),v=normalize(uCameraPosition-vWorldPosition);
         float fresnel=0.025+0.975*pow(1.0-clamp(dot(n,v),0.0,1.0),5.0);
         vec3 reflection=vec3(0.0);
-        if(uSunEnabled)reflection+=awSpecular(vec3(0.025),0.08,n,normalize(-uSunDirection),v)*uSunColor*uSunIntensity*shadowVisibility(n);
+        if(uSunEnabled)reflection+=awSpecular(vec3(0.025),0.08,n,normalize(-uSunDirection),v)*uSunColor*(uSunIntensity*(uWeaponSurface?uWeaponLightingMultipliers.x:1.)*mix(1.,weatherCloud(vWorldPosition),uWeatherCloudStrength))*shadowVisibility(n);
         if(uCubemapSpecular&&uHasSpecCubemap)reflection+=sampleSpecCubeDualKawase(reflect(-v,n),0.025)*fresnel*uCubemapSpecularIntensity*(uViewmodelSurface?uCubemapSurfaceMultipliers.x:uCubemapSurfaceMultipliers.y);
         float fogVisibility=1.0;
         if(uFogEnabled){
@@ -309,7 +336,7 @@ void main() {
     }
     vec4 base=uHasAlbedo?texture(uAlbedo,vUv):uColor;if(uExplicitMaterial&&uHasAlbedo)base*=uColor;if(uEmissive&&!uGltfPbr){float emissiveValue=max(base.r,max(base.g,base.b));base.rgb=uEmissiveTint*emissiveValue;}
     vec4 rawNormalSample=uHasNormalMap?texture(uNormalMap,vUv):vec4(0.5,0.5,1.0,1.0);vec3 rawNormal=rawNormalSample.xyz,decodedNormal=rawNormal*2.0-1.0;decodedNormal.xy*=uNormalIntensity;vec3 normal=normalize(vNormal);if(uExplicitMaterial&&!gl_FrontFacing)normal=-normal;if(uHasNormalMap)normal=normalize(cotangentFrame(normal,vWorldPosition,vUv)*decodedNormal);
-    bool overrideMetal=uWeaponSurface&&!uLens&&uWeaponMetalnessOverride>=0.0;bool source2Pbr=(uSource2Material&&uHasMetalnessMap)||overrideMetal;vec4 specularSample=uHasSpecularMap?texture(uSpecularMap,vUv):(uSpecularGlossiness?vec4(.04,.04,.04,.5):vec4(base.a,base.a,base.a,base.a));float diffuseLuma=dot(base.rgb,vec3(.2126,.7152,.0722));float metalSpan=uWeaponMetalnessDiffuse.z-uWeaponMetalnessDiffuse.y;float diffuseMetal=abs(metalSpan)<.0001?step(uWeaponMetalnessDiffuse.y,diffuseLuma):clamp((diffuseLuma-uWeaponMetalnessDiffuse.y)/metalSpan,0.0,1.0);diffuseMetal=pow(diffuseMetal,max(.05,uWeaponMetalnessDiffuse.w));float source2Metal=overrideMetal?(uWeaponMetalnessDiffuse.x>.5?diffuseMetal:uWeaponMetalnessOverride):(uHasMetalnessMap?texture(uMetalnessMap,vUv).r:0.0);float source2Rough=uHasRoughnessMap?texture(uRoughnessMap,vUv).r:(1.0-specularSample.a);if(overrideMetal||((uWeaponSurface||source2Pbr)&&uHasMetalnessMap&&!uHasSpecularMap)){specularSample.rgb=mix(vec3(0.04),base.rgb,source2Metal);specularSample.a=1.0-source2Rough;}if(uWeaponSurface&&(uHasSpecularMap||uHasMetalnessMap||overrideMetal)){vec3 span=uWeaponSpecularHigh-uWeaponSpecularLow;vec3 safeSpan=mix(sign(span)*max(abs(span),vec3(.0001)),vec3(1),lessThan(abs(span),vec3(.0001)));specularSample.rgb=clamp((specularSample.rgb-uWeaponSpecularLow)/safeSpan,vec3(0),vec3(1))*uWeaponSpecularMultiplier;}if(uHasSpecularImperfections){float imperfection=texture(uSpecularImperfections,fract(vUv*uImperfectionScale)).r;imperfection=smoothstep(uImperfectionLow,max(uImperfectionLow+0.001,uImperfectionHigh),imperfection);float impFactor=mix(1.0,imperfection,clamp(uImperfectionStrength,0.0,1.0));specularSample.rgb*=impFactor;specularSample.a*=impFactor;}
+    bool overrideMetal=uWeaponSurface&&!uLens&&uWeaponMetalnessOverride>=0.0;bool source2Pbr=((uSource2Material||uDielectricByDefault)&&uHasMetalnessMap)||overrideMetal;vec4 specularSample=uHasSpecularMap?texture(uSpecularMap,vUv):(uSpecularGlossiness?vec4(.04,.04,.04,.5):vec4(base.a,base.a,base.a,base.a));float diffuseLuma=dot(base.rgb,vec3(.2126,.7152,.0722));float metalSpan=uWeaponMetalnessDiffuse.z-uWeaponMetalnessDiffuse.y;float diffuseMetal=abs(metalSpan)<.0001?step(uWeaponMetalnessDiffuse.y,diffuseLuma):clamp((diffuseLuma-uWeaponMetalnessDiffuse.y)/metalSpan,0.0,1.0);diffuseMetal=pow(diffuseMetal,max(.05,uWeaponMetalnessDiffuse.w));float source2Metal=overrideMetal?(uWeaponMetalnessDiffuse.x>.5?diffuseMetal:uWeaponMetalnessOverride):(uHasMetalnessMap?texture(uMetalnessMap,vUv).r:0.0);float source2Rough=uHasRoughnessMap?texture(uRoughnessMap,vUv).r:(1.0-specularSample.a);if(overrideMetal||((uWeaponSurface||source2Pbr)&&uHasMetalnessMap&&!uHasSpecularMap)){specularSample.rgb=mix(vec3(0.04),base.rgb,source2Metal);specularSample.a=1.0-source2Rough;}if(uWeaponSurface&&(uHasSpecularMap||uHasMetalnessMap||overrideMetal)){vec3 span=uWeaponSpecularHigh-uWeaponSpecularLow;vec3 safeSpan=mix(sign(span)*max(abs(span),vec3(.0001)),vec3(1),lessThan(abs(span),vec3(.0001)));specularSample.rgb=clamp((specularSample.rgb-uWeaponSpecularLow)/safeSpan,vec3(0),vec3(1))*uWeaponSpecularMultiplier;}if(uHasSpecularImperfections){float imperfection=texture(uSpecularImperfections,fract(vUv*uImperfectionScale)).r;imperfection=smoothstep(uImperfectionLow,max(uImperfectionLow+0.001,uImperfectionHigh),imperfection);float impFactor=mix(1.0,imperfection,clamp(uImperfectionStrength,0.0,1.0));specularSample.rgb*=impFactor;specularSample.a*=impFactor;}
     vec3 vertTint=(uExplicitMaterial?uVertexColor:uDecal)?vColor.rgb:vec3(1.0);float vertAlpha=(uExplicitMaterial?uVertexColor:uDecal)?vColor.a:1.0;vec3 rgb=base.rgb*vertTint*(uLens?mix(vec3(1.0),uLensTint,clamp(uLensTintIntensity,0.0,4.0)):vec3(1));float alpha=uLens?uLensAlpha:((uForceAlpha||uDecal||uAlphaTest)?base.a*vertAlpha*(uExplicitMaterial?1.0:uColor.a):1.0);float gltfMetal=clamp(uGltfMetallic*(uHasSpecularMap?specularSample.b:1.0),0.0,1.0),gltfRough=clamp(uGltfRoughness*(uHasSpecularMap?specularSample.g:1.0),0.025,1.0);if(overrideMetal)gltfMetal=source2Metal;vec3 gltfF0=mix(vec3(0.04),rgb,gltfMetal);
     if(uCamoBlend){float sourceMask=uCamoLumaMask?dot(base.rgb,vec3(.2126,.7152,.0722)):((uCamoUseAlpha&&uCamoMaskUseful)?base.a:1.0);if(uCamoLumaMask){sourceMask=pow(clamp(sourceMask,0.0,1.0),max(.05,uCamoLumaGamma));sourceMask=(sourceMask-.5)*uCamoLumaContrast+.5;float span=uCamoLumaHigh-uCamoLumaLow;sourceMask=abs(span)<.0001?step(uCamoLumaLow,sourceMask):clamp((sourceMask-uCamoLumaLow)/span,0.0,1.0);}float mask=uCamoInvert?1.0-sourceMask:sourceMask;if(!uCamoLumaMask){float span=uCamoAlphaHigh-uCamoAlphaLow;mask=abs(span)<.0001?step(uCamoAlphaLow,mask):clamp((mask-uCamoAlphaLow)/span,0.0,1.0);}float cr=cos(uCamoRotation),cs=sin(uCamoRotation);vec2 cuv=mat2(cr,-cs,cs,cr)*(vUv-.5);if(uHasCamo)rgb=mix(rgb,texture(uCamo,fract(cuv*uCamoScale+.5+uCamoOffset)).rgb,clamp(mask*uCamoStrength,0.0,1.0));if(uIgnoreAlpha)alpha=1.0;}
     if(uExplicitMaterial&&!uForceAlpha&&!uAlphaTest)alpha=1.0;
@@ -336,13 +363,13 @@ void main() {
         }else{
             rgb=base.rgb*2.0;
         }
-    }else if(uSunEnabled){
+    }else if(uSunEnabled&&!(uDiscardedDecalLightingElision&&(uDecalMultiply||uDecalAdditive))){
         vec3 lightDirection=normalize(-uSunDirection);
         float rawNdl=dot(normal,lightDirection),diffuse=max(rawNdl,0.0);
         visibility=shadowVisibility(normal);
         if(uShadingModel==2&&!uGltfPbr)diffuse=clamp((rawNdl+uAwDiffuseWrap)/(1.0+uAwDiffuseWrap),0.0,1.0);
-        vec3 lighting=uAmbientColor*uSunAmbient+uSunColor*diffuse*uSunIntensity*visibility;
-        float metalness=uGltfPbr?gltfMetal:(source2Pbr?source2Metal:(uSpecularGlossiness?0.0:clamp(uAwMetalness,0.0,1.0)));
+        vec3 lighting=uAmbientColor*uSunAmbient*(uWeaponSurface?uWeaponLightingMultipliers.y:1.)+uSunColor*diffuse*(uSunIntensity*(uWeaponSurface?uWeaponLightingMultipliers.x:1.)*mix(1.,weatherCloud(vWorldPosition),uWeatherCloudStrength))*visibility;
+        float metalness=uGltfPbr?gltfMetal:(source2Pbr?source2Metal:((uSpecularGlossiness||uDielectricByDefault)?0.0:clamp(uAwMetalness,0.0,1.0)));
         vec3 mappedF0=clamp(specularSample.rgb*uAwSpecularLevel,vec3(0.01),vec3(0.95));
         vec3 f0=uGltfPbr?gltfF0:(uLens?vec3(0.10):(uShadingModel==2?mix(mappedF0,rgb,metalness):mappedF0));
         float gloss1=mix(max(2.0,uSpecularSharpness*0.0625),uSpecularSharpness,uLens?1.0:((uHasSpecularMap||uHasRoughnessMap||uSpecularGlossiness)?specularSample.a:base.a));
@@ -365,7 +392,7 @@ void main() {
         }else if(uShadingModel==3){
             float rough=clamp(uHasSpecularMap?(1.0-specularSample.a):uEeveeRoughness,0.025,1.0);
             float alpha_g=rough*rough;
-            float metal=uSpecularGlossiness?0.0:clamp(uEeveeMetallic,0.0,1.0);
+            float metal=source2Pbr?source2Metal:((uSpecularGlossiness||uDielectricByDefault)?0.0:clamp(uEeveeMetallic,0.0,1.0));
             float f0_d=pow((uEeveeIor-1.0)/max(0.001,uEeveeIor+1.0),2.0)*uEeveeSpecular*2.0;
             vec3 f0_eevee=clamp(mix(vec3(clamp(f0_d,0.0,1.0)),rgb,metal),vec3(0.0),vec3(1.0));
             f0_eevee_local=f0_eevee;
@@ -450,12 +477,12 @@ void main() {
             }
         }
 
-        vec3 diffuseColor=(uShadingModel==3)?rgb*(1.0-(uSpecularGlossiness?0.0:clamp(uEeveeMetallic,0.0,1.0)))*clamp(vec3(1.0)-f0_eevee_local,vec3(0.0),vec3(1.0)):((uGltfPbr||uShadingModel==2)?rgb*(1.0-metalness)*clamp(vec3(1.0)-f0,vec3(0.0),vec3(1.0)):rgb);
+        vec3 diffuseColor=(uShadingModel==3)?rgb*(1.0-(source2Pbr?source2Metal:((uSpecularGlossiness||uDielectricByDefault)?0.0:clamp(uEeveeMetallic,0.0,1.0))))*clamp(vec3(1.0)-f0_eevee_local,vec3(0.0),vec3(1.0)):((uGltfPbr||uShadingModel==2)?rgb*(1.0-metalness)*clamp(vec3(1.0)-f0,vec3(0.0),vec3(1.0)):rgb);
         if(uDecalAdditive||uDecalMultiply)directSpec=vec3(0.0);
         // A Source 2 metallic base color is reflected energy, not white paint.
         // Keep the user's chosen direct-light lobe, but suppress metal diffuse.
         if(source2Pbr)diffuseColor=rgb*(1.0-source2Metal);
-        rgb=diffuseColor*clamp(lighting,vec3(0.0),vec3(2.5))+directSpec*uSunColor*uSunIntensity*visibility;
+        rgb=diffuseColor*clamp(lighting,vec3(0.0),vec3(2.5))+directSpec*uSunColor*(uSunIntensity*(uWeaponSurface?uWeaponLightingMultipliers.x:1.)*mix(1.,weatherCloud(vWorldPosition),uWeatherCloudStrength))*visibility;
     }
     if(source2Pbr&&!uUnlit&&!uEmissive&&!uSunEnabled)rgb*=1.0-source2Metal;
     if(!uUnlit&&!uEmissive&&!uDecalMultiply&&!uDecalAdditive&&uCubemapSpecular&&uHasSpecCubemap){
@@ -475,7 +502,7 @@ void main() {
         }else if(uShadingModel==3){
             float roughness=uLens?0.025:clamp(uHasSpecularMap?(1.0-specularSample.a):uEeveeRoughness,0.025,1.0);
             float f0_d=pow((uEeveeIor-1.0)/max(0.001,uEeveeIor+1.0),2.0)*uEeveeSpecular*2.0;
-            vec3 f0_eevee=clamp(mix(vec3(clamp(f0_d,0.0,1.0)),rgb,clamp(uEeveeMetallic,0.0,1.0)),vec3(0.0),vec3(1.0));
+            vec3 f0_eevee=clamp(mix(vec3(clamp(f0_d,0.0,1.0)),rgb,(source2Pbr?source2Metal:((uSpecularGlossiness||uDielectricByDefault)?0.0:clamp(uEeveeMetallic,0.0,1.0)))),vec3(0.0),vec3(1.0));
             vec2 ab=vec2(-1.04,1.04)*pow(1.0-ndv,5.0)+vec2(1.0-roughness,roughness*.04);
             response=max(0.0,(f0_eevee.x*ab.x+ab.y)*(uLens?uLensCubemapIntensity:uSpecularIntensity));
         }
@@ -502,7 +529,7 @@ void main() {
         float rough=clamp(mix(uWetA.z,uWetMaterial.x,surfacePuddle),.025,1.);
         waterF=mix(waterF,uWetMaterial.y+(1.-uWetMaterial.y)*pow(1.-clamp(dot(normal,viewDirection),0.,1.),5.),surfacePuddle);
         if(uHasSpecCubemap)rgb+=sampleSpecCubeDualKawase(reflect(-viewDirection,normal),rough)*waterF*surfaceWet*uWetCoat*uWetMaterial.z;
-        if(uSunEnabled)rgb+=awSpecular(vec3(.02037),rough,normal,normalize(-uSunDirection),viewDirection)*uSunColor*uSunIntensity*visibility*surfaceWet*uWetCoat;
+        if(uSunEnabled)rgb+=awSpecular(vec3(.02037),rough,normal,normalize(-uSunDirection),viewDirection)*uSunColor*(uSunIntensity*(uWeaponSurface?uWeaponLightingMultipliers.x:1.)*mix(1.,weatherCloud(vWorldPosition),uWeatherCloudStrength))*visibility*surfaceWet*uWetCoat;
     }
     if(uExplicitMaterial)rgb+=uGltfEmissive*(uHasEmissionMap?texture(uSpecularImperfections,vUv).rgb:vec3(1.0));
     else if(!uEmissive)rgb+=uGltfPbr?uGltfEmissive:vec3(0);
@@ -692,7 +719,8 @@ const char* kPostFragment=R"GLSL(
 in vec2 vScreen;out vec4 color;uniform sampler2D uColor;uniform sampler2D uDepth;uniform sampler2D uBloomTexture;uniform sampler2D uLut;uniform vec2 uTexel;uniform bool uBloom;uniform float uBloomIntensity;uniform bool uLutEnabled;uniform float uLutSize;uniform float uLutIntensity;uniform float uDistortion;uniform bool uFilmEnabled;uniform float uFilmBrightness;uniform float uFilmContrast;uniform float uFilmDesaturation;uniform vec3 uFilmDarkTint;uniform vec3 uFilmMidTint;uniform vec3 uFilmLightTint;uniform bool uFilmMidTintEnabled;uniform bool uFilmInvert;uniform bool uVignetteEnabled;uniform float uVignetteIntensity;uniform float uVignetteRadius;uniform float uVignetteSoftness;uniform bool uAutoBlack;uniform float uAutoBlackIntensity;uniform bool uAutoWhite;uniform float uAutoWhiteIntensity;uniform float uCameraNear;uniform float uCameraFar;uniform int uDebugView;uniform float uDebugDepthNear;uniform float uDebugDepthFar;uniform bool uDebugDepthInvert;
 uniform sampler2D uHbao;uniform bool uHbaoEnabled,uHbaoPreview;uniform float uHbaoIntensity,uHbaoPower;
 uniform bool uSeparateForeground;uniform vec2 uViewmodelDepthRange;
-uniform sampler2D uAoIsolated,uDofFar,uDofNear;uniform bool uAoIsolationEnabled,uDofEnabled,uDofPreview;
+uniform sampler2D uAoIsolated,uDofFar,uDofNear;uniform bool uAoIsolationEnabled,uDofEnabled,uDofPreview,uAoOnly;
+uniform bool uDofFarActive,uDofNearActive;
 )GLSL" CADENCE_AO_FOG_GLSL R"GLSL(
 uniform int uTonemapping;
 uniform int uBloomBlendMode;
@@ -809,6 +837,14 @@ vec3 applyLevels(vec3 rgb){
 }
 void main(){
     vec2 p=vScreen;
+    if(uAoOnly){
+        vec2 uv=.5+.5*p;
+        vec4 base=texture(uColor,uv);
+        float ao=pow(clamp(1.0-(1.0-texture(uHbao,uv).r)*uHbaoIntensity,0.0,1.0),uHbaoPower);
+        vec3 rgb=base.rgb*ao+aoFogRestore(uv,ao);
+        if(uAoIsolationEnabled)rgb+=texture(uAoIsolated,uv).rgb*(1.0-ao);
+        color=vec4(rgb,base.a);return;
+    }
     if(uDistortion>0.0){
         float s=1.0/(1.0+2.0*uDistortion);
         for(int i=0;i<3;++i)s-=(2.0*uDistortion*s*s*s+s-1.0)/(6.0*uDistortion*s*s+1.0);
@@ -822,7 +858,7 @@ void main(){
     vec3 rgb=base.rgb*visibility;
     rgb+=aoFogRestore(uv,visibility);
     if(uAoIsolationEnabled)rgb+=texture(uAoIsolated,uv).rgb*(1-visibility);
-    if(uDofEnabled){vec4 farBlur=filteredDof(uDofFar,uv),nearBlur=filteredDof(uDofNear,uv);if(uDofPreview){color=vec4(nearBlur.a,0,farBlur.a,base.a);return;}rgb=mix(rgb,farBlur.rgb,farBlur.a);rgb=mix(rgb,nearBlur.rgb,nearBlur.a);}
+    if(uDofEnabled){vec4 farBlur=uDofFarActive?filteredDof(uDofFar,uv):vec4(0),nearBlur=uDofNearActive?filteredDof(uDofNear,uv):vec4(0);if(uDofPreview){color=vec4(nearBlur.a,0,farBlur.a,base.a);return;}rgb=mix(rgb,farBlur.rgb,farBlur.a);rgb=mix(rgb,nearBlur.rgb,nearBlur.a);}
     vec3 linearSceneColor=rgb;
 
     for(int passStep=0;passStep<7;++passStep){
@@ -862,7 +898,7 @@ void main(){
 }
 #undef main
 void main(){
-    if(uDebugView==7){
+    if(uDebugView==7&&!uAoOnly){
         vec2 uv=vScreen*.5+.5;
         float raw=texture(uDepth,uv).r;
         if(raw>=1.0){color=vec4(0,0,0,1);return;}
@@ -960,6 +996,7 @@ bool StageRenderer::initialize(std::string& error) {
     meshUniforms_.viewmodelSurface=uniformLocation(meshProgram_,"uViewmodelSurface");
     meshUniforms_.gltfPbr=uniformLocation(meshProgram_,"uGltfPbr");
     meshUniforms_.specularGlossiness=uniformLocation(meshProgram_,"uSpecularGlossiness");
+    meshUniforms_.dielectricByDefault=uniformLocation(meshProgram_,"uDielectricByDefault");
     meshUniforms_.gltfMetallic=uniformLocation(meshProgram_,"uGltfMetallic");
     meshUniforms_.gltfRoughness=uniformLocation(meshProgram_,"uGltfRoughness");
     meshUniforms_.gltfTransmission=uniformLocation(meshProgram_,"uGltfTransmission");
@@ -1051,6 +1088,7 @@ void StageRenderer::releaseTarget(){
 #include "render/VolumetricLightingPass.inc"
 #include "render/WaterPass.inc"
 #include "render/RainPass.inc"
+#include "render/WeatherPass.inc"
 #include "render/RainShelter.inc"
 #include "render/MuzzleLight.inc"
 #include "render/DepthOfFieldPass.inc"
@@ -1095,7 +1133,13 @@ void StageRenderer::shutdown(){
     if(waterVertices_)glapi::DeleteBuffers(1,&waterVertices_);waterVertices_=0;
     if(waterIndices_)glapi::DeleteBuffers(1,&waterIndices_);waterIndices_=0;
     waterResolution_=waterIndexCount_=0;waterError_.clear();
+    for(auto program:{weatherProgram_,weatherScreenProgram_})if(program)glapi::DeleteProgram(program);
+    for(auto fb:{weatherFramebuffer_,weatherShelter_.framebuffer})if(fb)glapi::DeleteFramebuffers(1,&fb);
+    for(auto tex:{weatherBackground_,weatherShelter_.texture,weatherShelter_.depth})if(tex)glDeleteTextures(1,&tex);
+    glDeleteTextures(2,lensSurface_);lensSurface_[0]=lensSurface_[1]=0;lensWidth_=lensHeight_=0;
+    weatherProgram_=weatherScreenProgram_=weatherFramebuffer_=weatherBackground_=0;weatherWidth_=weatherHeight_=0;weatherShelter_={};weatherError_.clear();
     gpuTimer_.reset();
+    gpuPassTimer_.reset();
     uniformLocations_.clear();
     if(!initialized_)return;clearScene();clearCamoTexture();clearScopeOverlayTexture();clearMuzzleFlashTexture();clearSmokeTexture();clearImpactSurfaceTexture();clearImpactBotTexture();clearImpacts();clearBulletTrailTexture();clearSpecularImperfectionsTexture();clearEnvironment();clearSmokeCurve();releaseMsaaTarget();releaseTarget();
     if(shadowTexture_)glDeleteTextures(1,&shadowTexture_);if(shadowFramebuffer_)glapi::DeleteFramebuffers(1,&shadowFramebuffer_);if(viewmodelShadowTexture_)glDeleteTextures(1,&viewmodelShadowTexture_);if(viewmodelShadowFramebuffer_)glapi::DeleteFramebuffers(1,&viewmodelShadowFramebuffer_);if(farShadowTexture_)glDeleteTextures(1,&farShadowTexture_);if(farShadowFramebuffer_)glapi::DeleteFramebuffers(1,&farShadowFramebuffer_);
@@ -1118,7 +1162,8 @@ bool StageRenderer::setNightSkyPanorama(const std::filesystem::path& path){
     if(nightPanorama_){glBindTexture(GL_TEXTURE_2D,nightPanorama_);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,glapi::ClampToEdge);}
     return nightPanorama_!=0;
 }
-unsigned StageRenderer::loadTexture(const std::filesystem::path& path,bool sceneTexture,bool forceOpaque,int maxDimension,bool compress,bool srgb) {
+unsigned StageRenderer::loadTexture(const std::filesystem::path& original,bool sceneTexture,bool forceOpaque,int maxDimension,bool compress,bool srgb) {
+    const auto path=cadence::content::resolve(original);
 #ifdef _WIN32
     if(!imageFactory_||path.empty()||!std::filesystem::exists(path))return 0;
     const GLenum kCompressedRgbDxt1 = srgb?0x8C4C:0x83F0;
@@ -1326,7 +1371,7 @@ bool StageRenderer::setT6SkyboxIwi(const std::filesystem::path& path,std::string
 }
 
 bool StageRenderer::appendSceneMeshes(const scene::CastScene& scene,std::string& error,std::size_t firstSourceMesh,bool generateWireframe,bool isMapScene,ProgressCallback progressCallback) {
-    rainShelterValid_=false;
+    rainShelterValid_=false;weatherShelter_.valid=false;
     if(!initialized_){error="Renderer is not initialized";return false;}
     const int maxTexDim = isMapScene ? mapTextureResolution_ : 1024;
     const bool compress = isMapScene && hardwareTextureCompression_;
@@ -1439,6 +1484,7 @@ bool StageRenderer::appendSceneMeshes(const scene::CastScene& scene,std::string&
         mesh.specularTexture=loadCached(source.specularPath);
         mesh.metalnessTexture=loadCached(source.metalnessPath);
         mesh.source2Material=source.materialName.starts_with("weapons/models/")&&source.materialName.ends_with(".vmat");
+        mesh.dielectricByDefault=source.dielectricByDefault;
         mesh.roughnessTexture=loadCached(source.roughnessPath);
         mesh.emissiveTexture=loadCached(source.emissivePath,source.materialPolicyExplicit);
         glapi::GenVertexArrays(1,&mesh.vao);glapi::GenBuffers(1,&mesh.vertexBuffer);glapi::GenBuffers(1,&mesh.indexBuffer);
@@ -1829,7 +1875,9 @@ void StageRenderer::render(const scene::CastScene& scene,const std::vector<scene
     if(!initialized_||!resizeTarget(width,height)||(msaaEnabled_&&!resizeMsaaTarget(width,height)))return;
     foregroundDrawn_=showMainScene;
     GpuTimer::Scope gpuTiming(gpuTimer_);
+    GpuPassTimer::Scope passTiming(gpuPassTimer_);
     prepareRainShelter();
+    if(debugView_==0&&!viewmodelCapture_)prepareRainShelter(true);
     lastVisibleMapMeshes_=lastShadowCasterDraws_=lastFarShadowCasterDraws_=lastTotalDrawCalls_=0;
     const auto equipmentHidden=[&](const GpuMesh& mesh,const scene::CastScene& drawScene,const std::vector<scene::Mat4>& drawPose){
         if(&drawScene==&scene)return equipmentHiddenPlayer_&&mesh.viewmodelWeapon;
@@ -1840,7 +1888,7 @@ void StageRenderer::render(const scene::CastScene& scene,const std::vector<scene
         if(&drawScene==actorScene&&actorPoses)for(std::size_t i=0;i<equipmentHiddenActors_.size()&&i<actorPoses->size();++i)if(equipmentHiddenActors_[i] && &(*actorPoses)[i]==&drawPose)return true;
         return false;
     };
-    const auto uploadUncachedPose=[&](const scene::CastScene& drawScene,const std::vector<scene::Mat4>& drawPose){std::vector<scene::Mat4> skin;if(drawPose.empty())skin.push_back(scene::Mat4::identity());else{skin.reserve(drawPose.size());for(std::size_t i=0;i<drawPose.size()&&i<drawScene.skeleton.bones.size();++i)skin.push_back(drawPose[i]*drawScene.skeleton.bones[i].inverseBind);if(skin.empty())skin.push_back(scene::Mat4::identity());}glapi::BindBuffer(glapi::TextureBuffer,boneBuffer_);glapi::BufferData(glapi::TextureBuffer,static_cast<glapi::Size>(skin.size()*sizeof(scene::Mat4)),skin.data(),glapi::DynamicDraw);glapi::ActiveTexture(glapi::Texture0+16);glBindTexture(glapi::TextureBuffer,boneTexture_);glapi::TexBuffer(glapi::TextureBuffer,glapi::Rgba32f,boneBuffer_);std::vector<float> shown(drawPose.empty()?1:drawPose.size(),1.0f);for(std::size_t i=0;i<shown.size()&&i<drawScene.skeleton.bones.size();++i){std::int32_t bone=static_cast<std::int32_t>(i);while(bone>=0){if(drawScene.hiddenBones.contains(static_cast<std::size_t>(bone))){shown[i]=0;break;}bone=drawScene.skeleton.bones[static_cast<std::size_t>(bone)].parent;}}glapi::BindBuffer(glapi::TextureBuffer,visibilityBuffer_);glapi::BufferData(glapi::TextureBuffer,static_cast<glapi::Size>(shown.size()*sizeof(float)),shown.data(),glapi::DynamicDraw);glapi::ActiveTexture(glapi::Texture0+17);glBindTexture(glapi::TextureBuffer,visibilityTexture_);glapi::TexBuffer(glapi::TextureBuffer,glapi::R32f,visibilityBuffer_);};
+const auto uploadUncachedPose=[&](const scene::CastScene& drawScene,const std::vector<scene::Mat4>& drawPose){std::vector<scene::Mat4> skin;if(drawPose.empty())skin.push_back(scene::Mat4::identity());else{skin.reserve(drawPose.size());for(std::size_t i=0;i<drawPose.size()&&i<drawScene.skeleton.bones.size();++i)skin.push_back(drawPose[i]*drawScene.skeleton.bones[i].inverseBind);if(skin.empty())skin.push_back(scene::Mat4::identity());}nativeViewhandSkinning(drawScene,drawPose,skin);glapi::BindBuffer(glapi::TextureBuffer,boneBuffer_);glapi::BufferData(glapi::TextureBuffer,static_cast<glapi::Size>(skin.size()*sizeof(scene::Mat4)),skin.data(),glapi::DynamicDraw);glapi::ActiveTexture(glapi::Texture0+16);glBindTexture(glapi::TextureBuffer,boneTexture_);glapi::TexBuffer(glapi::TextureBuffer,glapi::Rgba32f,boneBuffer_);std::vector<float> shown(drawPose.empty()?1:drawPose.size(),1.0f);for(std::size_t i=0;i<shown.size()&&i<drawScene.skeleton.bones.size();++i){std::int32_t bone=static_cast<std::int32_t>(i);while(bone>=0){if(drawScene.hiddenBones.contains(static_cast<std::size_t>(bone))){shown[i]=0;break;}bone=drawScene.skeleton.bones[static_cast<std::size_t>(bone)].parent;}}glapi::BindBuffer(glapi::TextureBuffer,visibilityBuffer_);glapi::BufferData(glapi::TextureBuffer,static_cast<glapi::Size>(shown.size()*sizeof(float)),shown.data(),glapi::DynamicDraw);glapi::ActiveTexture(glapi::Texture0+17);glBindTexture(glapi::TextureBuffer,visibilityTexture_);glapi::TexBuffer(glapi::TextureBuffer,glapi::R32f,visibilityBuffer_);};
     std::size_t usedPoses=0;
     lastPoseRequests_=lastPoseUploads_=0;
     const auto uploadPose=[&](const scene::CastScene& drawScene,const std::vector<scene::Mat4>& drawPose){
@@ -1853,6 +1901,7 @@ void StageRenderer::render(const scene::CastScene& scene,const std::vector<scene
             auto& p=poseUploads_[index];p.scene=&drawScene;p.pose=&drawPose;++usedPoses;++lastPoseUploads_;
             p.skin.clear();p.skin.reserve(drawPose.size());
             for(std::size_t i=0;i<std::min(drawPose.size(),drawScene.skeleton.bones.size());++i)p.skin.push_back(drawPose[i]*drawScene.skeleton.bones[i].inverseBind);
+            nativeViewhandSkinning(drawScene,drawPose,p.skin);
             if(p.skin.empty())p.skin.push_back(scene::Mat4::identity());
             const bool visibilityChanged=p.visibilityState.update(drawScene.skeleton,drawScene.hiddenBones,drawPose.empty()?1:drawPose.size(),p.shown);
             const bool newVisibilityBuffer=!p.visibility;
@@ -1918,6 +1967,7 @@ void StageRenderer::render(const scene::CastScene& scene,const std::vector<scene
       const auto vmLightView=scene::lookAt(center-direction*vmRadius*2.0f,center,up),vmLightProjection=scene::orthographic(-vmRadius,vmRadius,-vmRadius,vmRadius,1.0f,vmRadius*4.0f);
       viewmodelLightViewProjection=vmLightProjection*vmLightView;
     }
+    gpuPassTimer_.mark("Prepare");
     if (sunEnabled_ && sunShadows_ && shadowFramebuffer_ && shadowTexture_ &&
         lightBounds.valid) {
       glapi::BindFramebuffer(glapi::Framebuffer, shadowFramebuffer_);
@@ -2030,6 +2080,7 @@ void StageRenderer::render(const scene::CastScene& scene,const std::vector<scene
     }
     uploadPose(scene,globalPose);
 
+    gpuPassTimer_.mark("Shadows");
     glapi::BindFramebuffer(glapi::Framebuffer,msaaEnabled_?msaaFramebuffer_:framebuffer_);glViewport(0,0,width_,height_);
     glEnable(GL_DEPTH_TEST);glDisable(GL_CULL_FACE);if(debugView_==7)glClearColor(1,1,1,1);else if(debugView_==8)glClearColor(0,1,0,1);else glClearColor(viewmodelCapture_?captureBackground_.x:0.035f,viewmodelCapture_?captureBackground_.y:0.043f,viewmodelCapture_?captureBackground_.z:0.058f,viewmodelCapture_?captureBackground_.w:1.0f);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
     if(environmentProgram_){glapi::UseProgram(environmentProgram_);glapi::Uniform1i(uniformLocation(environmentProgram_,"uDebugView"),debugView_);glapi::Uniform1f(uniformLocation(environmentProgram_,"uSkyContrast"),environmentContrast_);glapi::Uniform1f(uniformLocation(environmentProgram_,"uSkyHighlightBoost"),environmentHighlightBoost_);glapi::Uniform1f(uniformLocation(environmentProgram_,"uSkyHighlightThreshold"),environmentHighlightThreshold_);glapi::Uniform1f(uniformLocation(environmentProgram_,"uSkyToneMap"),environmentToneMap_);}
@@ -2115,14 +2166,18 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
     glapi::Uniform1f(uniformLocation(meshProgram_,"uSpecularSharpness2"),specularSharpness2_);
     glapi::Uniform1f(uniformLocation(meshProgram_,"uLensSpecularIntensity"),lensSpecularIntensity_);
     glapi::Uniform1i(uniformLocation(meshProgram_,"uCubemapSpecular"),cubemapSpecular_?1:0);glapi::Uniform1i(uniformLocation(meshProgram_,"uHasSpecCubemap"),environmentMode_>0?1:0);glapi::Uniform1i(uniformLocation(meshProgram_,"uSkyMode"),environmentMode_);glapi::Uniform1f(uniformLocation(meshProgram_,"uSkyIntensity"),environmentIntensity_);glapi::Uniform1f(uniformLocation(meshProgram_,"uSkyExposure"),environmentExposure_);glapi::Uniform1f(uniformLocation(meshProgram_,"uSkyContrast"),environmentContrast_);glapi::Uniform1f(uniformLocation(meshProgram_,"uSkyHighlightBoost"),environmentHighlightBoost_);glapi::Uniform1f(uniformLocation(meshProgram_,"uSkyHighlightThreshold"),environmentHighlightThreshold_);glapi::Uniform1f(uniformLocation(meshProgram_,"uSkyToneMap"),environmentToneMap_);glapi::Uniform1f(uniformLocation(meshProgram_,"uCubemapSpecularIntensity"),cubemapSpecularIntensity_);glapi::Uniform1f(uniformLocation(meshProgram_,"uCubemapBlur"),cubemapBlur_);glapi::Uniform1f(uniformLocation(meshProgram_,"uWeaponCubemapBlur"),weaponCubemapBlur_);glapi::Uniform1f(uniformLocation(meshProgram_,"uSkyRotation"),environmentRotation_*scene::kPi/180.0f);glapi::Uniform1f(uniformLocation(meshProgram_,"uNormalReflectionInfluence"),surfaceNormalReflectionInfluence_);glapi::Uniform1i(uniformLocation(meshProgram_,"uCubemapSamples"),cubemapKawaseSamples_);glapi::Uniform1i(uniformLocation(meshProgram_,"uAlphaOverlay"),alphaOverlay_?1:0);glapi::Uniform1f(uniformLocation(meshProgram_,"uAlphaOverlayIntensity"),alphaOverlayIntensity_);glapi::Uniform1i(uniformLocation(meshProgram_,"uDebugView"),debugView_);glapi::Uniform1i(uniformLocation(meshProgram_,"uShadingModel"),shadingModel_);glapi::Uniform1i(uniformLocation(meshProgram_,"uBrdfModel"),brdfModel_);glapi::Uniform1i(uniformLocation(meshProgram_,"uIw3DualLobe"),iw3DualLobe_?1:0);glapi::Uniform1f(uniformLocation(meshProgram_,"uAwRoughnessScale"),awRoughnessScale_);glapi::Uniform1f(uniformLocation(meshProgram_,"uAwRoughnessBias"),awRoughnessBias_);glapi::Uniform1f(uniformLocation(meshProgram_,"uAwMetalness"),awMetalness_);glapi::Uniform1f(uniformLocation(meshProgram_,"uAwSpecularLevel"),awSpecularLevel_);glapi::Uniform1f(uniformLocation(meshProgram_,"uAwDiffuseWrap"),awDiffuseWrap_);glapi::Uniform1f(uniformLocation(meshProgram_,"uAwClearcoat"),awClearcoat_);glapi::Uniform1f(uniformLocation(meshProgram_,"uAwClearcoatRoughness"),awClearcoatRoughness_);glapi::Uniform1f(uniformLocation(meshProgram_,"uAwEnvironmentIntensity"),awEnvironmentIntensity_);
+    glapi::Uniform2f(uniformLocation(meshProgram_,"uWeaponLightingMultipliers"),weaponSunMultiplier_,weaponAmbientMultiplier_);
     glapi::Uniform2f(uniformLocation(meshProgram_,"uCubemapSurfaceMultipliers"),viewmodelCubemapMultiplier_,worldCubemapMultiplier_);
     glapi::Uniform1i(uniformLocation(meshProgram_,"uFilmEnabled"),filmEnabled_?1:0);glapi::Uniform1f(uniformLocation(meshProgram_,"uFilmBrightness"),filmBrightness_);glapi::Uniform1f(uniformLocation(meshProgram_,"uFilmContrast"),filmContrast_);glapi::Uniform1f(uniformLocation(meshProgram_,"uFilmDesaturation"),filmDesaturation_);glapi::Uniform3f(uniformLocation(meshProgram_,"uFilmDarkTint"),filmDarkTint_.x,filmDarkTint_.y,filmDarkTint_.z);glapi::Uniform3f(uniformLocation(meshProgram_,"uFilmLightTint"),filmLightTint_.x,filmLightTint_.y,filmLightTint_.z);glapi::Uniform1i(uniformLocation(meshProgram_,"uFilmInvert"),filmInvert_?1:0);glapi::Uniform1i(uniformLocation(meshProgram_,"uFogEnabled"),fogEnabled_?1:0);glapi::Uniform3f(uniformLocation(meshProgram_,"uFogColor"),fogColor_.x,fogColor_.y,fogColor_.z);glapi::Uniform1f(uniformLocation(meshProgram_,"uFogStart"),fogStart_);glapi::Uniform1f(uniformLocation(meshProgram_,"uFogHalfDistance"),fogHalfDistance_);glapi::Uniform1f(uniformLocation(meshProgram_,"uFogOpacity"),fogOpacity_);glapi::Uniform1i(uniformLocation(meshProgram_,"uFogHeightEnabled"),fogHeightEnabled_?1:0);glapi::Uniform1f(uniformLocation(meshProgram_,"uFogHeight"),fogHeight_);glapi::Uniform1f(uniformLocation(meshProgram_,"uFogHeightFalloff"),fogHeightFalloff_);
     glapi::Uniform1i(uniformLocation(meshProgram_,"uFilmEnabled"),0);glapi::Uniform1i(uniformLocation(meshProgram_,"uSkyFlipVertical"),skyVerticalFlip_?1:0);
     const char* specFaceNames[]={"uSpecFront","uSpecBack","uSpecLeft","uSpecRight","uSpecUp","uSpecDown"};for(int i=0;i<6;++i){const auto sourceName="uSpecFaceSource"+std::to_string(i),rotationName="uSpecFaceRotation"+std::to_string(i);glapi::Uniform1i(uniformLocation(meshProgram_,sourceName.c_str()),skyFaceSources_[i]);glapi::Uniform1i(uniformLocation(meshProgram_,rotationName.c_str()),skyFaceQuarterTurns_[i]);glapi::ActiveTexture(glapi::Texture0+7+i);glBindTexture(GL_TEXTURE_2D,i==0&&environmentMode_==1?environmentTexture_:environmentFaces_[i]);glapi::Uniform1i(uniformLocation(meshProgram_,specFaceNames[i]),7+i);}
     glapi::Uniform1i(uniformLocation(meshProgram_,"uIgnoreAlpha"),ignoreViewmodelTextureAlpha_?1:0);
     glapi::UniformMatrix4fv(uniformLocation(meshProgram_,"uLightViewProjection"),1,GL_FALSE,lightViewProjection.data());glapi::UniformMatrix4fv(uniformLocation(meshProgram_,"uFarLightViewProjection"),1,GL_FALSE,farLightViewProjection.data());glapi::Uniform1i(uniformLocation(meshProgram_,"uSunEnabled"),sunEnabled_?1:0);glapi::Uniform1i(uniformLocation(meshProgram_,"uShadowEnabled"),sunEnabled_&&sunShadows_?1:0);glapi::Uniform1i(uniformLocation(meshProgram_,"uFarShadowEnabled"),sunEnabled_&&sunShadows_&&farShadowEnabled_?1:0);const auto normalizedSun=scene::normalize(sunDirection_);glapi::Uniform3f(uniformLocation(meshProgram_,"uSunDirection"),normalizedSun.x,normalizedSun.y,normalizedSun.z);glapi::Uniform1f(uniformLocation(meshProgram_,"uSunIntensity"),sunIntensity_);glapi::Uniform1f(uniformLocation(meshProgram_,"uSunAmbient"),sunAmbient_);const auto effectiveCamPos=(cameraPosition_.x!=0.0f||cameraPosition_.y!=0.0f||cameraPosition_.z!=0.0f)?cameraPosition_:shadowFocus_;glapi::Uniform3f(uniformLocation(meshProgram_,"uCameraPosition"),effectiveCamPos.x,effectiveCamPos.y,effectiveCamPos.z);glapi::Uniform1f(uniformLocation(meshProgram_,"uShadowDistance"),shadowDistance_);glapi::Uniform1f(uniformLocation(meshProgram_,"uShadowFadeStart"),std::min(shadowFadeStart_,shadowDistance_-1.0f));glapi::Uniform1f(uniformLocation(meshProgram_,"uFarShadowStart"),farShadowStart_);glapi::Uniform1f(uniformLocation(meshProgram_,"uFarShadowDistance"),farShadowDistance_);glapi::Uniform1f(uniformLocation(meshProgram_,"uFarShadowBlend"),farShadowBlend_);glapi::Uniform1i(uniformLocation(meshProgram_,"uShadowMap"),4);glapi::ActiveTexture(glapi::Texture0+4);glBindTexture(GL_TEXTURE_2D,shadowTexture_);glapi::Uniform1i(uniformLocation(meshProgram_,"uFarShadowMap"),14);glapi::ActiveTexture(glapi::Texture0+14);glBindTexture(GL_TEXTURE_2D,farShadowTexture_);
+    glapi::Uniform1i(uniformLocation(meshProgram_,"uShadowContributionElision"),shadowContributionElision_?1:0);
+    glapi::Uniform1i(uniformLocation(meshProgram_,"uDiscardedDecalLightingElision"),discardedDecalLightingElision_?1:0);
     glapi::Uniform1f(uniformLocation(meshProgram_,"uShadowIntensity"),shadowIntensity_);glapi::Uniform1f(uniformLocation(meshProgram_,"uShadowBias"),shadowBias_);glapi::Uniform1f(uniformLocation(meshProgram_,"uShadowNormalBias"),shadowNormalBias_);glapi::Uniform1f(uniformLocation(meshProgram_,"uShadowSoftness"),shadowSoftness_);glapi::Uniform1f(uniformLocation(meshProgram_,"uShadowContrast"),shadowContrast_);glapi::Uniform1i(uniformLocation(meshProgram_,"uViewmodelSelfShadows"),viewmodelSelfShadows_?1:0);glapi::Uniform1i(uniformLocation(meshProgram_,"uViewmodelShadowMap"),15);glapi::ActiveTexture(glapi::Texture0+15);glBindTexture(GL_TEXTURE_2D,viewmodelShadowTexture_);
     glapi::UniformMatrix4fv(meshUniforms_.viewmodelLightViewProjection,1,GL_FALSE,viewmodelLightViewProjection.data());
+    configureWeatherCloud(meshProgram_);
     glapi::Uniform3f(uniformLocation(meshProgram_,"uSunColor"),sunColor_.x,sunColor_.y,sunColor_.z);glapi::Uniform3f(uniformLocation(meshProgram_,"uAmbientColor"),ambientColor_.x,ambientColor_.y,ambientColor_.z);
     glapi::ActiveTexture(glapi::Texture0+2);glBindTexture(GL_TEXTURE_2D,camoTexture_);
     glapi::Uniform1f(meshUniforms_.eeveeMetallic, eeveeMetallic_);
@@ -2134,6 +2189,11 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
     glapi::Uniform1f(meshUniforms_.eeveeClearcoatRoughness, eeveeClearcoatRoughness_);
     glapi::Uniform1i(meshUniforms_.brdfModel, brdfModel_);
     glapi::Uniform1f(meshUniforms_.shadowSpecularMultiplier,shadowSpecularMultiplier_);
+    // No helper between the scene reset and here changes the cull enable bit.
+    lastCullCounters_={};
+    CullState cullState{cullStateCacheEnabled_,true,false,-1,lastCullCounters_};
+    const auto setCull=[&](bool enabled){cullState.set(enabled,[](bool value){if(value)glEnable(GL_CULL_FACE);else glDisable(GL_CULL_FACE);});};
+    const auto setCullFace=[&](int face){cullState.setFace(face,[](int value){glCullFace(value);});};
     // Scoped to this mesh program pass; pose uploads only touch bone buffers.
     MeshUniformCache materialState;
     lastMaterialRequests_=lastMaterialUploads_=lastEmissionTextureBinds_=0;
@@ -2230,6 +2290,7 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
         set1i(meshUniforms_.hasNormalMap,mesh.normalTexture&&!wireframe?1:0);
         set1i(meshUniforms_.hasSpecularMap,mesh.specularTexture&&!wireframe?1:0);
         set1i(meshUniforms_.specularGlossiness,mesh.specularGlossiness&&!mesh.lens&&!wireframe?1:0);
+        set1i(meshUniforms_.dielectricByDefault,mesh.dielectricByDefault?1:0);
         set1i(meshUniforms_.hasMetalnessMap,mesh.metalnessTexture&&!wireframe?1:0);
         set1i(meshUniforms_.source2Material,mesh.source2Material&&!wireframe?1:0);
         set1i(meshUniforms_.hasRoughnessMap,mesh.roughnessTexture&&!wireframe?1:0);
@@ -2273,8 +2334,8 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
         }
         const bool useWire = (wireframe||actorOverlayMode==3) && mesh.wireIndexBuffer != 0;
         glapi::BindBuffer(glapi::ElementArrayBuffer,useWire?mesh.wireIndexBuffer:mesh.indexBuffer);
-        const bool cullBefore=glIsEnabled(GL_CULL_FACE)!=0;
-        if(mesh.materialPolicyExplicit&&!wireframe){if(mesh.doubleSided)glDisable(GL_CULL_FACE);else{glEnable(GL_CULL_FACE);glCullFace(GL_BACK);}}
+        const bool cullBefore=cullState.get([]{return glIsEnabled(GL_CULL_FACE)!=0;});
+        if(mesh.materialPolicyExplicit&&!wireframe){if(mesh.doubleSided)setCull(false);else{setCull(true);setCullFace(GL_BACK);}}
         if(mesh.decal&&!wireframe){
             glEnable(GL_POLYGON_OFFSET_FILL);
             glPolygonOffset(-2.5f,mesh.materialPolicyExplicit&&mesh.materialDepthBias!=0?mesh.materialDepthBias:-std::clamp(decalDepthBias_+6.0f,6.0f,16.0f));
@@ -2298,12 +2359,12 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
         const bool transparentMap=mapSurface&&actorOverlays_.transparentWorld;
         set1f(worldOpacityLoc,transparentMap?actorOverlays_.worldOpacity:1.f);
         if(actorOverlayMode||transparentMap){glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);}
-        if(actorOverlayMode){glDepthFunc(actorOverlayHidden?GL_GREATER:GL_LEQUAL);if(actorOverlayExpand>0){glEnable(GL_CULL_FACE);glCullFace(GL_FRONT);}}
+        if(actorOverlayMode){glDepthFunc(actorOverlayHidden?GL_GREATER:GL_LEQUAL);if(actorOverlayExpand>0){setCull(true);setCullFace(GL_FRONT);}}
         glapi::DrawElements(useWire?GL_LINES:GL_TRIANGLES,useWire?mesh.wireIndexCount:mesh.indexCount,GL_UNSIGNED_INT,nullptr);
         if(actorOverlayMode||transparentMap){glDepthMask(GL_TRUE);glDisable(GL_BLEND);}
-        if(actorOverlayMode){glDepthFunc(GL_LESS);glCullFace(GL_BACK);if(cullBefore)glEnable(GL_CULL_FACE);else glDisable(GL_CULL_FACE);}
+        if(actorOverlayMode){glDepthFunc(GL_LESS);setCullFace(GL_BACK);setCull(cullBefore);}
 
-        if(mesh.materialPolicyExplicit&&!wireframe){if(cullBefore)glEnable(GL_CULL_FACE);else glDisable(GL_CULL_FACE);}
+        if(mesh.materialPolicyExplicit&&!wireframe)setCull(cullBefore);
         lastTotalDrawCalls_++;
         if(&drawScene == mapScene) lastVisibleMapMeshes_++;
         if(alphaBlend){glDepthMask(GL_TRUE);glDisable(GL_BLEND);}
@@ -2350,8 +2411,8 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
         sortPass(mapDecalMeshes_,true);
         sortPass(mapTransparentMeshes_,true);sortPass(mapAdditiveMeshes_,true);
         // Pass 0: Opaque world geometry (hardware backface culling enabled for massive fillrate boost)
-        glEnable(GL_CULL_FACE);
-        glCullFace(GL_BACK);
+        setCull(true);
+        setCullFace(GL_BACK);
         auto& fadedWorldOrder=fadedWorldOrder_;
         if(actorOverlays_.transparentWorld){
             fadedWorldOrder=mapOpaqueMeshes_;
@@ -2367,7 +2428,7 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
             if(m.hasBounds&&!scene::isAabbInFrustum(cameraFrustum,m.aabbMin,m.aabbMax))continue;
             drawMesh(m,*mapScene,{});
         }
-        glDisable(GL_CULL_FACE);
+        setCull(false);
         // Pass 1: Decals (posters, graffiti, screens, flowers on walls, multiply decals)
         for(const auto meshIdx : mapDecalMeshes_){
             if(meshIdx >= meshes_.size()) continue;
@@ -2375,7 +2436,9 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
             if(m.hasBounds&&!scene::isAabbInFrustum(cameraFrustum,m.aabbMin,m.aabbMax))continue;
             drawMesh(m,*mapScene,{});
         }
-        if(water_.enabled){renderWater(viewProjection,lightViewProjection,farLightViewProjection);lastVao=0;}
+        gpuPassTimer_.mark("Map opaque and decals");
+        if(water_.enabled){renderWater(viewProjection,lightViewProjection,farLightViewProjection);lastVao=0;cullState.invalidate();}
+        gpuPassTimer_.mark("Water");
         // Pass 2: Transparent surfaces (water, waterfall sheets, glass windows, alpha cutouts)
         for(const auto meshIdx : mapTransparentMeshes_){
             if(meshIdx >= meshes_.size()) continue;
@@ -2392,7 +2455,9 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
         }
     }
     };
+    gpuPassTimer_.mark("Environment and material setup");
     if(!actorOverlays_.transparentWorld)drawOverlayWorld();
+    gpuPassTimer_.mark("Map transparent");
     const auto drawActor=[&](const scene::CastScene& drawScene,const std::vector<scene::Mat4>& actorPose,std::size_t first,std::size_t count,int variant){
         if(!count||first+count>meshes_.size())return;
         if(!actorVisible(drawScene,actorPose,first,count,variant,cameraFrustum))return;
@@ -2404,6 +2469,7 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
     if(!viewmodelCapture_&&actorScene&&actorPoses&&actorMeshCount_&&actorMeshFirst_+actorMeshCount_<=meshes_.size())for(std::size_t actorIndex=0;actorIndex<actorPoses->size();++actorIndex){const auto& actorPose=(*actorPoses)[actorIndex];const int variant=actorVariants&&actorIndex<actorVariants->size()?(*actorVariants)[actorIndex]:-1;
         drawActor(*actorScene,actorPose,actorMeshFirst_,actorMeshCount_,variant);
     }
+    gpuPassTimer_.mark("Actors");
     std::vector<float> actorFxLines,actorFxBoxes,actorFxRibbon;
     overlayHistory_.begin(overlayTime_,actorOverlays_.historyEnabled());
     const auto ring=[&](scene::Vec3 p,float radius,scene::Vec4 color){
@@ -2481,6 +2547,10 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
     // actors render first, then the view rig occupies only the nearest slice.
     // Unlike clearing depth, this preserves world depth for later debug lines.
     if(showMainScene){
+        const auto foregroundProjection=firstPersonProjection_?viewmodel_projection::adjusted(viewProjection,environmentFov_,viewmodelFovMultiplier_,flipViewmodel_):viewProjection;
+        glapi::UniformMatrix4fv(uniformLocation(meshProgram_,"uViewProjection"),1,GL_FALSE,foregroundProjection.data());
+        GLint previousFrontFace{};glGetIntegerv(GL_FRONT_FACE,&previousFrontFace);
+        if(firstPersonProjection_&&flipViewmodel_)glFrontFace(previousFrontFace==GL_CCW?GL_CW:GL_CCW);
         if(firstPersonProjection_)glapi::Uniform2f(foregroundClipLoc,foreground_depth::nearPlane,foreground_depth::farPlane);
         uploadPose(scene,globalPose);
         lastTex1 = 0xFFFFFFFF; lastTex5 = 0xFFFFFFFF; lastTex6 = 0xFFFFFFFF; lastVao = 0; lastSurfaceProfile = -999;
@@ -2493,6 +2563,8 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
         glDepthRange(0.0,1.0);
         glDepthFunc(GL_LESS);
         glapi::Uniform2f(foregroundClipLoc,0,0);
+        glFrontFace(previousFrontFace);
+        glapi::UniformMatrix4fv(uniformLocation(meshProgram_,"uViewProjection"),1,GL_FALSE,viewProjection.data());
     }
 
     for(auto& scratch:overlayScratch_)scratch.clear();
@@ -2516,7 +2588,23 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
                            {globalPose[i].v[12],globalPose[i].v[13],globalPose[i].v[14]},{1.0f,0.58f,0.12f,1});}
     }
     if(showSkeleton&&actorScene&&actorPoses)for(const auto& actorPose:*actorPoses)if(actorPose.size()==actorScene->skeleton.bones.size())for(std::size_t i=0;i<actorPose.size();++i){const auto parent=actorScene->skeleton.bones[i].parent;if(parent<0)continue;pushLine(lines,{actorPose[parent].v[12],actorPose[parent].v[13],actorPose[parent].v[14]},{actorPose[i].v[12],actorPose[i].v[13],actorPose[i].v[14]},{1.0f,0.2f,0.12f,1});}
-    if(actorScene&&actorPoses&&(wallhack_||hitboxes_))for(const auto& actorPose:*actorPoses)if(actorPose.size()==actorScene->skeleton.bones.size()){scene::Vec3 minimum{std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()},maximum{-minimum.x,-minimum.y,-minimum.z};for(std::size_t i=0;i<actorPose.size();++i){const scene::Vec3 p{actorPose[i].v[12],actorPose[i].v[13],actorPose[i].v[14]};minimum={std::min(minimum.x,p.x),std::min(minimum.y,p.y),std::min(minimum.z,p.z)};maximum={std::max(maximum.x,p.x),std::max(maximum.y,p.y),std::max(maximum.z,p.z)};const auto parent=actorScene->skeleton.bones[i].parent;if(wallhack_&&parent>=0){const scene::Vec3 q{actorPose[static_cast<std::size_t>(parent)].v[12],actorPose[static_cast<std::size_t>(parent)].v[13],actorPose[static_cast<std::size_t>(parent)].v[14]};pushLine(actorOccludedLines,q,p,{wallhackOccludedColor_.x,wallhackOccludedColor_.y,wallhackOccludedColor_.z,1});pushLine(actorVisibleLines,q,p,{wallhackVisibleColor_.x,wallhackVisibleColor_.y,wallhackVisibleColor_.z,1});}}if(hitboxes_&&minimum.x<maximum.x){const scene::course::Box box{minimum.x,minimum.y,maximum.x,maximum.y,maximum.z-minimum.z};auto& local=overlayScratch_[7];local.clear();pushBox(local,box,{hitboxColor_.x,hitboxColor_.y,hitboxColor_.z,1});for(std::size_t v=0;v+6<local.size();v+=7){local[v+2]+=minimum.z;local[v+5]+=minimum.z;}actorHitboxLines.insert(actorHitboxLines.end(),local.begin(),local.end());}}
+    if(actorScene&&actorPoses&&(wallhack_||hitboxes_))for(std::size_t actorIndex=0;actorIndex<actorPoses->size();++actorIndex){
+        const auto& actorPose=(*actorPoses)[actorIndex];if(actorPose.size()!=actorScene->skeleton.bones.size())continue;
+        if(wallhack_)for(std::size_t i=0;i<actorPose.size();++i){
+            const auto parent=actorScene->skeleton.bones[i].parent;if(parent<0)continue;
+            const scene::Vec3 p{actorPose[i].v[12],actorPose[i].v[13],actorPose[i].v[14]},q{actorPose[parent].v[12],actorPose[parent].v[13],actorPose[parent].v[14]};
+            pushLine(actorOccludedLines,q,p,{wallhackOccludedColor_.x,wallhackOccludedColor_.y,wallhackOccludedColor_.z,1});pushLine(actorVisibleLines,q,p,{wallhackVisibleColor_.x,wallhackVisibleColor_.y,wallhackVisibleColor_.z,1});
+        }
+        if(hitboxes_){
+            // Locomotion roots and sockets need not follow the deformed body.
+            // Reuse variant-specific rendered geometry bounds, not every bone.
+            const int variant=actorVariants&&actorIndex<actorVariants->size()?(*actorVariants)[actorIndex]:-1;
+            const auto bounds=actorBounds(*actorScene,actorPose,actorMeshFirst_,actorMeshCount_,variant,true);
+            if(!bounds.valid)continue;const auto& minimum=bounds.minimum;const auto& maximum=bounds.maximum;
+            const scene::course::Box box{minimum.x,minimum.y,maximum.x,maximum.y,maximum.z-minimum.z};auto& local=overlayScratch_[7];local.clear();pushBox(local,box,{hitboxColor_.x,hitboxColor_.y,hitboxColor_.z,1});
+            for(std::size_t v=0;v+6<local.size();v+=7){local[v+2]+=minimum.z;local[v+5]+=minimum.z;}actorHitboxLines.insert(actorHitboxLines.end(),local.begin(),local.end());
+        }
+    }
     if(showSkeleton&&worldActorScene&&worldActorPose&&worldActorPose->size()==worldActorScene->skeleton.bones.size())for(std::size_t i=0;i<worldActorPose->size();++i){const auto parent=worldActorScene->skeleton.bones[i].parent;if(parent<0)continue;pushLine(lines,{(*worldActorPose)[parent].v[12],(*worldActorPose)[parent].v[13],(*worldActorPose)[parent].v[14]},{(*worldActorPose)[i].v[12],(*worldActorPose)[i].v[13],(*worldActorPose)[i].v[14]},{0.2f,0.75f,1.0f,1});}
     if(navigation){
         if(navigation->boundary.enabled&&!navigation->boundary.points.empty()){
@@ -2681,12 +2769,43 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
     if(!campathLines.empty()){glLineWidth(campathThickness_);drawLines(campathLines,viewProjection);}
     glapi::BindVertexArray(0);glapi::UseProgram(0);
     if(msaaEnabled_){glapi::BindFramebuffer(glapi::ReadFramebuffer,msaaFramebuffer_);glapi::BindFramebuffer(glapi::DrawFramebuffer,framebuffer_);glapi::BlitFramebuffer(0,0,width_,height_,0,0,width_,height_,GL_COLOR_BUFFER_BIT,GL_NEAREST);glapi::BlitFramebuffer(0,0,width_,height_,0,0,width_,height_,GL_DEPTH_BUFFER_BIT,GL_NEAREST);}
-    renderRain(viewProjection);
-    renderVolumetricLighting(viewProjection,lightViewProjection,farLightViewProjection,showMainScene);
+    gpuPassTimer_.mark("Scene and resolve");
+    // Intervening effect helpers own GL state; never reuse their prior snapshot.
+    cullState.invalidate();
     #include "render/AoTransparencyPass.inc"
-    const bool hbaoActive=hbao_.enabled&&(debugView_==0||debugView_==1)&&renderHbao(viewProjection,showMainScene);
+    gpuPassTimer_.mark("AO isolation");
+    bool hbaoActive=hbao_.enabled&&(debugView_==0||debugView_==1)&&renderHbao(viewProjection,showMainScene);
+    gpuPassTimer_.mark("HBAO");
+    // Resolve surface occlusion once, before weather and in-scattered light.
+    // The subsequent DOF and post passes must not occlude these layers again.
+    if(hbaoActive&&!hbao_.preview&&postProgram_){
+        glapi::UseProgram(postProgram_);configureAoFog(postProgram_,viewProjection,showMainScene);
+        const auto loc=[&](const char* name){return uniformLocation(postProgram_,name);};
+        glapi::Uniform1i(loc("uAoOnly"),1);
+        glapi::Uniform1i(loc("uAoIsolationEnabled"),aoIsolationActive);
+        glapi::Uniform1f(loc("uHbaoIntensity"),hbao_.intensity);glapi::Uniform1f(loc("uHbaoPower"),hbao_.power);
+        glapi::Uniform1i(loc("uColor"),0);glapi::ActiveTexture(glapi::Texture0);glBindTexture(GL_TEXTURE_2D,colorTexture_);
+        glapi::Uniform1i(loc("uHbao"),4);glapi::ActiveTexture(glapi::Texture0+4);glBindTexture(GL_TEXTURE_2D,hbaoTextures_[0]);
+        glapi::Uniform1i(loc("uAoIsolated"),7);glapi::ActiveTexture(glapi::Texture0+7);glBindTexture(GL_TEXTURE_2D,aoIsolationTexture_);
+        glapi::BindFramebuffer(glapi::Framebuffer,postFramebuffer_);glapi::FramebufferTexture2D(glapi::Framebuffer,glapi::ColorAttachment0,GL_TEXTURE_2D,postTexture_,0);
+        glViewport(0,0,width_,height_);glDisable(GL_DEPTH_TEST);glDisable(GL_BLEND);glapi::BindVertexArray(lineVao_);
+        glapi::DrawArrays(GL_TRIANGLES,0,3);
+        glapi::Uniform1i(loc("uAoOnly"),0);
+        glapi::BindFramebuffer(glapi::ReadFramebuffer,postFramebuffer_);glapi::BindFramebuffer(glapi::DrawFramebuffer,framebuffer_);
+        glapi::BlitFramebuffer(0,0,width_,height_,0,0,width_,height_,GL_COLOR_BUFFER_BIT,GL_NEAREST);
+        glapi::BindFramebuffer(glapi::Framebuffer,framebuffer_);glapi::ActiveTexture(glapi::Texture0);glEnable(GL_DEPTH_TEST);
+        hbaoActive=false;aoIsolationActive=false;
+    }
+    gpuPassTimer_.mark("AO composition");
+    renderRain(viewProjection);
+    gpuPassTimer_.mark("Rain");
+    renderVolumetricLighting(viewProjection,lightViewProjection,farLightViewProjection,showMainScene);
+    gpuPassTimer_.mark("Volumetric light");
+    renderWeather(viewProjection);
+    gpuPassTimer_.mark("Weather");
     if(dof_.enabled&&hbaoActive){glapi::UseProgram(dofProgram_);configureAoFog(dofProgram_,viewProjection,showMainScene);}
     const bool dofActive=dof_.enabled&&(debugView_==0||debugView_==1)&&!(hbao_.enabled&&hbao_.preview)&&renderDepthOfField(showMainScene,hbaoActive,aoIsolationActive);
+    gpuPassTimer_.mark("Depth of field");
     if(postProgram_&&(dofActive||hbaoActive||debugView_==7||bloomEnabled_||lutTexture_||filmEnabled_||vignetteEnabled_||autoBlackPoint_||autoWhitePoint_||std::abs(lensDistortion_)>0.00001f||tonemappingMode_>0)){
         glapi::UseProgram(postProgram_);glapi::Uniform1i(uniformLocation(postProgram_,"uDebugView"),debugView_);glapi::Uniform1f(uniformLocation(postProgram_,"uDebugDepthNear"),debugDepthNear_);glapi::Uniform1f(uniformLocation(postProgram_,"uDebugDepthFar"),debugDepthFar_);glapi::Uniform1i(uniformLocation(postProgram_,"uDebugDepthInvert"),debugDepthInvert_?1:0);
         glapi::Uniform1i(uniformLocation(postProgram_,"uSeparateForeground"),firstPersonProjection_&&foregroundDrawn_);glapi::Uniform2f(uniformLocation(postProgram_,"uViewmodelDepthRange"),foreground_depth::nearPlane,foreground_depth::farPlane);
@@ -2727,9 +2846,12 @@ glDisable(GL_DEPTH_TEST);glapi::UseProgram(environmentProgram_);const auto forwa
                 glDisable(GL_BLEND);
             }
         }
+        gpuPassTimer_.mark("Bloom");
         glapi::UseProgram(postProgram_);
         configureAoFog(postProgram_,viewProjection,showMainScene);
         glapi::Uniform1i(uniformLocation(postProgram_,"uDofEnabled"),dofActive);glapi::Uniform1i(uniformLocation(postProgram_,"uDofPreview"),dof_.preview);glapi::Uniform1i(uniformLocation(postProgram_,"uAoIsolationEnabled"),aoIsolationActive);
+        glapi::Uniform1i(uniformLocation(postProgram_,"uDofFarActive"),!inactiveDofPassElisionEnabled_||dof_.farRadius>=.5f);
+        glapi::Uniform1i(uniformLocation(postProgram_,"uDofNearActive"),!inactiveDofPassElisionEnabled_||dof_.nearRadius>=.5f);
         glapi::Uniform1i(uniformLocation(postProgram_,"uDofFar"),5);glapi::ActiveTexture(glapi::Texture0+5);glBindTexture(GL_TEXTURE_2D,dofTextures_[0]);glapi::Uniform1i(uniformLocation(postProgram_,"uDofNear"),6);glapi::ActiveTexture(glapi::Texture0+6);glBindTexture(GL_TEXTURE_2D,dofTextures_[1]);glapi::Uniform1i(uniformLocation(postProgram_,"uAoIsolated"),7);glapi::ActiveTexture(glapi::Texture0+7);glBindTexture(GL_TEXTURE_2D,aoIsolationTexture_);
         glapi::Uniform1i(uniformLocation(postProgram_,"uHbaoEnabled"),hbaoActive?1:0);glapi::Uniform1i(uniformLocation(postProgram_,"uHbaoPreview"),hbao_.preview?1:0);
         glapi::Uniform1f(uniformLocation(postProgram_,"uHbaoIntensity"),hbao_.intensity);glapi::Uniform1f(uniformLocation(postProgram_,"uHbaoPower"),hbao_.power);
@@ -2916,7 +3038,10 @@ void StageRenderer::renderMuzzleFlash3D(scene::Vec3 position, float size, float 
 
     glapi::UseProgram(billboardProgram_);
     glapi::Uniform2f(uniformLocation(billboardProgram_,"uForegroundClip"),firstPerson&&firstPersonProjection_?foreground_depth::nearPlane:0.f,foreground_depth::farPlane);
-    glapi::UniformMatrix4fv(uniformLocation(billboardProgram_, "uViewProjection"), 1, GL_FALSE, viewProjection.data());
+    const auto flashProjection=firstPerson&&firstPersonProjection_?viewmodel_projection::adjusted(viewProjection,environmentFov_,viewmodelFovMultiplier_,flipViewmodel_):viewProjection;
+    GLint flashFrontFace{};glGetIntegerv(GL_FRONT_FACE,&flashFrontFace);
+    if(firstPerson&&firstPersonProjection_&&flipViewmodel_)glFrontFace(flashFrontFace==GL_CCW?GL_CW:GL_CCW);
+    glapi::UniformMatrix4fv(uniformLocation(billboardProgram_, "uViewProjection"), 1, GL_FALSE, flashProjection.data());
     glapi::Uniform1i(uniformLocation(billboardProgram_, "uTexture"), 0);
     glapi::ActiveTexture(glapi::Texture0);
     glBindTexture(GL_TEXTURE_2D, muzzleFlashTexture_);
@@ -2932,6 +3057,7 @@ void StageRenderer::renderMuzzleFlash3D(scene::Vec3 position, float size, float 
     glapi::BufferData(glapi::ArrayBuffer, sizeof(verts), verts, glapi::DynamicDraw);
     glapi::DrawArrays(GL_TRIANGLES, 0, 6);
     glapi::Uniform2f(uniformLocation(billboardProgram_,"uForegroundClip"),0,0);
+    glFrontFace(flashFrontFace);
 
     glDepthMask(GL_TRUE);
     glDepthFunc(GL_LESS);
@@ -3423,6 +3549,8 @@ void StageRenderer::updateAndRenderBulletTrails(float deltaSeconds, const scene:
 
     for (auto it = bulletTrails_.begin(); it != bulletTrails_.end(); ) {
         auto& trail = *it;
+        const auto displayStart=trail.viewmodelOrigin&&firstPersonProjection_
+            ?viewmodel_projection::worldOrigin(trail.start,cameraPos,viewProjection,environmentFov_,viewmodelFovMultiplier_,flipViewmodel_):trail.start;
         if (trail.type == BulletTrail::Type::Sniper) {
             trail.age += deltaSeconds;
             if (trail.age >= trail.lifetime) {
@@ -3436,7 +3564,7 @@ void StageRenderer::updateAndRenderBulletTrails(float deltaSeconds, const scene:
                 continue;
             }
 
-            const scene::Vec3 p0 = trail.start;
+            const scene::Vec3 p0 = displayStart;
             const scene::Vec3 p1 = trail.end;
             scene::Vec3 dir = p1 - p0;
             const float len = scene::length(dir);
@@ -3490,7 +3618,7 @@ void StageRenderer::updateAndRenderBulletTrails(float deltaSeconds, const scene:
                                                 : (trail.emissiveEnabled ? ribbonEmissiveVerts : ribbonDiffuseVerts);
             if(!trail.curveEnabled)targetVerts.insert(targetVerts.end(), std::begin(quadVerts), std::end(quadVerts));
             else {
-                const scene::Vec3 begin=trail.type==BulletTrail::Type::Sniper?trail.start:trail.start;
+                const scene::Vec3 begin=displayStart;
                 const scene::Vec3 finish=trail.type==BulletTrail::Type::Sniper?trail.end:trail.end;
                 constexpr int segments=48;
                 for(int segment=0;segment<segments;++segment){
@@ -3532,8 +3660,9 @@ void StageRenderer::updateAndRenderBulletTrails(float deltaSeconds, const scene:
                 continue;
             }
 
-            const scene::Vec3 pTail = trail.start + trail.dir * tailDist;
-            const scene::Vec3 pHead = trail.start + trail.dir * headDist;
+            const auto originCorrection=displayStart-trail.start;
+            const scene::Vec3 pTail = trail.start + trail.dir * tailDist + originCorrection*(1.f-tailDist/std::max(.001f,trail.distance));
+            const scene::Vec3 pHead = trail.start + trail.dir * headDist + originCorrection*(1.f-headDist/std::max(.001f,trail.distance));
 
             scene::Vec3 toCam = cameraPos - (pTail + pHead) * 0.5f;
             if (scene::length(toCam) < 0.001f) toCam = {0, 0, 1};
@@ -3673,8 +3802,12 @@ StageRenderer::RenderStats StageRenderer::renderStats(bool queryDriver) const no
     s.lastTotalDrawCalls = lastTotalDrawCalls_;
     s.materialRequests=lastMaterialRequests_;s.materialUploads=lastMaterialUploads_;s.emissionTextureBinds=lastEmissionTextureBinds_;
     s.poseRequests=lastPoseRequests_;s.poseUploads=lastPoseUploads_;
+    s.cull=lastCullCounters_;
     s.loadedTextureCount = static_cast<int>(sceneTextureCache_.size());
     s.estimatedVramBytes = estimatedVramBytes_;
+    if(weatherShelter_.texture)s.estimatedVramBytes+=1024ull*1024*20;
+    if(weatherBackground_)s.estimatedVramBytes+=std::size_t(weatherWidth_)*weatherHeight_*8;
+    if(lensSurface_[0])s.estimatedVramBytes+=std::size_t(lensWidth_)*lensHeight_*16;
     s.mapTextureResolution = mapTextureResolution_;
     s.hardwareCompressionEnabled = hardwareTextureCompression_;
     if(!queryDriver)return s; // Diagnostic sampling must not introduce driver synchronization.

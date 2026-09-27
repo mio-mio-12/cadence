@@ -16,6 +16,7 @@ void copyVisualPresetSettings(AppState& to,const AppState& from){
     to.hitmarkerTexturePath=from.hitmarkerTexturePath;to.killmarkerTexturePath=from.killmarkerTexturePath;
     to.weaponProfile.scopeOverlayImage=from.weaponProfile.scopeOverlayImage;
     to.rain=from.rain;
+    to.weather=from.weather;
     to.wet=from.wet;to.muzzleLight=from.muzzleLight;
     to.actorOverlays=from.actorOverlays;
     to.ambientBlackbody=from.ambientBlackbody;
@@ -153,6 +154,8 @@ void copyVisualPresetSettings(AppState& to,const AppState& from){
     to.specularSharpness=from.specularSharpness;
     to.specularSharpness2=from.specularSharpness2;
     to.sunAmbient=from.sunAmbient;
+    to.weaponSunMultiplier=from.weaponSunMultiplier;
+    to.weaponAmbientMultiplier=from.weaponAmbientMultiplier;
     to.sunAzimuth=from.sunAzimuth;
     to.sunBlackbody=from.sunBlackbody;
     to.sunColor=from.sunColor;
@@ -182,7 +185,7 @@ void copyVisualPresetSettings(AppState& to,const AppState& from){
     weapon_smokeValues(to)=weapon_smokeValues(from);
     weapon_trailsValues(to)=weapon_trailsValues(from);
 }
-bool parseVisualPreset(AppState& app,std::istream& in,VisualPresetResources& resources){std::string signature,key;int version{};if(!(in>>signature>>version)||signature!="CASTVISUAL"||version<1||version>5)return false;app.rain={};app.wet={};app.muzzleLight={};app.actorOverlays={};app.cameraControls={};app.volumetric={};app.dayNight={};app.nightSky={};app.hbao={};app.dof={};app.viewmodelCubemapMultiplier=app.worldCubemapMultiplier=1.f;while(true){if(in.fail())return false;if(in.eof())break;in>>std::ws;if(in.eof())break;if(!(in>>key))return false;if(key=="crosshair"){if(!readVisualValues(in,crosshairValues(app)))return false;continue;}
+bool parseVisualPreset(AppState& app,std::istream& in,VisualPresetResources& resources){std::string signature,key;int version{};if(!(in>>signature>>version)||signature!="CASTVISUAL"||version<1||version>5)return false;app.weaponSunMultiplier=app.weaponAmbientMultiplier=1.f;app.rain={};app.weather={};app.wet={};app.muzzleLight={};app.actorOverlays={};app.cameraControls={};app.volumetric={};app.dayNight={};app.nightSky={};app.hbao={};app.dof={};app.viewmodelCubemapMultiplier=app.worldCubemapMultiplier=1.f;while(true){if(in.fail())return false;if(in.eof())break;in>>std::ws;if(in.eof())break;if(!(in>>key))return false;if(key=="crosshair"){if(!readVisualValues(in,crosshairValues(app)))return false;continue;}
 bool extended=false,valid=true;
 forEachExtendedVisualGroup(app,[&](const char* name,auto values){if(key==name){extended=true;valid=readVisualValues(in,values);}});
 if(extended){if(!valid)return false;continue;}
@@ -199,6 +202,8 @@ if(key=="water_optics"){if(!(in>>app.water.optics))return false;continue;}
 if(key=="water_spectrum"){if(!(in>>app.water.crossSwell>>app.water.swellAngle>>app.water.swellLength>>app.water.seed))return false;app.water.sanitize();continue;}
 if(key=="water_surface"){if(!(in>>app.water.surface))return false;continue;}
 if(key=="rain_v1"){if(!(in>>app.rain))return false;continue;}
+if(key=="weather_v1"){if(!(in>>app.weather))return false;continue;}
+if(key=="weather_dust_aerosols"){if(!(in>>app.weather.dustAerosolDetail>>app.weather.dustAerosolAmount>>app.weather.dustAerosolContrast))return false;app.weather.sanitize();continue;}
 if(key=="rain_style_v1"){if(!(in>>app.rain.style))return false;continue;}
 if(key=="rain_blocker_distance"){if(!(in>>app.rain.blockerDistance)||!std::isfinite(app.rain.blockerDistance))return false;continue;}
 if(key=="wet_surfaces_v1"){if(!(in>>app.wet))return false;continue;}
@@ -217,11 +222,8 @@ if(key=="weapon_trails"){if(!readVisualValues(in,weapon_trailsValues(app)))retur
 }
 if(key=="camera_controls"){if(!(in>>app.cameraControls))return false;continue;}if(key=="view_motion"){if(!(in>>app.experimentalUniversalFirstPersonMantle>>app.universalFirstPersonMantleScale>>app.mantleFallbackPositionIw.x>>app.mantleFallbackPositionIw.y>>app.mantleFallbackPositionIw.z>>app.mantleFallbackRotationDegrees.x>>app.mantleFallbackRotationDegrees.y>>app.mantleFallbackRotationDegrees.z>>app.mantleFallbackRecovery>>app.mantleFallbackCurve>>app.boostFallback>>app.slideFallback>>app.boostCamera>>app.boostCameraMovesViewmodel>>app.directionalTilt>>app.sniperZoomIn>>app.sniperZoomOut))return false;continue;}if(key=="reticle_spacing"){if(!(in>>app.csgoCrosshairHorizontalSpacing>>app.csgoCrosshairVerticalSpacing>>app.csgoCrosshairSideMarks>>app.csgoCrosshairMarkLength>>app.csgoCrosshairMarkOffset))return false;continue;}if(key=="sniper_taper_curve"){if(!(in>>app.sniperTrailTaper))return false;continue;}if(key=="bullet_taper_curve"){if(!(in>>app.projectileTrailTaper))return false;continue;}if(key=="volumetric"){if(!(in>>app.volumetric))return false;app.volumetric.sanitize();continue;}if(key=="hbao_before_fog"){in>>app.hbao.beforeFog;continue;}if(key=="cubemap_surface_multipliers"){in>>app.viewmodelCubemapMultiplier>>app.worldCubemapMultiplier;continue;}if(key=="dof"){in>>app.dof;app.dof.sanitize();}else if(key=="ao_transparency"){in>>app.hbao.separateTransparent>>app.hbao.transparentGap;}else if(key=="hbao"){in>>app.hbao;app.hbao.sanitize();}else if(key=="shading")in>>app.shadingModel>>app.iw3DualLobe;else if(key=="brdf_model")in>>app.shadingSubModel;else if(key=="aw")in>>app.awRoughnessScale>>app.awRoughnessBias>>app.awMetalness>>app.awSpecularLevel>>app.awDiffuseWrap>>app.awClearcoat>>app.awClearcoatRoughness>>app.awEnvironmentIntensity;else if(key=="eevee")in>>app.eeveeMetallic>>app.eeveeRoughness>>app.eeveeIor>>app.eeveeSpecular>>app.eeveeSpecularTint>>app.eeveeClearcoat>>app.eeveeClearcoatRoughness;else if(key=="tonemapping")in>>app.tonemappingMode;else if(key=="tonemap_rec709")in>>app.tonemapRec709Match>>app.tonemapRec709Strength;else if(key=="lens")in>>app.lensAlpha>>app.lensTint.x>>app.lensTint.y>>app.lensTint.z>>app.lensSpecularIntensity>>app.lensCubemapIntensity;else if(key=="emissive")in>>app.tritiumTint.x>>app.tritiumTint.y>>app.tritiumTint.z;else if(key=="spec")in>>app.specularIntensity>>app.specularSharpness>>app.specularIntensity2>>app.specularSharpness2;else if(key=="cube"){in>>app.cubemapSpecular>>app.cubemapSpecularIntensity>>app.cubemapSpecularBlur;std::string restLine;std::getline(in,restLine);std::istringstream iss(restLine);float wb=0.08f;if(iss>>wb)app.weaponCubemapBlur=wb;}else if(key=="shadow_specular")in>>app.shadowSpecularMultiplier;else if(key=="film")in>>app.filmTweaks>>app.filmBrightness>>app.filmContrast>>app.filmDesaturation>>app.filmInvert>>app.filmDarkTint.x>>app.filmDarkTint.y>>app.filmDarkTint.z>>app.filmLightTint.x>>app.filmLightTint.y>>app.filmLightTint.z;else if(key=="film_mid")in>>app.filmMidTintEnabled>>app.filmMidTint.x>>app.filmMidTint.y>>app.filmMidTint.z;else if(key=="fog")in>>app.fogEnabled>>app.fogColor.x>>app.fogColor.y>>app.fogColor.z>>app.fogStartMeters>>app.fogHalfDistanceMeters>>app.fogOpacity>>app.fogSkyAmount;else if(key=="sun"){in>>app.sunLighting>>app.sunShadows>>app.sunAzimuth>>app.sunElevation>>app.sunIntensity>>app.sunAmbient>>app.sunColor.x>>app.sunColor.y>>app.sunColor.z>>app.ambientColor.x>>app.ambientColor.y>>app.ambientColor.z;app.sunBlackbody=app.ambientBlackbody=false;}else if(key=="environment")in>>app.environmentIntensity>>app.environmentExposure>>app.environmentRotation>>app.skyVerticalFlip;else if(key=="env_hdr")in>>app.environmentContrast>>app.environmentHighlightThreshold>>app.environmentHighlightBoost>>app.environmentToneMap;else if(key=="post_bloom")in>>app.bloomEnabled>>app.bloomThreshold>>app.bloomSoftThreshold>>app.bloomSaturationBias>>app.bloomIntensity>>app.bloomRadius>>app.bloomKawaseSamples>>app.bloomAffectsSky>>app.bloomAspectRatio>>app.bloomRotation;else if(key=="bloom_blend")in>>app.bloomBlendMode;else if(key=="post_vignette")in>>app.vignetteEnabled>>app.vignetteIntensity>>app.vignetteRadius>>app.vignetteSoftness;else if(key=="post_distortion")in>>app.lensDistortion;else if(key=="post_levels")in>>app.autoBlackPoint>>app.autoBlackPointIntensity>>app.autoWhitePoint>>app.autoWhitePointIntensity;else if(key=="post_lut"){std::string lutFile;in>>app.lutIntensity>>std::quoted(lutFile);app.lutPath=lutFile;resources.lut=true;}else if(key=="post_order"){for(int& idx:app.postPassOrder)in>>idx;}else if(key=="impact_surf"){std::string pathStr;in>>app.impactSurfaceEnabled>>app.impactSurfacePlanesCount>>app.impactSurfaceStartWidth>>app.impactSurfaceEndWidth>>app.impactSurfaceLifetime>>app.impactSurfaceBlastSpeed>>app.impactSurfaceRiseSpeed>>app.impactSurfaceDispersion>>app.impactSurfaceTaperingExp>>app.impactSurfaceFeathering>>app.impactSurfaceColor.x>>app.impactSurfaceColor.y>>app.impactSurfaceColor.z>>app.impactSurfaceColor.w>>app.impactSurfaceTexScale>>app.impactSurfaceTexOffsetX>>app.impactSurfaceTexOffsetY>>app.impactSurfaceTexRotation>>app.impactSurfaceOriginY>>std::quoted(pathStr);app.impactSurfacePath=pathStr;resources.impactSurface=true;}else if(key=="impact_bot"){std::string pathStr;in>>app.impactBotEnabled>>app.impactBotPlanesCount>>app.impactBotStartWidth>>app.impactBotEndWidth>>app.impactBotLifetime>>app.impactBotBlastSpeed>>app.impactBotRiseSpeed>>app.impactBotDispersion>>app.impactBotTaperingExp>>app.impactBotFeathering>>app.impactBotColor.x>>app.impactBotColor.y>>app.impactBotColor.z>>app.impactBotColor.w>>app.impactBotTexScale>>app.impactBotTexOffsetX>>app.impactBotTexOffsetY>>app.impactBotTexRotation>>app.impactBotOriginY>>std::quoted(pathStr);app.impactBotPath=pathStr;resources.impactBot=true;}else if(key=="sky"){std::string value;in>>std::quoted(value);app.environmentPath=value;resources.sky=true;}else {std::string rest;std::getline(in,rest);}}std::array<bool,7> seen{};for(int value:app.postPassOrder){if(value<0||value>=7||seen[value])return false;seen[value]=true;}return !in.bad();}
 
-bool loadVisualPreset(AppState& app,const std::filesystem::path& path){
-    std::ifstream in(path);if(!in)return false;
-    auto staged=std::make_unique<AppState>();copyVisualPresetSettings(*staged,app);
-    VisualPresetResources resources;
-    if(!parseVisualPreset(*staged,in,resources))return false;
+bool applyVisualPresetSettings(AppState& app,const AppState& settings,const VisualPresetResources& resources){
+    const auto* staged=&settings;
     // Environment is the only resource whose failure rejects the old loader.
     // Its renderer setters preserve the existing texture on failure. Load it
     // first, before publishing settings or changing any other textures.
@@ -233,6 +235,7 @@ bool loadVisualPreset(AppState& app,const std::filesystem::path& path){
             if(!ok)return false;}
     }
     copyVisualPresetSettings(app,*staged);
+    ++app.visualSettingsRevision;
     std::string error;
     if(resources.visualImages){
         if(app.camoPath.empty())app.renderer.clearCamoTexture();else if(!app.renderer.setCamoTexture(app.camoPath,error)){app.renderer.clearCamoTexture();app.status=error;}
@@ -269,4 +272,16 @@ bool loadVisualPreset(AppState& app,const std::filesystem::path& path){
     }
     app.renderer.setEnvironmentParameters(app.environmentIntensity,app.environmentExposure,app.environmentRotation,app.environmentContrast,app.environmentHighlightBoost,app.environmentHighlightThreshold,app.environmentToneMap);app.renderer.setSkyVerticalFlip(app.skyVerticalFlip);app.renderer.setFilmTweaks(app.filmTweaks,app.filmBrightness,app.filmContrast,app.filmDesaturation,app.filmDarkTint,app.filmMidTint,app.filmLightTint,app.filmMidTintEnabled,app.filmInvert);app.renderer.setLensTweaks(app.bloomEnabled,app.bloomThreshold,app.bloomSoftThreshold,app.bloomSaturationBias,app.bloomAspectRatio,app.bloomRotation,app.bloomIntensity,app.vignetteEnabled,app.vignetteIntensity,app.vignetteRadius,app.vignetteSoftness);app.renderer.setPostEffects(app.bloomRadius,app.lensDistortion,app.lutIntensity,app.autoBlackPoint,app.autoBlackPointIntensity,app.autoWhitePoint,app.autoWhitePointIntensity);app.renderer.setEeveeParameters(app.eeveeMetallic,app.eeveeRoughness,app.eeveeIor,app.eeveeSpecular,app.eeveeSpecularTint,app.eeveeClearcoat,app.eeveeClearcoatRoughness);app.renderer.setTonemapping(app.tonemappingMode,app.tonemapRec709Match,app.tonemapRec709Strength);app.renderer.setBrdfModel(app.shadingSubModel);app.renderer.setBloomBlendMode(app.bloomBlendMode);app.renderer.setPostPassOrder(app.postPassOrder);app.renderer.setShadowSpecularMultiplier(app.shadowSpecularMultiplier);
     return true;
+}
+bool loadVisualPreset(AppState& app,const std::filesystem::path& path){
+    std::ifstream in(path);if(!in)return false;
+    auto staged=std::make_unique<AppState>();copyVisualPresetSettings(*staged,app);
+    VisualPresetResources resources;
+    if(!parseVisualPreset(*staged,in,resources))return false;
+    return applyVisualPresetSettings(app,*staged,resources);
+}
+bool loadInitVisualPreset(AppState& app){
+    // Built into the executable: no writable preset file can replace Init.
+    const auto defaults=std::make_unique<AppState>();
+    return applyVisualPresetSettings(app,*defaults,{true,true,true,true,true,true});
 }

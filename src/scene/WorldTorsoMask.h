@@ -1,8 +1,10 @@
 #pragma once
 #include "scene/CastScene.h"
+#include "scene/ImportedBody.h"
 
 namespace scene {
 inline std::vector<bool> worldTorsoMask(const Skeleton& skeleton){
+    if(imported::bodyLayout(skeleton))return imported::nativeBodyTorsoMask(skeleton);
     std::vector<bool> roots(skeleton.bones.size()),result(skeleton.bones.size());
     for(const auto name:{"j_spinelower","j_spineupper","j_spine4","j_spine1","tag_torso","spine1","spine2","spine3"}){
         const auto it=skeleton.boneByCanonicalName.find(name);

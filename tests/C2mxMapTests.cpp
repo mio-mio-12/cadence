@@ -11,9 +11,9 @@ static Json box(){return {{"id","invisible:1"},{"name","InvisibleWall"},{"kind",
 static Json coll(Json items){return {{"schema","codm.collision/1"},{"units","inches"},{"coordinateSystem","RH_Z_UP"},{"colliders",items}};}
 static bool testCollision(scene::glb::Map& map,const Json& items,const scene::c2m::LoadOptions& options={}){std::string error;const auto okay=scene::c2mx::applyCollision(coll(items),meta(),nav(),map,error,options);if(!okay)std::cout<<"expected/observed validation: "<<error<<'\n';return okay;}
 static void put(std::vector<std::uint8_t>& b,std::uint64_t value,unsigned count){for(unsigned i=0;i<count;++i)b.push_back(static_cast<std::uint8_t>(value>>(8*i)));}
-static std::vector<std::uint8_t> envelope(std::vector<std::uint8_t> bytes=std::vector<std::uint8_t>(128),Json metadata=meta()){
+static std::vector<std::uint8_t> envelope(std::vector<std::uint8_t> bytes=std::vector<std::uint8_t>(128),Json metadata=meta(),Json collision=coll(Json::array())){
  std::vector<std::array<std::uint64_t,2>> spans;
- for(const auto& j:{metadata,coll(Json::array()),nav()}){while(bytes.size()%8)bytes.push_back(0);const auto s=j.dump();spans.push_back({bytes.size(),s.size()});bytes.insert(bytes.end(),s.begin(),s.end());}
+ for(const auto& j:{metadata,collision,nav()}){while(bytes.size()%8)bytes.push_back(0);const auto s=j.dump();spans.push_back({bytes.size(),s.size()});bytes.insert(bytes.end(),s.begin(),s.end());}
  while(bytes.size()%8)bytes.push_back(0);const auto directory=bytes.size();int i=0;
  for(const auto* tag:{"META","COLL","NAVM"}){bytes.insert(bytes.end(),tag,tag+4);put(bytes,1,4);put(bytes,spans[i][0],8);put(bytes,spans[i++][1],8);}
  for(char c:std::string("C2MX"))bytes.push_back(c);put(bytes,1,4);put(bytes,directory,8);put(bytes,72,8);put(bytes,3,4);put(bytes,0,4);return bytes;
@@ -73,7 +73,20 @@ int main(int argc,char** argv){
   assert(scene::c2m::load(folder/"old.c2m",map,error));assert(map.collision.size()==2&&!map.authoredCollision.present&&map.hasDefaultSpawnPoint);
   auto metadata=meta();metadata["visualMaterials"]=Json::array({{{"c2mMaterialName","plain_floor"},{"alpha","OPAQUE"}}});write(folder/"empty.c2m",envelope(legacy,metadata));
   assert(scene::c2m::load(folder/"empty.c2m",map,error));assert(map.collision.empty()&&map.authoredCollision.present&&!map.hasDefaultSpawnPoint&&map.scene.meshes[0].indices.size()==6);
+  scene::c2m::LoadOptions generated;generated.renderGeometryCollision=true;
+  write(folder/"clipped.c2m",envelope(legacy,metadata,coll(Json::array({box()}))));
+  assert(scene::c2m::load(folder/"clipped.c2m",map,error));assert(map.collision.size()==12&&map.authoredCollision.present);
+  assert(scene::c2m::load(folder/"clipped.c2m",map,error,1,{},generated));assert(map.collision.size()==2&&!map.authoredCollision.present);
+  assert(scene::c2m::load(folder/"empty.c2m",map,error,1,{},generated));
+  assert(map.collision.size()==2&&!map.authoredCollision.present&&map.hasDefaultSpawnPoint);
+  assert(map.authoredColliders.empty()&&map.authoredTriggerTriangles.empty());
+  assert(map.scene.meshes[0].materialPolicyExplicit); // Preserve C2MX materials.
+  const auto generatedFloor=map.defaultSpawnPoint;
+  assert(map.navigationGroundHeight(generatedFloor.x,generatedFloor.y,generatedFloor.z+100,-1e9f,12.f)>-1e8f);
+  assert(scene::c2m::load(folder/"empty.c2m",map,error)); // Opt-out restores authored-only behavior.
+  assert(map.collision.empty()&&map.authoredCollision.present&&!map.hasDefaultSpawnPoint);
   metadata["visualMaterials"][0]["textures"]={{"color","../outside.png"}};write(folder/"bad.c2m",envelope(legacy,metadata));const auto oldTriangles=map.scene.meshes[0].indices.size();assert(!scene::c2m::load(folder/"bad.c2m",map,error));assert(map.scene.meshes[0].indices.size()==oldTriangles&&map.collision.empty());
+  assert(!scene::c2m::load(folder/"bad.c2m",map,error,1,{},generated)); // Never bypass material safety checks.
   auto safeBox=box();safeBox["size"]={100,100,40};write(folder/"collision.json",coll(Json::array({safeBox})).dump());write(folder/"report.json",meta().dump());write(folder/"navigation.json",nav().dump());
   assert(scene::c2mx::loadCollisionSidecar(folder/"collision.json",map,error));assert(map.collision.size()==12&&map.hasDefaultSpawnPoint&&map.scene.meshes[0].indices.size()==oldTriangles);
   write(folder/"collision.json",coll(Json::array()).dump());assert(scene::c2mx::loadCollisionSidecar(folder/"collision.json",map,error));assert(map.collision.empty()&&!map.hasDefaultSpawnPoint);

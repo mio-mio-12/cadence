@@ -222,6 +222,38 @@ int main(int argc,char** argv){
         }
         CHECK(glGetError()==GL_NO_ERROR);r.shutdown();std::cout<<"PASS explicit map/legacy actor full, partial and height fog parity\n";
     }
+    {
+        render::StageRenderer r;CHECK(r.initialize(error));scene::CastScene empty;scene::glb::Map map;
+        map.scene.meshes.push_back(box({-1500,-100,-30},{1500,1600,0},{.5f,.5f,.5f,1}));
+        map.scene.meshes.push_back(box({-180,250,0},{180,500,350},{.4f,.4f,.4f,1}));
+        map.scene.meshes.push_back(box({-1500,1000,0},{1500,1050,1500},{.5f,.5f,.5f,1}));
+        collision(map);CHECK(r.loadScene(empty,error));CHECK(r.loadAuxiliaryScenes(&map.scene,nullptr,nullptr,error));
+        const scene::Vec3 camera{0,-500,160},forward=scene::normalize(scene::Vec3{0,1,-.12f});
+        const auto vp=scene::perspective(60*scene::kPi/180,1,1,10000)*scene::lookAtDirection(camera,forward,{0,0,1});
+        r.setCameraPosition(camera);r.setCameraDepthRange(1,10000);
+        render::HbaoSettings ao;ao.beforeFog=false;ao.radius=200;ao.intensity=3;
+        render::rain::Settings rain;rain.shelter=false;rain.wallMist=true;rain.density=2;
+        auto frame=[&](bool enabled,bool fog,bool weather,bool blur,float half=1.f){
+            ao.enabled=enabled;r.setHbao(ao);r.setFog(fog,{.21f,.38f,.47f},0,half,1,0);
+            rain.enabled=weather;r.setRain(rain,2.25,&map);
+            render::DepthOfFieldSettings dof;dof.enabled=blur;r.setDepthOfField(dof);
+            r.render(empty,{},vp,512,512,false,false,false,nullptr,nullptr,nullptr,nullptr,nullptr,false,&map.scene);
+            std::vector<std::uint8_t> pixels;if(!r.readColorRgba(pixels,error))throw std::runtime_error(error);return pixels;
+        };
+        const auto plain=frame(false,false,false,false),occluded=frame(true,false,false,false);
+        CHECK(plain!=occluded);
+        const auto partialOff=frame(false,true,false,false,600),partialOn=frame(true,true,false,false,600);
+        CHECK(partialOff!=partialOn);CHECK(r.saveColorPng(out/"fog_partial_ao.png",error));
+        long long rawDelta=0,fogDelta=0;for(size_t i=0;i<plain.size();++i){rawDelta+=std::abs(int(plain[i])-int(occluded[i]));fogDelta+=std::abs(int(partialOff[i])-int(partialOn[i]));}
+        CHECK(fogDelta<rawDelta);
+        for(bool weather:{false,true})for(bool blur:{false,true}){
+            const auto off=frame(false,true,weather,blur),on=frame(true,true,weather,blur);
+            int maximum=0;for(size_t i=0;i<on.size();++i)maximum=std::max(maximum,std::abs(int(on[i])-int(off[i])));
+            std::cout<<"fog AO parity rain="<<weather<<" dof="<<blur<<" max="<<maximum<<'\n';CHECK(maximum<=1);
+            CHECK(r.saveColorPng(out/("fog_ao_"+std::to_string(weather)+"_"+std::to_string(blur)+".png"),error));
+        }
+        CHECK(glGetError()==GL_NO_ERROR);r.shutdown();
+    }
     if(argc>2){
         scene::glb::Map map;CHECK(scene::glb::load(argv[2],map,error));render::StageRenderer r;CHECK(r.initialize(error));scene::CastScene empty;
         CHECK(r.loadScene(empty,error));CHECK(r.loadAuxiliaryScenes(&map.scene,nullptr,nullptr,error));

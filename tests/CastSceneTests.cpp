@@ -3,6 +3,9 @@
 #include "scene/TestCourse.h"
 #include "scene/T6Magazine.h"
 #include "scene/NativeBoneNames.h"
+#include "scene/ImportedNative.h"
+#include "ImportedNativeHandTests.h"
+#include "app/ImportedAnimationPolicy.h"
 #include "scene/ColdWarViewmodel.h"
 #include "scene/ColdWarLegacyBridge.h"
 #include "render/Hbao.h"
@@ -38,13 +41,14 @@ Bytes node(std::uint32_t id,std::uint64_t hash,std::vector<Bytes> properties,std
     for(auto& p:properties)appendRaw(out,p.data(),p.size());for(auto& c:children)appendRaw(out,c.data(),c.size());return out;
 }
 Bytes animatedTriangle(std::string_view materialName="test_material",std::string_view boneName="root",std::string_view albedo="textures/test.png"){
-    const char i[2]={'i','\0'},l[2]={'l','\0'},b[2]={'b','\0'},f[2]={'f','\0'},v3[2]={'3','v'},v4[2]={'4','v'};
+    const char i[2]={'i','\0'},l[2]={'l','\0'},b[2]={'b','\0'},f[2]={'f','\0'},v2[2]={'2','v'},v3[2]={'3','v'},v4[2]={'4','v'};
     auto bone=node(0x656E6F62,3,{stringProperty("n",boneName),numericProperty(i,"p",1,std::vector<std::uint32_t>{0xffffffffu}),
         numericProperty(v3,"lp",1,std::vector<float>{0,0,0}),numericProperty(v4,"lr",1,std::vector<float>{0,0,0,1}),numericProperty(v3,"s",1,std::vector<float>{1,1,1})});
     auto skeleton=node(0x6C656B73,2,{}, {std::move(bone)});
     auto textureFile=node(0x656C6966,11,{stringProperty("p",albedo)});
     auto material=node(0x6C74616D,10,{stringProperty("n",materialName),stringProperty("t","pbr"),numericProperty(l,"diffuse",1,std::vector<std::uint64_t>{11})},{std::move(textureFile)});
     auto mesh=node(0x6873656D,4,{stringProperty("n","triangle"),numericProperty(v3,"vp",3,std::vector<float>{-1,0,0,1,0,0,0,0,2}),
+        numericProperty(v2,"u0",3,std::vector<float>{-.25f,.125f,1.75f,.875f,.5f,2.25f}),
         numericProperty(b,"f",3,std::vector<std::uint8_t>{0,1,2}),numericProperty(b,"mi",1,std::vector<std::uint8_t>{1}),
         numericProperty(b,"wb",3,std::vector<std::uint8_t>{0,0,0}),numericProperty(f,"wv",3,std::vector<float>{1,1,1}),numericProperty(l,"m",1,std::vector<std::uint64_t>{10})});
     auto model=node(0x6C646F6D,1,{stringProperty("n","test_model")},{std::move(skeleton),std::move(mesh),std::move(material)});
@@ -67,6 +71,51 @@ bool expect(bool value,const char* message){if(!value)std::cerr<<"FAILED: "<<mes
 
 int main(){
     int failures{};
+    failures+=testImportedNativeHandCorrespondence();
+    {
+        scene::CastScene native;assets::Asset asset;asset.game="csnz";asset.name="viewmodel_v_nataknifed";
+        for(const auto name:{"viewmodel_v_nataknifed_melee.cast","viewmodel_v_nataknifed_melee_variant1.cast","diagnostic_native_v_nataknifed_stap_miss2_clip99.cast"}){scene::Animation clip;clip.sourceName=name;clip.domain=scene::AnimationDomain::ViewModel;clip.tracks.emplace_back();native.animations.push_back(std::move(clip));}
+        weapon::Profile profile;cadence::imported_actions::populate(native,profile,asset);
+        failures+=!expect(profile.animationVariants["melee"].size()==3,"imported knife normalized and native attacks join melee cycle");
+        profile.animationVariants["melee"]={"custom.cast"};cadence::imported_actions::populate(native,profile,asset);
+        failures+=!expect(profile.animationVariants["melee"]==std::vector<std::string>{"custom.cast"},"explicit melee variants retained");
+        failures+=!expect(assets::imported::diagnosticAction("csnz",asset.name,"diagnostic_native_v_nataknifed_stap_miss2_clip99.cast")=="melee","native knife stab alias");
+        failures+=!expect(assets::imported::diagnosticAction("csnz",asset.name,"diagnostic_native_v_nataknifed_stap_reload_clip99.cast")!="melee","compound action not guessed as melee");
+        failures+=!expect(assets::imported::diagnosticAction("cso2","viewmodel_v_defaultknifecamo1","diagnostic_native_v_defaultknifecamo1_Knife_midslash2_clip99.cast")=="melee","prefixed native midslash action");
+        failures+=!expect(assets::imported::diagnosticAction("cso2","viewmodel_v_defaultknifecamo1","diagnostic_native_v_defaultknifecamo1_Knife_stab_miss_clip99.cast")=="melee","prefixed native stab miss action");
+    }
+    {
+        scene::CastScene native;assets::Asset asset;asset.game="cso2";asset.name="viewmodel_v_m27iar";
+        for(const auto action:{"idle","fire","reload","draw"})for(const auto variant:{2,1}){
+            scene::Animation clip;clip.sourceName="diagnostic_native_v_m27iar_m27iar_"+std::string(action)+"_mag"+std::to_string(variant)+"_clip"+(variant==1?"12345678901234567890":"1")+".cast";
+            clip.tracks.emplace_back();native.animations.push_back(std::move(clip));
+        }
+        weapon::Profile profile;cadence::imported_actions::populate(native,profile,asset);
+        for(const auto slot:{"idle","fire","reload","pullout"})failures+=!expect(profile.animations[slot].find("_mag1_")!=std::string::npos,"native action variant remains consistent regardless of opaque clip ID length");
+    }
+    for(const char* game:{"eldewrito","cs1.6","cz","css","csnz","cso2"}){
+        const auto s=scene::buildScene(cast::Document::parse(animatedTriangle(),std::string("fixture/")+game+"/models/viewmodel_rifle_test.cast"),false);
+        failures+=!expect(s.meshes.size()==1&&s.meshes[0].vertices[0].uv.x==-.25f&&s.meshes[0].vertices[0].uv.y==.125f&&s.meshes[0].vertices[1].uv.x==1.75f&&s.meshes[0].vertices[2].uv.y==2.25f,"imported games preserve signed tiled UVs without folding or double flipping");
+    }
+    {
+        const auto doc=cast::Document::parse(animatedTriangle("native","root","textures/\xe9\x9b\xa8.png"),"fixture/csnz/models/viewmodel_test.cast");
+        try { const auto s=scene::buildScene(doc,false);failures+=!expect(!s.meshes.empty()&&s.meshes[0].albedoPath.filename().u8string()==u8"\u96e8.png","UTF-8 native texture filename preserved"); }
+        catch(...){std::cerr<<"UTF-8 native texture import threw\n";++failures;}
+        auto s=scene::buildScene(cast::Document::parse(animatedTriangle(),"fixture.cast"),false);
+        failures+=!expect(s.sourceModelPath==std::filesystem::path("fixture.cast"),"scene retains source model identity");
+        const auto sameNameA=cast::Document::parse(animatedTriangle(),"fixture/cs1.6/models/shared.cast");
+        const auto sameNameB=cast::Document::parse(animatedTriangle(),"fixture/cso2/models/shared.cast");
+        auto identityScene=scene::buildScene(sameNameA,false);
+        scene::appendRigModel(sameNameB,identityScene,"shared");
+        failures+=!expect(identityScene.rigParts.back().sourceModelPath==std::filesystem::path(sameNameB.sourceName()),"rig source is not inferred from duplicate display name");
+        scene::appendPreparedAttachment(scene::buildScene(sameNameB,false),identityScene,0,"shared");
+        failures+=!expect(identityScene.attachments.back().sourceModelPath==std::filesystem::path(sameNameB.sourceName()),"prepared attachment retains original source identity");
+        scene::imported::normalizeDew(s);const auto first=s.meshes[0].vertices[0].position;
+        const auto firstUv=s.meshes[0].vertices[0].uv;
+        failures+=!expect(firstUv.x==-.25f&&firstUv.y==.875f&&s.meshes[0].vertices[1].uv.x==1.75f&&s.meshes[0].vertices[2].uv.y==-1.25f,"dew2cast V conversion preserves signed tiled coordinates");
+        scene::imported::normalizeDew(s);failures+=!expect(std::abs(first.x+304.8f)<.001f&&s.meshes[0].vertices[0].position.x==first.x,"Blam normalization is idempotent");
+        failures+=!expect(s.meshes[0].vertices[0].uv.x==firstUv.x&&s.meshes[0].vertices[0].uv.y==firstUv.y&&s.meshes[0].vertices[2].uv.y==-1.25f,"dew2cast V conversion is idempotent");
+    }
     {
         // MP-prefix reload exports contain full-body channels, but their runtime
         // action layer must leave the locomotion root and legs untouched.
@@ -557,6 +606,15 @@ int main(){
         failures+=!expect(!scene::resolveMuzzlePosition(muzzleScene,muzzlePose),"unresolved muzzle cannot fall back to camera or brass origin");
         muzzleScene.skeleton.boneByCanonicalName["tag_flash"]=0;
         failures+=!expect(scene::resolveMuzzlePosition(muzzleScene,muzzlePose).has_value(),"native COD flash tags remain supported");
+        muzzleScene.skeleton.boneByCanonicalName.clear();
+        muzzleScene.muzzleAnchors={{0,{4,5,6},0},{0,{-4,5,6},1}};
+        const auto right=scene::resolveMuzzlePosition(muzzleScene,muzzlePose,-1,0),left=scene::resolveMuzzlePosition(muzzleScene,muzzlePose,-1,1);
+        failures+=!expect(right&&left&&scene::length(*right-scene::Vec3{16,28,40})<.001f&&scene::length(*left-scene::Vec3{8,28,40})<.001f,"imported barrel anchors follow animated bones independently per hand");
+        muzzleScene.muzzleAnchors.clear();muzzleScene.meshes.resize(2);muzzleScene.meshes[0].actorVariant=0;muzzleScene.meshes[1].actorVariant=1;
+        scene::Attachment one;one.boneIndex=0;one.firstMesh=0;one.muzzleLocal=scene::Vec3{1,0,0};
+        auto two=one;two.firstMesh=1;two.muzzleLocal=scene::Vec3{30,0,0};muzzleScene.attachments={one,two};
+        const auto variant=scene::resolveMuzzlePosition(muzzleScene,muzzlePose,1);
+        failures+=!expect(variant&&std::abs(variant->x-42)<.001f,"bot muzzle uses its own weapon variant rather than the first attachment");
     }
     {
         // A converted sparse ADS layer must not own the dense bind-support

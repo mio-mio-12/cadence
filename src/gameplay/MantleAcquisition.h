@@ -16,12 +16,19 @@ inline scene::Vec3 closestOnTriangle(scene::Vec3 p,scene::Vec3 a,scene::Vec3 b,s
 // Continuous conservative advancement for the same three rounded samples
 // used by constrainMove. Unlike that discrete solver, include floor/ceiling
 // faces too. Source-v2 callers retain their native swept-box hull.
-inline movement::Trace sweepRounded(const scene::glb::Map& map,scene::Vec3 start,scene::Vec3 end,float radius,float height){
+inline movement::Trace sweepRounded(const scene::glb::Map& map,scene::Vec3 start,scene::Vec3 end,float radius,float height,std::vector<std::uint32_t>* scratch=nullptr){
     using namespace scene;movement::Trace result;result.end=end;const auto delta=end-start;
     const Vec3 lo{std::min(start.x,end.x)-radius,std::min(start.y,end.y)-radius,std::min(start.z,end.z)},hi{std::max(start.x,end.x)+radius,std::max(start.y,end.y)+radius,std::max(start.z,end.z)+height};
-    std::vector<std::uint32_t> candidates=map.globalCollision;
+    std::vector<std::uint32_t> localCandidates;
+    auto& candidates=scratch?*scratch:localCandidates;
+    candidates.clear(); // Capacity only is reused, never results from another sweep.
+    const auto append=[&](const auto& indices){for(auto index:indices){const auto& t=map.collision[index];
+        if(t.maximum.x<lo.x||t.minimum.x>hi.x||t.maximum.y<lo.y||t.minimum.y>hi.y||t.maximum.z<lo.z||t.minimum.z>hi.z)continue;
+        candidates.push_back(index);
+    }};
+    append(map.globalCollision);
     if(map.gridWidth>0&&!map.gridCollision.empty()){
-        for(int y=std::max(0,map.gridCoordY(lo.y));y<=std::min(map.gridHeight-1,map.gridCoordY(hi.y));++y)for(int x=std::max(0,map.gridCoordX(lo.x));x<=std::min(map.gridWidth-1,map.gridCoordX(hi.x));++x){const auto& cell=map.gridCollision[map.cellIndex(x,y)];candidates.insert(candidates.end(),cell.begin(),cell.end());}
+        for(int y=std::max(0,map.gridCoordY(lo.y));y<=std::min(map.gridHeight-1,map.gridCoordY(hi.y));++y)for(int x=std::max(0,map.gridCoordX(lo.x));x<=std::min(map.gridWidth-1,map.gridCoordX(hi.x));++x)append(map.gridCollision[map.cellIndex(x,y)]);
         std::sort(candidates.begin(),candidates.end());candidates.erase(std::unique(candidates.begin(),candidates.end()),candidates.end());
     }else{candidates.resize(map.collision.size());for(std::size_t i=0;i<candidates.size();++i)candidates[i]=static_cast<std::uint32_t>(i);}
     const float epsilon=std::max(.025f,std::max({std::abs(start.x),std::abs(start.y),std::abs(end.x),std::abs(end.y)})*std::numeric_limits<float>::epsilon()*8);
@@ -33,11 +40,17 @@ inline movement::Trace sweepRounded(const scene::glb::Map& map,scene::Vec3 start
                     // The ordinary stepper permits contact with ankle-high
                     // curbs. Permit an upward/tangential escape from that
                     // existing contact, never penetration of a taller wall.
-                    if(delta.z>=0&&tri.maximum.z<=start.z+scene::course::kStepHeight)break;
+                    if(delta.z>=0&&dot(delta,normal)>=0&&tri.maximum.z<=start.z+scene::course::kStepHeight)break;
                     result.startSolid=true;result.fraction=0;result.end=start;return result;
                 }
-                const float closing=-dot(delta,normal);if(closing<=epsilon)break;
-                const float gap=distance-radius;if(gap<=epsilon||iteration==23){if(t<result.fraction){result.fraction=t;result.normal=normal;if(t==0){result.end=start;return result;}}break;}
+                // Spatial penetration tolerance must not become a minimum
+                // velocity: shallow downhill travel otherwise accumulates
+                // overlap over several fixed ticks and eventually startSolid.
+                const float closing=-dot(delta,normal);if(closing<=epsilon*.004f)break;
+                // Penetration tolerance is not an inflated collision shell.
+                // A body sliding parallel 0.02 cm outside a barrel/ledge must
+                // not snag on the rounded edge as its closest point changes.
+                const float gap=distance-radius;if(gap<=epsilon*.04f||iteration==23){if(t<result.fraction){result.fraction=t;result.normal=normal;if(t==0){result.end=start;return result;}}break;}
                 t+=gap/closing;if(t>result.fraction)break;
             }
         }
@@ -49,7 +62,8 @@ inline movement::Trace sweepRounded(const scene::glb::Map& map,scene::Vec3 start
 inline std::optional<Trajectory> findClimb(const scene::glb::Map& map,scene::Vec3 start,scene::Vec3 forward,
     float radius,float height,float step,float maximum,float reach,float minimum,float rate=1.f,bool boxHull=false){
     forward.z=0;if(scene::length(forward)<.5f)return {};forward=scene::normalize(forward);
-    const auto sweep=[&](scene::Vec3 a,scene::Vec3 b){return boxHull?movement::sweep(map,a,b,radius,height):sweepRounded(map,a,b,radius,height);};
+    std::vector<std::uint32_t> sweepScratch;
+    const auto sweep=[&](scene::Vec3 a,scene::Vec3 b){return boxHull?movement::sweep(map,a,b,radius,height):sweepRounded(map,a,b,radius,height,&sweepScratch);};
     const auto obstruction=sweep(start,start+forward*(radius+reach));
     if(obstruction.startSolid||obstruction.fraction>=1)return {};
     // groundHeight's historical 45-unit ceiling tolerance is accounted for

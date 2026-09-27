@@ -1,4 +1,5 @@
 #pragma once
+#include "render/WeatherShader.h"
 namespace render {
 inline constexpr const char* kWaterVertex=R"GLSL(
 #version 330 core
@@ -52,7 +53,7 @@ void main(){
     gl_Position=uVP*vec4(p,1);
 }
 )GLSL";
-inline constexpr const char* kWaterFragment=R"GLSL(
+inline const std::string kWaterFragment=R"GLSL(
 #version 330 core
 in vec3 vWorld,vNormal;
 in vec2 vSurface;
@@ -82,6 +83,7 @@ uniform mat4 uLight,uFarLight;
 uniform sampler2D uShadow,uFarShadow;
 uniform bool uShadows,uFarShadows;
 uniform float uShadowBias,uShadowStrength,uShadowDistance,uFarShadowDistance;
+)GLSL" + kWeatherCloud + R"GLSL(
 float shadowTap(sampler2D tex,mat4 light,float radius){
     vec4 p=light*vec4(vWorld,1);vec3 q=p.xyz/p.w*.5+.5;
     if(any(lessThan(q,vec3(0)))||any(greaterThan(q,vec3(1))))return 1;
@@ -196,7 +198,7 @@ void main(){
     float shadow=1;
     if(uShadows){if(distanceToCamera<uShadowDistance)shadow=shadowTap(uShadow,uLight,max(400.,uShadowDistance));
         else if(uFarShadows&&distanceToCamera<uFarShadowDistance)shadow=shadowTap(uFarShadow,uFarLight,max(400.,max(uShadowDistance,uFarShadowDistance)));}
-    vec3 sun=uSunColor*shadow;
+    vec3 sun=uSunColor*shadow*mix(1.,weatherCloud(vWorld),uWeatherCloudStrength);
     // Thickness along the actual camera ray; opaque pre-water depth only.
     // This never samples the water's own attached depth texture.
     vec2 screen=gl_FragCoord.xy/uViewport;

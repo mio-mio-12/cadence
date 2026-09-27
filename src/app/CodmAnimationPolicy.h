@@ -186,7 +186,20 @@ inline void populate(const scene::CastScene& s,weapon::Profile& p,const std::str
     assign("reload_empty",{"reload_empty","weapon_change_clip_e","change_clip_normal_e","change_clip_e_all","change_clip_all_e","change_clip_e"});
     if(!p.animations.contains("reload_empty")&&p.animations.contains("reload"))p.animations["reload_empty"]=p.animations["reload"];
     assign("reload_start",{"reload_start","change_clip_start"});assign("reload_loop",{"reload_loop","change_clip_loop"});assign("reload_end",{"reload_end","change_clip_end"});
-    assign("pullout",{"pullout","weapon_equip","equip_w"});assign("first_raise",{"first_raise","pullout","weapon_equip","equip_w"});assign("putaway",{"putaway","weapon_put_down","put_down_w"});
+    assign("pullout",{"pullout","weapon_equip","equip_w"});
+    // CODM's generic first-raise exports are often pickup/interact gestures,
+    // not a firearm's first draw. Keep deliberate external/custom mappings,
+    // but replace native automatic first_raise/open_door mappings with draw.
+    bool nativeFirstRaise=true;
+    if(const auto it=p.animations.find("first_raise");it!=p.animations.end()){
+        const auto name=actionName(it->second);
+        nativeFirstRaise=name==prefix+"first_raise"||name==prefix+"open_door"||name==prefix+"door_open";
+    }
+    if(nativeFirstRaise&&p.animations.contains("pullout")){
+        p.animations["first_raise"]=p.animations.at("pullout");
+        p.animationVariants.erase("first_raise");
+    }else assign("first_raise",{"pullout","weapon_equip","equip_w"});
+    assign("putaway",{"putaway","weapon_put_down","put_down_w"});
     assign("sprint_in",{"sprint_in","walk_to_sprint"});assign("sprint_loop",{"sprint_loop","weapon_run","sprint"});assign("sprint_out",{"sprint_out","sprint_to_walk"});
     assign("inspect",{"inspect","inspection_s","inspection"});assign("mantle",{"mantle","vaulting_climb"});assign("melee",{"melee","advquick_melee1","advquick_melee2","advquick_melee3"});
     assign("crawl_forward",{"prone_crawl_fwd"});assign("crawl_backward",{"prone_crawl_bwd"});

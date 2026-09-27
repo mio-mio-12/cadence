@@ -435,7 +435,8 @@ static bool loadImpl(
     }
 
     const auto extension=c2mx::readExtension(buffer);
-    if(extension.present&&!c2mx::applyCollision(extension.collision,extension.meta,extension.navigation,map,error,options,false))return false;
+    const bool useAuthoredCollision=extension.present&&!options.renderGeometryCollision;
+    if(useAuthoredCollision&&!c2mx::applyCollision(extension.collision,extension.meta,extension.navigation,map,error,options,false))return false;
     BinaryReader r{buffer.data(), extension.baseEnd, 0};
     if (r.readByte() != 'C' || r.readByte() != '2' || r.readByte() != 'M') {
         error = "Invalid C2M magic header";
@@ -709,7 +710,7 @@ static bool loadImpl(
                 : (isSkyboxMaterial(canonicalMat, matDef ? canonical(matDef->techset) : "") || isSkyboxMaterial(canonical(surf.name), ""));
             if (skybox) continue;
 
-            const bool toolInvisible = !extension.present&&(isToolOrInvisibleMaterial(canonicalMat) || isToolOrInvisibleMaterial(surf.name));
+            const bool toolInvisible = !useAuthoredCollision&&(isToolOrInvisibleMaterial(canonicalMat) || isToolOrInvisibleMaterial(surf.name));
             const bool foliage = isAlphaTestedFoliage(canonicalMat);
             const bool isAdditive = !foliage && (isAdditiveSurface(canonicalMat, matDef ? canonical(matDef->techset) : ""));
             const bool isMultiplyTechset = matDef && (canonical(matDef->techset).find("multiply") != std::string::npos);
@@ -822,7 +823,7 @@ static bool loadImpl(
                 }
 
                 // Collision geometry generation
-                if (!extension.present && !toolInvisible && !skipCollision) {
+                if (!useAuthoredCollision && !toolInvisible && !skipCollision) {
                     const auto& v0 = facePositions[0];
                     const auto& v1 = facePositions[1];
                     const auto& v2 = facePositions[2];
@@ -895,7 +896,7 @@ static bool loadImpl(
 
     report("Building spatial collision hash index (" + std::to_string(map.collision.size()) + " triangles)...", 0.85f);
     map.buildCollisionIndex();
-    if(extension.present){
+    if(useAuthoredCollision){
         // Authored collision owns spawn validation as well as physics. Never
         // accept an ungrounded legacy entity or visual-derived fallback here.
         c2mx::chooseAuthoredSpawn(map);

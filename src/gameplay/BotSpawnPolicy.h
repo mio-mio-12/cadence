@@ -5,6 +5,16 @@
 #include <cstdint>
 namespace gameplay::bot {
 struct SpawnHistory {std::optional<scene::Vec3> last;std::uint64_t sequence{};};
+template<class Project,class Occupied>
+std::optional<scene::Vec3> nearbyClearSpawn(scene::Vec3 preferred,const Project& project,const Occupied& occupied){
+    for(int i=0;i<=32;++i){
+        const float angle=float((i-1)%8)*scene::kPi/4;
+        const float radius=i?80.f*(1+(i-1)/8):0.f;
+        const auto candidate=preferred+scene::Vec3{std::cos(angle)*radius,std::sin(angle)*radius,0};
+        if(auto p=project(candidate);p&&!occupied(*p))return p;
+    }
+    return {};
+}
 inline std::optional<scene::Vec3> chooseDistantSpawn(const std::vector<scene::Vec3>& source,scene::Vec3 player,SpawnHistory& history,std::size_t botCount){
     std::vector<scene::Vec3> points;
     for(auto p:source)if(std::isfinite(p.x)&&std::isfinite(p.y)&&std::isfinite(p.z)&&std::none_of(points.begin(),points.end(),[&](auto q){return scene::length(p-q)<1.f;}))points.push_back(p);

@@ -36,6 +36,17 @@ scene::Direction worldClipDirection(const scene::Animation& clip){
     return clip.direction;
 }
 
+float worldPresentationMovementFacing(float viewYaw,scene::Vec3 travel,scene::Direction authored,
+                                     scene::MotionRole motion,scene::Direction requested){
+    // Jump clips commonly contain one forward/neutral pose for every travel
+    // direction. Treating that metadata as a ground stride turns the pelvis
+    // ninety degrees on A/D while the combat torso is counter-rotated. Use
+    // the same cardinal steering sector as grounded locomotion without
+    // changing which airborne animation is sampled.
+    const auto reference=motion==scene::MotionRole::Jump&&requested!=scene::Direction::Any?requested:authored;
+    return worldMovementFacing(viewYaw,travel,reference);
+}
+
 bool isGroundWorldMotion(scene::MotionRole motion){
     using M=scene::MotionRole;
     return motion==M::Idle||motion==M::Walk||motion==M::Run||motion==M::Sprint||motion==M::Crawl;

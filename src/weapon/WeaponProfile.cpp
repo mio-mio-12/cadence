@@ -31,14 +31,14 @@ Archetype inferArchetype(std::string value){value=lower(std::move(value));const 
     if(any({"m40a3","remington700","remington_700","r700"}))return Archetype::BoltIndividualSniper;
     // ---- Bolt-Action Magazine Snipers ----
     if(any({"dsr","ballista","bolt","l96","l96a1","mors","atlas20","atlas20mm","m200","kbsniper","dbl50","gaussgun","awp","ssg08",
-        "intervention","cheytac","l118a","msr","vks",
+        "intervention","cheytac","l118a","msr","vks","scout","trg42",
         "kbs","longbow","tf141","trek50","widowmaker",
         "locus","svg100","rsa","dbsr50",
         "wpn_t9_sniper_standard","sniper_fastbolt","sniper_powerbolt","sniper_quickscope","sniper_double"
         })||(contains(value,"usr")&&!contains(value,"usrpg")))return Archetype::BoltSniper;
     // ---- Semi-Auto Snipers / Marksman ----
     if(any({"sniper","svu","xpr","dragunov","drakon","wa2000","psg1","barrett","as50","lynx","na45","udm45","scar20","g3sg1",
-        "m82","m21","m14ebr","mk14","ia2","mr28","rsass",
+        "m82","m21","m14ebr","mk14","ia2","mr28","rsass","sg550","sl8","svd",
         "svo","mavericksniper","maverick_sniper","d25s","sdmr","sieger300",
         "ebr800","dmr1","proteus","p06",
         "sniper_fastsemi","sniper_chargeshot","sniper_xpr50"
@@ -123,6 +123,8 @@ const AnimationOffset* offsetFor(const Profile& profile,const std::string& anima
 bool save(const Profile& p,const std::filesystem::path& path,std::string& error){std::error_code ec;if(!path.parent_path().empty())std::filesystem::create_directories(path.parent_path(),ec);std::ofstream out(path,std::ios::trunc);if(!out){error="Could not create profile";return false;}out<<"IWWEAPON "<<p.version<<'\n'<<"name "<<std::quoted(p.name)<<'\n'<<"internal "<<std::quoted(p.internalName)<<'\n'<<"source "<<std::quoted(p.source)<<'\n'<<"archetype "<<archetypeName(p.archetype)<<'\n'<<"animation_prefix "<<std::quoted(p.animationPrefix)<<'\n'<<"view_model "<<std::quoted(p.viewModelName)<<'\n'<<"world_model "<<std::quoted(p.worldModelName)<<'\n'<<"hand_model "<<std::quoted(p.handModelName)<<'\n'<<"base_model "<<std::quoted(p.baseModel)<<'\n';for(const auto& model:p.rigModels)out<<"rig_model "<<std::quoted(model)<<'\n';
     out<<"scope_overlay "<<std::quoted(p.scopeOverlayImage)<<'\n'<<"recoil_curve "<<p.stats.recoil<<'\n'<<"recoil_intensity "<<p.stats.recoil.intensity<<'\n';
     out<<"gun_position "<<p.gunPosition.x<<' '<<p.gunPosition.y<<' '<<p.gunPosition.z<<'\n'
+       <<"viewmodel_projection "<<p.viewmodelFovMultiplier<<' '<<p.flipViewmodel<<'\n'
+       <<"sprint_bob_multiplier "<<p.sprintBobMultiplier<<'\n'
        <<"ads_gun_position "<<p.separateAdsPosition<<' '<<p.adsGunPosition.x<<' '<<p.adsGunPosition.y<<' '<<p.adsGunPosition.z<<'\n'
        <<"material camo_luma "<<(p.materials.useBaseColorLumaMask?1:0)<<'\n'
        <<"material camo_invert "<<(p.materials.invertCamoMask?1:0)<<'\n'
@@ -196,6 +198,13 @@ bool load(const std::filesystem::path &path, Profile &p, std::string &error) {
     } else if (kind == "gun_position") {
       row >> result.gunPosition.x >> result.gunPosition.y >>
           result.gunPosition.z;
+    } else if (kind == "viewmodel_projection") {
+      int flip{};float multiplier{1.f};row >> multiplier >> flip;
+      if(!row||!std::isfinite(multiplier)||multiplier<=0.f||(flip!=0&&flip!=1)){error="Invalid viewmodel projection";return false;}
+      result.viewmodelFovMultiplier=multiplier;result.flipViewmodel=flip!=0;
+    } else if (kind == "sprint_bob_multiplier") {
+      row >> result.sprintBobMultiplier;
+      if(!row||!std::isfinite(result.sprintBobMultiplier)||result.sprintBobMultiplier<0){error="Invalid sprint bob multiplier";return false;}
     } else if (kind == "ads_gun_position") {
       row >> result.separateAdsPosition >> result.adsGunPosition.x >> result.adsGunPosition.y >> result.adsGunPosition.z;
     } else if (kind == "lock_inspect_rig") {

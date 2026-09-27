@@ -2,6 +2,25 @@
 #include "gameplay/BotActor.h"
 
 namespace gameplay::bot {
+// Corpses cannot step onto overhead lips or snap to the legacy ground fallback.
+// Keep the ordinary living-bot/player traversal policy independent.
+template<class Map> void stepCorpseOnMap(Actor& actor,float delta,const Map& map){
+    constexpr float noGround=-1.e20f;
+    const int steps=std::max(1,static_cast<int>(std::ceil(std::max(0.f,delta)/.008f)));
+    const float dt=std::max(0.f,delta)/steps;
+    for(int i=0;i<steps&&!actor.grounded;++i){
+        const auto old=actor.position;
+        actor.velocity.z-=iw::kGravity*dt;
+        const auto proposed=old+actor.velocity*dt;
+        auto resolved=map.constrainMove(old,proposed,scene::course::kPlayerRadius,iw::worldUnits(72),0.f,nullptr);
+        if(resolved.z>std::max(old.z,proposed.z)+.1f)resolved={old.x,old.y,proposed.z};
+        // Only a floor actually crossed during this step may arrest a fall.
+        resolved.z=proposed.z;
+        const float ground=map.navigationGroundHeight(resolved.x,resolved.y,std::max(old.z,proposed.z)+.1f-45.f,noGround,scene::course::kPlayerRadius*.55f);
+        if(ground>noGround*.5f&&actor.velocity.z<=0&&old.z>=ground-.1f&&resolved.z<=ground+.1f){resolved.z=ground;actor.velocity={};actor.grounded=true;}
+        actor.position=resolved;
+    }
+}
 // Map collision belongs to each fixed tick, including its presentation history.
 // Separate entry point leaves Classic's movement behavior unchanged.
 template<class Map> void stepOnMap(Actor& actor,float delta,float moveScale,const Map& map){

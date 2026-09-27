@@ -16,11 +16,12 @@ struct MountReference {
     }
 };
 inline void applyMountEdit(std::vector<scene::Mat4>& pose,std::size_t cameraBone,
-                           const MountReference& reference,const weapon::Profile& current,float ads){
+                           const MountReference& reference,const weapon::Profile& current,float ads,
+                           const scene::Mat4& cameraToRig=scene::Mat4::identity()){
     if(!reference.valid||cameraBone>=pose.size())return;
     const auto delta=weapon::gunPositionAt(current,ads)-reference.at(ads);
     if(scene::length(delta)<.000001f)return;
-    const auto camera=pose[cameraBone];
+    const auto camera=pose[cameraBone]*cameraToRig;
     const auto worldDelta=scene::normalize(scene::Vec3{camera.v[0],camera.v[1],camera.v[2]})*delta.x+
         scene::normalize(scene::Vec3{camera.v[4],camera.v[5],camera.v[6]})*delta.y+
         scene::normalize(scene::Vec3{camera.v[8],camera.v[9],camera.v[10]})*delta.z;

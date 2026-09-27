@@ -24,6 +24,12 @@ int main(){
    CHECK(pose[1].v[13]==original[1].v[13]);
   }
   auto pose=original;cadence::replay::applyMountEdit(pose,99,reference,profile,0);CHECK(pose[1].v==original[1].v);
+  const auto bind=scene::rotation(scene::fromEulerRadians({0,0,scene::kPi*.5f}));
+  pose=original;cadence::replay::applyMountEdit(pose,0,{{},{},false,true},profile,0,scene::inverseAffine(bind));
+  CHECK(std::abs(pose[1].v[12]-original[1].v[12]-4)<.0001f);
+  CHECK(std::abs(pose[1].v[13]-original[1].v[13]+3)<.0001f);
+  CHECK(std::abs(pose[1].v[14]-original[1].v[14]-5)<.0001f);
+  CHECK(pose[0].v==original[0].v);
  }
  {
   take::Take recording;recording.samples.resize(2);recording.samples[1].time=10;recording.shots.resize(1);recording.shots[0].time=1;

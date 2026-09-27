@@ -8,7 +8,7 @@ void processPlayerKnifeAttack(AppState& app){
     const scene::Vec3 forward{cp*std::cos(app.actorYaw),cp*std::sin(app.actorYaw),std::sin(app.cameraPitch)};
     for(auto& bot:app.bots){
         if(!bot.alive)continue;
-        const float height=app.botHeadHeight*(bot.stance==scene::Stance::Prone?.3f:bot.stance==scene::Stance::Crouch?.7f:1.f);
+        const float height=app.botHeadHeight*app.botModelScale*(bot.stance==scene::Stance::Prone?.3f:bot.stance==scene::Stance::Crouch?.7f:1.f);
         const auto hit=gameplay::knifeTarget(origin,forward,bot.position,height,app.weaponProfile.knifeRadiusCm,app.weaponProfile.knifeConeDegrees,[&](scene::Vec3 point){
             const auto offset=point-origin;const float distance=scene::length(offset);
             if(app.loadedMap){

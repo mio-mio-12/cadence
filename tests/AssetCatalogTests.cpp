@@ -1,12 +1,80 @@
 #include "assets/AssetCatalog.h"
 #include "assets/CharacterParts.h"
+#include "assets/ImportedGamePolicy.h"
+#include "content/AssetPaths.h"
 
 #include <iostream>
 #include <algorithm>
+#include <fstream>
+#include <chrono>
 
 namespace {bool expect(bool value,const char* message){if(!value)std::cerr<<"FAILED: "<<message<<'\n';return value;}}
 
 int main(){int failures{};
+    {
+        namespace fs=std::filesystem;using namespace cadence::content;
+        const auto root=fs::temp_directory_path()/("cadence_nested_catalog_"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        const auto packRoot=root/"exported_files/tools/Cadence/packs/a";
+        const auto exportRoot=packRoot/"assets/exported_files";
+        const auto hands=exportRoot/"bo2/models/c_usa_mp_seal6_longsleeve_viewhands_lod0.cast";
+        const auto gun=exportRoot/"csnz/models/viewmodel_v_as50.cast";
+        for(const auto& file:{hands,gun}){fs::create_directories(file.parent_path());std::ofstream(file).put('\0');}
+        PathMount mount;mount.id="a";mount.root=packRoot;mount.paths["game:bo2/models/c_usa_mp_seal6_longsleeve_viewhands_lod0.cast"]=hands;mount.paths["game:csnz/models/viewmodel_v_as50.cast"]=gun;mountPaths({mount});
+        assets::Catalog catalog;std::string error;
+        failures+=!expect(assets::scan(exportRoot,catalog,error)&&catalog.entries.size()==2,"nested recipient catalog scan");
+        for(const auto& asset:catalog.entries){
+            failures+=!expect(asset.game==(asset.path==hands?"bo2":"csnz"),"catalog uses authoritative mounted game rather than ancestor tools");
+            failures+=!expect(asset.role==(asset.path==hands?assets::Role::ViewHands:assets::Role::ViewWeapon),"nested mounted model classification retains viewhands/weapon roles");
+        }
+        mountPaths({});fs::remove_all(root);
+    }
+    {
+        const auto root=std::filesystem::temp_directory_path()/("cadence_import_catalog_"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        const auto models=root/"css/models";
+        for(const auto relative:{"viewmodel_rifle_v_ak47.cast","package/models/viewmodel_rifle_v_ak47.cast","package/models/viewmodel_pistol_v_deagle.cast","package/animations/viewmodel_rifle_v_ak47_idle.cast","package/diagnostic_animations/diagnostic_native_v_ak47_idle.cast"}){
+            const auto file=models/relative;std::filesystem::create_directories(file.parent_path());std::ofstream(file).put('\0');
+        }
+        assets::Catalog direct,appended;std::string error;
+        failures+=!expect(assets::scan(root,direct,error)&&direct.entries.size()==2,"whole-library import excludes nested animation packages and duplicate models");
+        failures+=!expect(assets::appendScan(models,"css",appended,error)&&appended.entries.size()==2,"direct models append agrees with whole-library discovery");
+        std::filesystem::remove_all(root);
+    }
+    failures+=!expect(assets::imported::animationPath("css/models/weapons/v_ak47/animations/viewmodel_rifle_v_ak47_idle.cast"),"nested model directory cannot hide animation provenance");
+    failures+=!expect(!assets::imported::animationPath("css/models/weapons/v_ak47/models/viewmodel_rifle_v_ak47.cast"),"nested model exports remain usable");
+    failures+=!expect(assets::imported::dewBodySemantic("masterchief_21000_combat_rifle_move_front_10.cast")=="pb_rifle_stand_run_forward","native Halo locomotion is identified from CAST name");
+    failures+=!expect(assets::imported::dewBodySemantic("masterchief_21000_combat_rifle_grip_10.cast").empty(),"Halo grip overlay cannot replace full-body locomotion");
+    failures+=!expect(assets::imported::dewBodySemantic("masterchief_21000_combat_rifle_idle_353.cast")=="pb_rifle_stand_idle","Halo numbered idle is accepted");
+    failures+=!expect(assets::imported::dewBodySemantic("masterchief_21000_combat_rifle_move_front_358.cast")=="pb_rifle_stand_run_forward","Halo numbered run is accepted");
+    failures+=!expect(assets::imported::dewBodySemantic("odst_recon_cheap_26675_combat_rifle_idle_var0_365.cast")=="pb_rifle_stand_idle","Halo exact idle variation is accepted");
+    for(const auto* transition:{"odst_recon_cheap_26675_combat_rifle_idle_2_combat_walk_right_362.cast","odst_recon_cheap_26675_combat_rifle_move_front_2_combat_idle_376.cast","odst_recon_cheap_26675_act_guard_1_idle_2_combat_unarmed_idle_35.cast","masterchief_21000_combat_rifle_airborne_arc_325.cast","masterchief_21000_combat_rifle_idle_unknown_353.cast","masterchief_21000_combat_rifle_idle_bad.cast"})
+        failures+=!expect(assets::imported::dewBodySemantic(transition).empty(),"Halo transition or unrecognized suffix cannot become a locomotion loop");
+    failures+=!expect(assets::imported::dewBodySemantic("ignored.cast","combat:rifle:idle:var0")=="pb_rifle_stand_idle","embedded native graph label supports exact idle variant");
+    failures+=!expect(assets::imported::dewBodySemantic("ignored.cast","combat:dual:move_right")=="pb_dualwield_stand_run_right","embedded native graph label supports directional dual-wield movement");
+    failures+=!expect(assets::imported::dewBodySemantic("masterchief_21000_combat_rifle_idle_353.cast","combat:rifle:idle:2:combat:walk_right").empty(),"embedded transition label overrides misleading filename");
+    failures+=!expect(assets::imported::dewBodySemantic("ignored.cast","act:guard:idle:2:combat:unarmed:idle").empty(),"embedded nested combat scope is not locomotion");
+    for(const auto* game:{"cs1.6","cz","cscz","css","csnz","cso2"}){
+        const auto path=std::filesystem::path(game)/"models"/"flat.cast";
+        failures+=!expect(assets::classifyModelPath(path,"v_ak47_hands")==assets::Role::ViewHands,"Source-family native hands classified in flat exports");
+        failures+=!expect(assets::classifyModelPath(path,"w_rif_ak47")==assets::Role::WorldWeapon,"Source-family native world weapon");
+        failures+=!expect(assets::imported::matchesAnimation(game,"viewmodel_rifle_v_ak47","viewmodel_rifle_v_ak47_reload.cast"),"normalized native action accepted");
+        failures+=!expect(!assets::imported::matchesAnimation(game,"viewmodel_rifle_v_ak47","viewmodel_rifle_v_ak47_gold_reload.cast"),"neighboring skin cannot steal animation library");
+        failures+=!expect(!assets::imported::matchesAnimation(game,"viewmodel_rifle_v_ak47","diagnostic_native_v_ak47_reload.cast"),"diagnostic clip excluded");
+        failures+=!expect(assets::imported::worldName(game,"viewmodel_rifle_v_rif_ak47")=="w_rif_ak47","native world counterpart preserves family");
+    }
+    failures+=!expect(assets::classifyModelPath("eldewrito/models/flat.cast","assault_rifle_8707_fp_0_20976_weapon")==assets::Role::ViewWeapon,"Eldewrito weapon needs no JSON");
+    failures+=!expect(assets::classifyModelPath("eldewrito/models/flat.cast","objects_characters_masterchief_fp_fp_20976")==assets::Role::ViewHands,"Eldewrito arms need no JSON");
+    failures+=!expect(assets::imported::worldName("eldewrito","assault_rifle_8707_fp_0_20976_weapon")=="assault_rifle_8707_world","Eldewrito world identity");
+    failures+=!expect(!assets::imported::supported("cs2"),"CS2 remains outside the new adapters");
+    failures+=!expect(assets::imported::diagnosticAction("css","viewmodel_sniper_v_snip_awp","diagnostic_native_v_snip_awp_awm_idle_clip5290056055685111971.cast")=="idle","native engine action labels can recover unnormalized clips");
+    failures+=!expect(assets::imported::diagnosticAction("css","viewmodel_sniper_v_snip_awp","diagnostic_native_v_snip_scout_awm_idle_clip123.cast").empty(),"native diagnostic requires the exact weapon identity");
+    failures+=!expect(assets::imported::diagnosticAction("cs2","viewmodel_rifle_v_ak47","diagnostic_native_v_ak47_reload_clip12.cast").empty(),"native diagnostic fallback excludes CS2");
+    failures+=!expect(assets::imported::diagnosticAction("cso2","viewmodel_v_m27iar","diagnostic_native_v_m27iar_m27iar_idle_mag1_clip123.cast")=="idle","CSO2 explicit magazine variant retains idle action");
+    failures+=!expect(assets::imported::diagnosticAction("cso2","viewmodel_v_m27iar","diagnostic_native_v_m27iar_m27iar_draw_mag2_clip123.cast")=="pullout","CSO2 explicit magazine variant retains draw action");
+    failures+=!expect(assets::imported::diagnosticAction("cso2","viewmodel_v_m27iar","diagnostic_native_v_m27iar_m27iar_fire_mag1_clip123.cast")=="fire","CSO2 explicit magazine variant retains fire action");
+    failures+=!expect(assets::imported::diagnosticAction("cso2","viewmodel_v_m27iar","diagnostic_native_v_m27iar_m27iar_reload_mag2_clip123.cast")=="reload","CSO2 explicit magazine variant retains reload action");
+    failures+=!expect(assets::imported::diagnosticAction("cso2","viewmodel_v_m27iar","diagnostic_native_v_m27iar_m27iar_idle_magazine_clip123.cast").empty(),"unknown magazine-like suffix is not an action");
+    failures+=!expect(assets::imported::diagnosticAction("cso2","viewmodel_v_m27iar","diagnostic_native_v_m27iar_m27iar_idle_mag1_extra_clip123.cast").empty(),"magazine variant must be terminal");
+    failures+=!expect(assets::imported::worldName("cso2","viewmodel_v_k5")=="w_k5","unclassified native class preserves v prefix");
     for(const auto* name:{"wpn_ak47_iw5_LOD0","wpn_model_1887_LOD0","weapon_model_1887_LOD0"})
         failures+=!expect(assets::classifyModelPath("mw3/models/flat.cast",name)==assets::Role::WorldWeapon,"MW3 world prefixes work without sorted directories");
     for(const auto* name:{"view_ak47_iw5_LOD0","viewmodel_model1887_iw5_LOD0","wpn_ak47_iw5_view_LOD0","wpn_ak47_iw5_viewmodel_LOD0"})

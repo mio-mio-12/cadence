@@ -1,4 +1,5 @@
 #include "gameplay/SourceMovement.h"
+#include "gameplay/ExoInput.h"
 #include "gameplay/AutoStrafe.h"
 #include "gameplay/MantleTrajectory.h"
 #include <iostream>
@@ -22,6 +23,15 @@ void box(scene::glb::Map& m,float x,float depth,float z,float width=1000) {
     quad(m,{x+depth,-width,z},{x+depth,-width,0},{x+depth,width,0},{x+depth,width,z});
 }
 int main(int argc,char** argv) try {
+    {bool pending=false;using namespace gameplay::exo;
+     queue(pending,true,false,true,true);require(pending,"airborne press buffered without chain option");
+     queue(pending,true,false,false,true);require(pending,"press survives render frames without physics ticks");
+     require(!ready(pending,false,.1f,false)&&ready(pending,false,0,false),"buffer survives takeoff grace");
+     require(ready(pending,false,.1f,true),"single-tap airborne bypasses grace");
+     pending=false;queue(pending,true,false,false,true);require(!pending,"held key does not repeat consumed boost");
+     require(available(false,false,true,false)&&!available(false,false,true,true),"walking off edge grants only first boost");
+     queue(pending,true,true,true,true);require(!pending,"grounded press cannot boost");
+     pending=true;queue(pending,false,false,false,true);require(!pending,"disabled clears queued input");}
     for(float speed:{units(30),units(250)}){
         const auto normal=gameplay::mantle::plan({}, {units(100),0,units(40)}, {speed,0,0},{1,0,0});
         for(float rate:{.25f,1.0f,3.0f}){

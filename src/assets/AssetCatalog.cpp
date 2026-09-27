@@ -1,6 +1,8 @@
 #include "assets/AssetCatalog.h"
 #include "assets/CharacterParts.h"
+#include "assets/ImportedGamePolicy.h"
 #include "cast/CastDocument.h"
+#include "content/AssetPaths.h"
 #include "scene/BoundedJson.h"
 #include <fstream>
 
@@ -18,13 +20,16 @@ std::vector<std::string> tokens(std::string_view input){std::vector<std::string>
     if(!token.empty())result.push_back(std::move(token));return result;}
 bool lodAboveZero(std::string_view name){const auto position=name.rfind("_lod");if(position==std::string_view::npos)return false;const auto digit=position+4;return digit<name.size()&&name[digit]>='1'&&name[digit]<='9';}
 std::string gameFromPath(const std::filesystem::path& path){
-    for(const auto& part:path){const auto s=lower(part.string());if(s=="bocw"||s=="bocw_sp"||s=="t9")return s;}
+    const auto logical=cadence::content::exportKey(path);
+    if(const auto split=logical.find('/');split!=std::string::npos)return logical.substr(0,split);
+    if(cadence::content::hasExportMarker(path))return {};
+    for(const auto& part:path){const auto s=lower(imported::utf8(part));if(s=="bocw"||s=="bocw_sp"||s=="t9")return s;}
     for(auto it=path.begin();it!=path.end();++it){
-        const auto s=lower(it->string());
+        const auto s=lower(imported::utf8(*it));
         if(s=="exported_files"||s=="saluki"||s=="greyhound"){
             auto next=std::next(it);
             while(next!=path.end()){
-                const auto ns=lower(next->string());
+                const auto ns=lower(imported::utf8(*next));
                 if(ns!="exported_files"&&ns!="saluki"&&ns!="greyhound"&&!ns.empty()){
                     return ns;
                 }
@@ -33,7 +38,8 @@ std::string gameFromPath(const std::filesystem::path& path){
         }
     }
     for(const auto& part:path){
-        const auto s=lower(part.string());
+        const auto s=lower(imported::utf8(part));
+        if(imported::supported(s))return s;
         if(s=="iw3"||s=="iw4"||s=="iw5"||s=="iw6"||s=="iw7"||s=="iw_sp"||s=="t5"||s=="t6"||s=="t7"||s=="s1"||s=="s2"||s=="aw"||s=="bo"||s=="bo2"||s=="bo3"||s=="mw"||s=="mw2"||s=="mw3"||s=="ghosts"||s=="mwr"||s=="h1"||s=="cs2")
             return s;
     }
@@ -48,6 +54,18 @@ bool isModelPath(const std::filesystem::path& path){
     return true;
 }
 bool intersects(const std::vector<std::string>& a,const std::vector<std::string>& b){for(const auto& left:a)if(std::find(b.begin(),b.end(),left)!=b.end())return true;return false;}
+bool includeImportedModel(const std::filesystem::path& path,std::string_view game){
+    if(!imported::supported(game))return true;
+    if(imported::animationPath(path))return false;
+    std::filesystem::path outerModels;
+    for(auto parent=path.parent_path();!parent.empty();){
+        if(lower(imported::utf8(parent.filename()))=="models")outerModels=parent;
+        const auto next=parent.parent_path();if(next==parent)break;parent=next;
+    }
+    if(outerModels.empty())return true;
+    const auto flat=outerModels/path.filename();std::error_code ec;
+    return flat.lexically_normal()==path.lexically_normal()||!std::filesystem::is_regular_file(flat,ec);
+}
 
 } // namespace
 
@@ -175,6 +193,7 @@ std::string categoryFromPath(const std::filesystem::path& path){
 }
 
 Role classifyModelPath(const std::filesystem::path& path,std::string_view stem){
+    cadence::content::ObservationPause catalogProbe;
     // Temporary CODM hand names require both exporter provenance and real arm
     // joints. Never classify all special_* assets as hands.
     if(lower(stem).starts_with("special_")){
@@ -190,6 +209,22 @@ Role classifyModelPath(const std::filesystem::path& path,std::string_view stem){
         }catch(...){/* Missing/invalid metadata is not evidence of a hand rig. */}
     }
     const auto name=lower(stem);
+    if(const auto game=gameFromPath(path);imported::supported(game)){
+        if(const auto role=imported::role(game,name))return *role;
+        for(const auto& part:path)if(lower(part.string())=="player"||lower(part.string())=="playermodels")return Role::PlayerModel;
+        // Standalone flat CAST exports have no manifest dependency. Only probe
+        // otherwise-unclassified models, and require an actual humanoid chain.
+        const auto doc=cast::Document::load(path);std::unordered_set<std::string> bones;
+        const auto visit=[&](auto&& self,const cast::Node& n)->void{
+            if(cast::nodeTypeName(n.identifier)=="Bone")if(const auto* p=n.findProperty("n");p&&p->stringValue)bones.insert(lower(*p->stringValue));
+            for(const auto& child:n.children)self(self,child);
+        };
+        if(doc.valid())for(const auto& root:doc.roots())visit(visit,root);
+        if((bones.contains("pelvis")&&bones.contains("head")&&bones.contains("l_thigh")&&bones.contains("r_thigh"))||
+           (bones.contains("valvebiped.bip01_pelvis")&&bones.contains("valvebiped.bip01_head1")&&bones.contains("valvebiped.bip01_l_thigh")&&bones.contains("valvebiped.bip01_r_thigh"))||
+           (bones.contains("bip01 pelvis")&&bones.contains("bip01 head")&&bones.contains("bip01 l thigh")&&bones.contains("bip01 r thigh"))||
+           (bones.contains("cso2_bipm pelvis")&&bones.contains("cso2_bipm l thigh")&&bones.contains("cso2_bipm r thigh")))return Role::PlayerModel;
+    }
     if(gameFromPath(path)=="pointblank"&&!character::pointBlankIdentity(name).empty())
         return name.starts_with("playermode_")?Role::PlayerModel:Role::ViewHands;
     // IW5 has both wpn_ and weapon_ world exports. Explicit view identity
@@ -265,8 +300,8 @@ Role classifyModelPath(const std::filesystem::path& path,std::string_view stem){
 }
 
 std::vector<std::string> compatibilityKeys(std::string_view input,Role role){auto values=tokens(input);std::vector<std::string> result;
-    const std::unordered_set<std::string> common{"t5","t6","t7","iw3","iw4","iw5","iw6","iw7","s1","s2","cod4","mw2","mw3","ghosts","cs2","model","models","wpn","weapon","viewmodel","vm","va","attach","view","world","lod0","lod1","lod2","lod3","base","standard","standard2","operator1","operator2","pro","pro2","royal","atlas","black","gold","mobility","damage","handling","accuracy","range","fire","rate","default","stnd","op01","op02","npc","wm","brock","bshdwl","bwmrpt","cmdtgr","stagger","autumn","blue","choco","hex","marine","multi","red","snake","snow","winter","arctic","woodland"};
-    const std::unordered_set<std::string> attachmentTypes{"silencer","silencer1","silencer2","silencer3","silencer4","fastmag","mag","gl","grip","optic","acog","combo","dualband","mount","holo","ads","mms","rangefinder","reflex","rmr","specter","vzoom","bcpu","dbal","wlp","speedloader"};
+    static const std::unordered_set<std::string> common{"t5","t6","t7","iw3","iw4","iw5","iw6","iw7","s1","s2","cod4","mw2","mw3","ghosts","cs2","model","models","wpn","weapon","viewmodel","vm","va","attach","view","world","lod0","lod1","lod2","lod3","base","standard","standard2","operator1","operator2","pro","pro2","royal","atlas","black","gold","mobility","damage","handling","accuracy","range","fire","rate","default","stnd","op01","op02","npc","wm","brock","bshdwl","bwmrpt","cmdtgr","stagger","autumn","blue","choco","hex","marine","multi","red","snake","snow","winter","arctic","woodland"};
+    static const std::unordered_set<std::string> attachmentTypes{"silencer","silencer1","silencer2","silencer3","silencer4","fastmag","mag","gl","grip","optic","acog","combo","dualband","mount","holo","ads","mms","rangefinder","reflex","rmr","specter","vzoom","bcpu","dbal","wlp","speedloader"};
     for(auto value:values){if(common.contains(value))continue;
         if((role==Role::WorldAttachment||role==Role::ViewAttachment)&&attachmentTypes.contains(value))continue;
         if(value=="scar")value="scarh";else if(value=="scorpion"||value=="evoskorpion")value="skorpion";
@@ -451,8 +486,9 @@ bool scan(const std::filesystem::path& scanRoot,Catalog& catalog,std::string& er
     if(std::filesystem::is_directory(modelRoot,iterationError))traversalRoot=modelRoot;iterationError.clear();
     for(std::filesystem::recursive_directory_iterator it(traversalRoot,std::filesystem::directory_options::skip_permission_denied,iterationError),end;it!=end;it.increment(iterationError)){
         if(iterationError){iterationError.clear();continue;}if(!it->is_regular_file(iterationError)||lower(it->path().extension().string())!=".cast")continue;++imported.scannedCastFiles;
-        if(!isModelPath(it->path()))continue;const auto stem=lower(it->path().stem().string());if(lodAboveZero(stem)){++imported.skippedLods;continue;}
-        Asset asset;asset.path=it->path();asset.name=it->path().stem().string();asset.game=gameFromPath(it->path());
+        const auto game=gameFromPath(it->path());if(!includeImportedModel(it->path(),game))continue;
+        if(!isModelPath(it->path()))continue;const auto stem=lower(assets::imported::utf8(it->path().stem()));if(lodAboveZero(stem)){++imported.skippedLods;continue;}
+        Asset asset;asset.path=it->path();asset.name=assets::imported::utf8(it->path().stem());asset.game=game;
         asset.category=categoryFromPath(it->path());
         asset.role=classifyModelPath(it->path(),stem);
         asset.compatibilityKeys=compatibilityKeys(stem,asset.role);
@@ -476,13 +512,15 @@ bool appendScan(const std::filesystem::path& scanRoot,std::string_view explicitG
     std::vector<Asset> newAssets;
     for(std::filesystem::recursive_directory_iterator it(traversalRoot,std::filesystem::directory_options::skip_permission_denied,iterationError),end;it!=end;it.increment(iterationError)){
         if(iterationError){iterationError.clear();continue;}if(!it->is_regular_file(iterationError)||lower(it->path().extension().string())!=".cast")continue;++catalog.scannedCastFiles;
-        if(!isModelPath(it->path()))continue;const auto stem=lower(it->path().stem().string());if(lodAboveZero(stem)){++catalog.skippedLods;continue;}
+        auto detectedGame=gameFromPath(it->path());
+        const auto game=detectedGame.empty()?defaultGame:detectedGame;
+        if(!includeImportedModel(it->path(),game))continue;
+        if(!isModelPath(it->path()))continue;const auto stem=lower(imported::utf8(it->path().stem()));if(lodAboveZero(stem)){++catalog.skippedLods;continue;}
         const auto normalPath=it->path().lexically_normal().string();
         if(existingPaths.contains(normalPath))continue;
         existingPaths.insert(normalPath);
-        Asset asset;asset.path=it->path();asset.name=it->path().stem().string();
-        auto detectedGame=gameFromPath(it->path());
-        asset.game=detectedGame.empty()?defaultGame:detectedGame;
+        Asset asset;asset.path=it->path();asset.name=imported::utf8(it->path().stem());
+        asset.game=game;
         asset.category=categoryFromPath(it->path());
         asset.role=classifyModelPath(it->path(),stem);
         asset.compatibilityKeys=compatibilityKeys(stem,asset.role);

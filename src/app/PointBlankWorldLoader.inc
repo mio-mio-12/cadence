@@ -1,3 +1,30 @@
+// Diagnostic-only request-local parsing evidence; disabled in normal use.
+struct BodyPreparationTrace {
+    struct Parse { std::filesystem::path path; double milliseconds{}; bool valid{}; };
+    struct Stage { std::string name;std::string identity;double milliseconds{}; };
+    std::vector<Parse> parses;
+    std::vector<Stage> stages;
+};
+thread_local BodyPreparationTrace* activeBodyPreparationTrace=nullptr;
+thread_local std::vector<std::filesystem::path>* activeDonorProvenance=nullptr;
+struct BodyPreparationStage {
+    BodyPreparationTrace* trace=activeBodyPreparationTrace;
+    const char* name;std::string identity;
+    std::chrono::steady_clock::time_point start{};
+    BodyPreparationStage(const char* label,const std::string& key={}):name(label){if(trace){identity=key;start=std::chrono::steady_clock::now();}}
+    ~BodyPreparationStage(){if(trace)trace->stages.push_back({name,std::move(identity),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()});}
+};
+template<class Operation> auto bodyPreparationTimed(const char* name,Operation&& operation)->decltype(operation()){
+    BodyPreparationStage stage(name);return operation();
+}
+cast::Document bodyPreparationDocument(const std::filesystem::path& path){
+    if(!activeBodyPreparationTrace&&!activeDonorProvenance)return cast::Document::load(path);
+    const auto start=activeBodyPreparationTrace?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
+    auto document=cast::Document::load(path);
+    if(activeBodyPreparationTrace)activeBodyPreparationTrace->parses.push_back({document.sourceName(),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count(),document.valid()});
+    if(activeDonorProvenance&&document.valid())activeDonorProvenance->push_back(document.sourceName());
+    return document;
+}
 // One synchronous assembly transaction. No cache survives into a later load,
 // so changed/re-exported assets are always reread without timestamp assumptions.
 struct PointBlankPreparationCache {
@@ -5,19 +32,29 @@ struct PointBlankPreparationCache {
     std::map<std::filesystem::path,cast::Document> documents;
     std::map<std::pair<std::filesystem::path,std::string>,std::filesystem::path> clips;
     std::map<std::string,scene::CastScene> weapons;
-    std::map<std::string,std::optional<scene::Skeleton>> donors;
+    struct Donor {std::optional<scene::Skeleton> skeleton;std::vector<std::filesystem::path> sources;};
+    std::map<std::string,std::string> donorSelections;
+    std::map<std::string,Donor> donors;
+    std::map<std::filesystem::path,scene::Skeleton> nativeBodies;
 };
 thread_local PointBlankPreparationCache* activePointBlankPreparation=nullptr;
 struct PointBlankPreparationBatch {
     PointBlankPreparationCache cache;
     PointBlankPreparationCache* previous=activePointBlankPreparation;
-    PointBlankPreparationBatch(){activePointBlankPreparation=&cache;}
+    PointBlankPreparationBatch(){if(!previous)activePointBlankPreparation=&cache;}
     ~PointBlankPreparationBatch(){activePointBlankPreparation=previous;}
 };
 cast::Document pointBlankReferenceDocument(const std::filesystem::path& path){
-    if(!activePointBlankPreparation)return cast::Document::load(path);
+    BodyPreparationStage stage("document lookup/copy");
+    if(!activePointBlankPreparation)return bodyPreparationDocument(path);
     auto& docs=activePointBlankPreparation->documents;
-    auto it=docs.find(path);if(it==docs.end())it=docs.emplace(path,cast::Document::load(path)).first;
+    // Resolve for every request: identical logical paths can select different
+    // physical exports under nested pack scopes. Keep Document::load's original
+    // input so source-name/resolution semantics remain unchanged on misses.
+    const auto resolved=cadence::content::resolve(path);
+    auto it=docs.find(resolved);
+    if(it==docs.end())it=docs.emplace(resolved,bodyPreparationDocument(path)).first;
+    else if(it->second.valid())cadence::content::observeDocument(std::filesystem::path(it->second.sourceName()));
     return it->second;
 }
 std::filesystem::path pointBlankReferenceClip(const std::filesystem::path& folder,const std::string& desired,bool insensitive){
@@ -33,11 +70,51 @@ std::filesystem::path pointBlankReferenceClip(const std::filesystem::path& folde
     return result;
 }
 std::optional<scene::Skeleton> playerSkeletonForGame(const AppState&,const std::string&);
+bool hasConfiguredBodyDonor(const AppState& app,const std::string& game){
+    const auto found=app.gameReferenceSetups.find(game);if(found==app.gameReferenceSetups.end())return false;
+    const auto index=found->second.playermodelAsset;if(index>=app.assetCatalog.entries.size())return false;
+    const auto& asset=app.assetCatalog.entries[index];return asset.role==assets::Role::PlayerModel&&lowerText(asset.game)==lowerText(game);
+}
+std::string bodyDonorContextKey(const AppState& app,const std::string& game){
+    // Catalogs are immutable during synchronous assembly (async class work uses
+    // its own snapshot). Nested reference overrides remain mutable and keyed.
+    std::string key=game+'\0'+cadence::content::resolverContextKey();
+    const auto add=[&](const auto& v){cadence::prepared_animation::appendValue(key,v);};
+    const auto text=[&](const std::string& v){add(v.size());key+=v;};
+    add(reinterpret_cast<std::uintptr_t>(&app));add(reinterpret_cast<std::uintptr_t>(app.assetCatalog.entries.data()));add(app.assetCatalog.entries.size());text(app.defaultSalukiDirectory.generic_string());
+    const auto index=[&](std::size_t i){add(i);if(i<app.assetCatalog.entries.size()){const auto& a=app.assetCatalog.entries[i];text(a.path.generic_string());text(a.game);text(a.name);}};
+    if(const auto found=app.gameReferenceSetups.find(game);found!=app.gameReferenceSetups.end()){
+        const auto& s=found->second;
+        for(auto i:{s.playermodelAsset,s.headAsset,s.helmetAsset,s.eyewearAsset,s.glovesAsset,s.pantsAsset,s.kneepadAsset,s.bootsAsset,s.exoAsset,s.loadoutAsset,s.shinguardAsset})index(i);
+        add(s.customModularParts.size());for(auto i:s.customModularParts)index(i);
+    }
+    return key;
+}
 std::optional<scene::Skeleton> pointBlankDonor(const AppState& app,const std::string& game){
+    BodyPreparationStage stage("donor lookup/build",game);
     if(!activePointBlankPreparation)return playerSkeletonForGame(app,game);
-    auto& donors=activePointBlankPreparation->donors;auto it=donors.find(game);
-    if(it==donors.end())it=donors.emplace(game,playerSkeletonForGame(app,game)).first;
-    return it->second;
+    auto& cache=*activePointBlankPreparation;const auto context=bodyDonorContextKey(app,game);
+    if(const auto selection=cache.donorSelections.find(context);selection!=cache.donorSelections.end()){
+        const auto& donor=cache.donors.at(selection->second);
+        for(const auto& path:donor.sources)cadence::content::observeDocument(path);
+        return donor.skeleton;
+    }
+    PointBlankPreparationCache::Donor donor;
+    struct ProvenanceScope {std::vector<std::filesystem::path>* previous=activeDonorProvenance;explicit ProvenanceScope(std::vector<std::filesystem::path>& paths){activeDonorProvenance=&paths;}~ProvenanceScope(){activeDonorProvenance=previous;}} scope(donor.sources);
+    donor.skeleton=playerSkeletonForGame(app,game);
+    auto physical=context;for(const auto& path:donor.sources){physical+='\0';physical+=path.generic_string();}
+    cache.donorSelections.emplace(context,physical);
+    const auto inserted=cache.donors.emplace(std::move(physical),std::move(donor));return inserted.first->second.skeleton;
+}
+std::optional<scene::Skeleton> pointBlankNativeBody(const std::filesystem::path& path){
+    const auto physical=cadence::content::resolve(path);
+    if(activePointBlankPreparation)if(const auto found=activePointBlankPreparation->nativeBodies.find(physical);found!=activePointBlankPreparation->nativeBodies.end()){
+        cadence::content::observeDocument(physical);return found->second;
+    }
+    const auto document=pointBlankReferenceDocument(path);if(!document.valid())return {};
+    auto skeleton=scene::buildScene(document,false).skeleton;
+    if(activePointBlankPreparation)activePointBlankPreparation->nativeBodies.emplace(physical,skeleton);
+    return skeleton;
 }
 void configureLegacyWeaponOnPointBlank(AppState& app,scene::CastScene& actor,size_t attachment,const std::string& game,std::string poseGame,weapon::Archetype archetype){
     if(!scene::pointblank::body(actor.skeleton)||attachment>=actor.attachments.size()||game=="pointblank"||game=="codm"||game=="cs2")return;
@@ -68,22 +145,24 @@ void configureLegacyWeaponOnPointBlank(AppState& app,scene::CastScene& actor,siz
     a.rotationDegrees=scene::Vec3{std::atan2(2*(rotation.w*rotation.x+rotation.y*rotation.z),1-2*(rotation.x*rotation.x+rotation.y*rotation.y)),std::asin(std::clamp(2*(rotation.w*rotation.y-rotation.z*rotation.x),-1.f,1.f)),std::atan2(2*(rotation.w*rotation.z+rotation.x*rotation.y),1-2*(rotation.y*rotation.y+rotation.z*rotation.z))}*(180.f/scene::kPi);a.scale=scale;
 }
 bool appendPointBlankWorldAnimation(AppState& app,const cast::Document& document,scene::CastScene& target,const std::string& game,const std::string& targetGame={}){
+    BodyPreparationStage stage("clip conversion inclusive",document.sourceName());
+    if(lowerText(game)!="cs2"&&lowerText(targetGame)!="cs2"&&appendImportedWorldAnimation(app,document,target,game,targetGame))return true;
     const bool native=lowerText(game)=="pointblank",pbTarget=scene::pointblank::body(target.skeleton)||scene::codm::worldBody(target.skeleton);
     const auto family=[](std::string value){value=lowerText(value);return value=="bo2_sp"||value=="bo2+bo2_sp"?std::string("bo2"):value;};
     // Matching names do not imply matching local bind frames. In particular,
     // Ghosts mantles/slides twist AW bodies when appended as raw local tracks.
     if(lowerText(game)=="cs2"||lowerText(targetGame)=="cs2")return false;
     const bool foreign=!targetGame.empty()&&family(targetGame)!=family(game);
-    if(!native&&!pbTarget&&!foreign)return false;
+    if(!native&&!pbTarget&&!foreign&&!hasConfiguredBodyDonor(app,game))return false;
     const auto filename=lowerText(std::filesystem::path(document.sourceName()).filename().string());
     // UI ceremony/preview poses are not combat locomotion.
     if(native&&filename.find("_ui_")!=std::string::npos)return true;
     std::optional<scene::Skeleton> skeleton;
-    if(native){
+    if(native&&hasConfiguredBodyDonor(app,game))skeleton=pointBlankDonor(app,game);
+    else if(native){
         const auto wanted=filename.find("female")!=std::string::npos?"playermode_swat_female_swat-sniper_fb":"playermode_swat_male_fb";
         for(const auto& asset:app.assetCatalog.entries)if(lowerText(asset.game)=="pointblank"&&lowerText(asset.name)==wanted){
-            static std::map<std::filesystem::path,scene::Skeleton> references;auto it=references.find(asset.path);if(it==references.end()){auto doc=cast::Document::load(asset.path);if(doc.valid())it=references.emplace(asset.path,scene::buildScene(doc,false).skeleton).first;}
-            if(it!=references.end())skeleton=it->second;break;
+            skeleton=pointBlankNativeBody(asset.path);break;
         }
     }else skeleton=pointBlankDonor(app,family(game));
     if(!skeleton){target.warnings.push_back("Missing native world reference for "+game+": "+filename);return true;}

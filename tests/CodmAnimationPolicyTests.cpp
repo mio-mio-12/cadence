@@ -56,6 +56,17 @@ int main(){
  for(auto suffix:{"weapon_idle","weapon_fire","weapon_change_clip","weapon_change_clip_e","weapon_equip","weapon_put_down","weapon_run","ads_up","un_aiming_on"})add(suffix,20);
  cadence::codm_actions::prepare(s);CHECK(s.animations.size()==9);
  weapon::Profile aliases;cadence::codm_actions::populate(s,aliases,s.codmNativeWeaponStem);
+ add("first_raise",30);add("open_door",32);
+ aliases.animations["first_raise"]=prefix+"first_raise.cast";
+ aliases.animationVariants["first_raise"]={prefix+"open_door.cast"};
+ cadence::codm_actions::populate(s,aliases,s.codmNativeWeaponStem);
+ CHECK(aliases.animations.at("first_raise")==aliases.animations.at("pullout"));
+ CHECK(!aliases.animationVariants.contains("first_raise"));
+ aliases.animations["first_raise"]=prefix+"open_door.cast";
+ aliases.stats.firstRaiseTime=1.7f;aliases.stats.raiseTime=.4f;
+ cadence::codm_actions::populate(s,aliases,s.codmNativeWeaponStem);
+ CHECK(aliases.stats.firstRaiseTime==1.7f&&aliases.stats.raiseTime==.4f);
+ CHECK(aliases.animations.at("first_raise")==aliases.animations.at("pullout"));
  for(auto slot:{"idle","fire","ads_fire","reload","reload_empty","pullout","putaway","sprint_loop","ads_up","ads_down"})CHECK(aliases.animations.contains(slot));
  CHECK(aliases.animations.at("ads_down")==prefix+"un_aiming_on.cast");
  add("jump_start",12);add("jump_end",14);cadence::codm_actions::prepare(s);cadence::codm_actions::populate(s,aliases,s.codmNativeWeaponStem);

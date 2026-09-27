@@ -14,13 +14,25 @@ class WeaponPickerCache {
     const assets::Asset* data_{};std::size_t size_{};bool indexed_{};
     struct Winner {std::string name;bool base{};};
     std::unordered_map<std::string,Winner> coldWar_;
+    bool importedIndexed_{};
+    std::unordered_map<std::string,std::string> importedWinners_;
     std::map<std::pair<std::string,int>,std::vector<std::size_t>> pools_;
     static std::string lower(std::string s){for(auto& c:s)c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));return s;}
     static std::string family(const assets::Asset& a){const auto g=lower(a.game);return a.role==assets::Role::ViewWeapon&&(g=="bocw_sp"||g=="bocw"||g=="t9")?assets::coldWarWeaponFamily(a.name):std::string{};}
     void bind(const assets::Catalog& c){if(data_!=c.entries.data()||size_!=c.entries.size()){clear();data_=c.entries.data();size_=c.entries.size();}}
 public:
     std::size_t indexBuilds{},poolBuilds{};
-    void clear(){data_=nullptr;size_=0;indexed_=false;coldWar_.clear();pools_.clear();}
+    void clear(){data_=nullptr;size_=0;indexed_=false;importedIndexed_=false;coldWar_.clear();importedWinners_.clear();pools_.clear();}
+    static std::string importedFamily(const assets::Asset& a){
+        if(lower(a.game)!="eldewrito"||a.role!=assets::Role::ViewWeapon)return {};
+        const auto name=lower(a.name);const auto fp=name.rfind("_fp_");if(fp==std::string::npos)return {};
+        return name.substr(0,fp)+(name.ends_with("_dual_weapon")?"_dual":"");
+    }
+    bool isImportedVariant(const assets::Catalog& c,const assets::Asset& a){
+        const auto f=importedFamily(a);if(f.empty())return false;bind(c);
+        if(!importedIndexed_){for(const auto& candidate:c.entries){const auto key=importedFamily(candidate);if(key.empty())continue;auto [it,inserted]=importedWinners_.try_emplace(key,candidate.name);if(!inserted&&candidate.name<it->second)it->second=candidate.name;}importedIndexed_=true;}
+        const auto it=importedWinners_.find(f);return it!=importedWinners_.end()&&it->second!=a.name;
+    }
     bool isColdWarVariant(const assets::Catalog& c,const assets::Asset& a){
         const auto f=family(a);if(f.empty())return false;bind(c);
         if(!indexed_){

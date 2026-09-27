@@ -23,6 +23,11 @@ int main(){
     Actor falling;falling.position={0,0,401.82f};falling.velocity.z=-48.768f;falling.grounded=false;
     for(int i=0;i<100;++i){stepOnMap(falling,.008f,1,overlay);check(falling.position.z>=400.f);}
     check(falling.grounded);
+    Actor corpse;corpse.position={0,0,401.82f};corpse.velocity.z=-48.768f;corpse.grounded=false;
+    for(int i=0;i<100;++i){stepCorpseOnMap(corpse,.016f,overlay);check(corpse.position.z<=401.82f&&corpse.position.z>=400.f);}
+    check(corpse.grounded);
+    corpse={};corpse.position.z=-900;corpse.grounded=false;Floor absent;absent.exists=false;
+    stepCorpseOnMap(corpse,.016f,absent);check(corpse.position.z< -900&&!corpse.grounded);
     stepOnMap(b,.008f,1,map);check(b.position.z>49&& !b.grounded); // No 56cm early ground snap.
     for(int i=0;i<200;++i)stepOnMap(b,.008f,1,map);check(b.grounded&&std::abs(b.position.z)<.001f);
     b.position.z=50;b.grounded=true;map.exists=false;stepOnMap(b,.008f,1,map);check(!b.grounded&&b.position.z<50);

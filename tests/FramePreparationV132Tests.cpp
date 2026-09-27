@@ -18,6 +18,18 @@ static bool equal(const std::vector<Transform>& a,const std::vector<Transform>& 
     }return true;
 }
 static bool equal(const std::vector<Mat4>& a,const std::vector<Mat4>& b){return a.size()==b.size()&&(a.empty()||std::memcmp(a.data(),b.data(),a.size()*sizeof(Mat4))==0);}
+// Frozen pre-v247 FK loop: a separate oracle, not the new allocating wrapper.
+static std::vector<Mat4> referenceGlobals(const CastScene& s,const std::vector<Transform>& local){
+    std::vector<Mat4> globals(local.size());
+    for(std::size_t i=0;i<local.size();++i){
+        const auto matrix=trs(local[i].position,local[i].rotation,local[i].scale);
+        const auto parent=s.skeleton.bones[i].parent;globals[i]=parent>=0?globals[parent]*matrix:matrix;
+        if(s.codmNativeCentimetres)for(const auto& [target,source]:s.nativePoseFollowers)if(target==i&&source<i){globals[i]=globals[source];break;}
+        if(s.codmRigAdapter&&i>=s.codmRigAdapter->firstBone&&i-s.codmRigAdapter->firstBone<s.codmRigAdapter->bindings.size()){
+            const auto& b=s.codmRigAdapter->bindings[i-s.codmRigAdapter->firstBone];if(b.source<i){globals[i]=globals[b.source]*b.offset;if(b.rollSource<i&&b.rollWeight>0){Vec3 p0,p1,s0,s1;Quat q0,q1;decomposeAffine(globals[i],p0,q0,s0);decomposeAffine(globals[b.rollSource]*b.rollOffset,p1,q1,s1);globals[i]=trs(lerp(p0,p1,b.rollWeight),slerp(q0,q1,b.rollWeight),lerp(s0,s1,b.rollWeight));}}
+        }
+    }return globals;
+}
 static CastScene fixture(){
     CastScene s;
     for(int i=0;i<102;++i){Bone b;b.parent=i?((i-1)/3):-1;b.name=i%11==0?"tag_magazine":i%13==0?"tag_ads":"joint_"+std::to_string(i);b.restLocal.position={.1f*i,.2f,.3f};s.skeleton.bones.push_back(b);}
@@ -32,6 +44,9 @@ static CastScene fixture(){
 }
 static void poses(){
     auto s=fixture();ReferenceSceneV131 old;static_cast<CastScene&>(old)=s;
+    std::vector<Transform> reusedLocal;std::vector<Mat4> reusedGlobal;
+    reusedLocal.reserve(300);reusedGlobal.reserve(300);
+    const auto* localStorage=reusedLocal.data();const auto* globalStorage=reusedGlobal.data();
     std::vector<PoseSlot> slots(2);
     for(int i=0;i<6;++i){PoseLayer n;n.animation=i+1;n.weight=.17f*(i+1);n.mode=i%2?LayerMode::Additive:LayerMode::Override;n.preserveWeaponMechanisms=true;n.preserveViewmodelAimRoot=true;n.suppressRootMotion=i%2;n.referenceAnimation=2;n.referenceFrame=8;slots[i%2].nodes.push_back(n);}
     for(int step=0;step<170;++step){
@@ -47,13 +62,35 @@ static void poses(){
         if(step==100)slots[0].nodes[1].weight=0;
         if(step==110)slots[0].nodes[1].weight=.7f;
         if(step==120)slots[1].nodes[0].referenceAnimation=999;
+        if(step==130){s.codmNativeCentimetres=true;s.nativePoseFollowers={{85,30},{86,31}};}
+        if(step==140){auto adapter=std::make_shared<CodmRigAdapter>();adapter->firstBone=90;CodmRigBinding binding;binding.source=50;binding.offset=translation({1,2,3});binding.rollSource=20;binding.rollOffset=translation({.2f,.3f,.4f});binding.rollWeight=.35f;adapter->bindings.push_back(binding);s.codmRigAdapter=adapter;}
         static_cast<CastScene&>(old)=s;
         CHECK(equal(s.sampleLocalPoseSlots(0,frame,slots),old.sampleLocalPoseSlots(0,frame,slots)));
+        s.sampleLocalPoseSlotsInto(0,frame,slots,reusedLocal);
+        CHECK(equal(reusedLocal,old.sampleLocalPoseSlots(0,frame,slots)));
+        s.globalPoseInto(reusedLocal,reusedGlobal);
+        CHECK(equal(reusedGlobal,old.samplePoseSlots(0,frame,slots)));
+        CHECK(equal(reusedGlobal,referenceGlobals(s,reusedLocal)));
+        CHECK(reusedLocal.data()==localStorage&&reusedGlobal.data()==globalStorage);
         CHECK(equal(s.samplePoseSlots(0,frame,slots),old.samplePoseSlots(0,frame,slots)));
         CHECK(equal(s.sampleLayerStack(0,frame,slots[0].nodes),old.sampleLayerStack(0,frame,slots[0].nodes)));
         for(auto mode:{LayerMode::Additive,LayerMode::Override})CHECK(equal(s.sampleLayeredPose(0,frame,1,frame+.3f,.6f,mode,true),old.sampleLayeredPose(0,frame,1,frame+.3f,.6f,mode,true)));
         std::vector<Transform> output(300);s.sampleLocalPoseInto(0,frame,output);CHECK(equal(output,s.sampleLocalPose(0,frame)));
     }
+    // A forward-parent export must not read the previous frame's destination.
+    // This intentionally preserves the old FK behavior rather than repairing
+    // malformed ordering as part of a storage-only optimization.
+    auto forward=fixture();forward.skeleton.bones[1].parent=3;
+    for(float frame:{19.f,2.f,59.f,0.f}){
+        forward.sampleLocalPoseSlotsInto(0,frame,{},reusedLocal);
+        forward.globalPoseInto(reusedLocal,reusedGlobal);
+        CHECK(equal(reusedGlobal,referenceGlobals(forward,reusedLocal)));
+        CHECK(reusedGlobal.data()==globalStorage);
+    }
+    // Shrinking/reusing a destination cannot leave stale transforms visible.
+    CastScene empty;empty.sampleLocalPoseSlotsInto(0,0,{},reusedLocal);empty.globalPoseInto(reusedLocal,reusedGlobal);
+    CHECK(reusedLocal.empty()&&reusedGlobal.empty());
+    CHECK(reusedLocal.data()==localStorage&&reusedGlobal.data()==globalStorage);
     // Recursion leases never overwrite storage still in use by an outer evaluator.
     pose_detail::Lease outer;outer.workspace.samples.resize(1);outer.workspace.samples[0].weight=123;
     {pose_detail::Lease inner;CHECK(&inner.workspace!=&outer.workspace);inner.workspace.samples.resize(1);inner.workspace.samples[0].weight=456;}

@@ -74,6 +74,11 @@ int main(){
         check(index.files(root/"missing").size()==1,"missing folder must not be negatively cached");
         Index nextRequest;
         check(indexed(nextRequest,root,"vm_",{})==original(root,"vm_",{}),"fresh request mismatch");
+        const auto unicode=root/fs::path(u8"diagnostic_native_\uAE40\uC601\uC900_idle.cast");
+        touch(unicode);advance(root);
+        Index unicodeRequest;
+        const auto& unicodeFiles=unicodeRequest.files(root);
+        check(std::any_of(unicodeFiles.begin(),unicodeFiles.end(),[&](const auto& f){return f.path==unicode;}),"Unicode diagnostic filename must not abort library scan");
         std::cout<<"Animation index: matcher parity, stable reuse, nested add/rename/delete, missing root and fresh request PASS\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

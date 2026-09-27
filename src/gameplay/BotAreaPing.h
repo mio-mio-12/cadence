@@ -6,6 +6,7 @@ namespace gameplay::bot {
 struct AreaPing {
     scene::Vec3 point{};
     float remaining{};
+    float arrivalRadius{100.f};
     std::uint32_t sequence{};
     std::vector<std::uint32_t> recipients;
     bool contains(std::uint32_t id)const{return remaining>0&&std::find(recipients.begin(),recipients.end(),id)!=recipients.end();}
@@ -18,12 +19,19 @@ struct AreaPing {
         const auto rank=[&](std::uint32_t id){std::uint32_t v=id^(sequence*0x9e3779b9u);v^=v>>16;v*=0x7feb352du;v^=v>>15;return v;};
         std::sort(recipients.begin(),recipients.end(),[&](auto a,auto b){return rank(a)==rank(b)?a<b:rank(a)<rank(b);});
         recipients.resize(static_cast<size_t>(std::lround(recipients.size()*std::clamp(percent,0.f,100.f)/100.f)));
-        remaining=recipients.empty()?0.f:20.f;
+        arrivalRadius=std::clamp(float(recipients.size())*18.f,100.f,350.f);
+        // Give long routes and budgeted searches time to complete. This is an
+        // upper bound, not a forced wait: arrivals and dead bots leave below.
+        remaining=recipients.empty()?0.f:120.f;
+        for(const auto& bot:bots)if(contains(bot.id))remaining=std::max(remaining,std::min(300.f,60.f+horizontalDistance(bot.position,point)/100.f));
     }
     void advance(float delta,const std::vector<Actor>& bots){
         remaining=std::max(0.f,remaining-std::max(0.f,delta));
         if(remaining<=0){clear();return;}
-        std::erase_if(recipients,[&](auto id){auto b=std::find_if(bots.begin(),bots.end(),[&](const auto& b){return b.id==id;});return b==bots.end()||!b->alive||(horizontalDistance(b->position,point)<100.f&&std::abs(b->position.z-point.z)<65.f);});
+        std::erase_if(recipients,[&](auto id){
+            const auto b=std::find_if(bots.begin(),bots.end(),[&](const auto& b){return b.id==id;});
+            return b==bots.end()||!b->alive||(b->grounded&&!b->mantling&&horizontalDistance(b->position,point)<arrivalRadius&&std::abs(b->position.z-point.z)<65.f);
+        });
     }
 };
 }

@@ -1,3 +1,4 @@
+
 // Numeric groups shared by save, staged load, and copy. Runtime counters and GPU handles are deliberately excluded.
 template<class App> auto hitmarker_shapeValues(App& app){return std::tie(app.hitmarkerEnabled,app.hitmarkerProcedural,app.hitmarkerDot,app.hitmarkerArms,app.hitmarkerGap,app.hitmarkerLength,app.hitmarkerThickness,app.hitmarkerRotation,app.hitmarkerOutline,app.hitmarkerDotSize,app.hitmarkerOpacity,app.hitmarkerFadePower,app.hitmarkerPulse,app.hitmarkerDurationScale,app.hitmarkerKillScale,app.hitmarkerSpriteSize);}
 template<class App> auto hitmarker_colorsValues(App& app){return std::tie(app.hitmarkerColor.x,app.hitmarkerColor.y,app.hitmarkerColor.z,app.hitmarkerColor.w,app.hitmarkerHeadColor.x,app.hitmarkerHeadColor.y,app.hitmarkerHeadColor.z,app.hitmarkerHeadColor.w,app.hitmarkerKillColor.x,app.hitmarkerKillColor.y,app.hitmarkerKillColor.z,app.hitmarkerKillColor.w,app.hitmarkerOutlineColor.x,app.hitmarkerOutlineColor.y,app.hitmarkerOutlineColor.z,app.hitmarkerOutlineColor.w);}
@@ -19,6 +20,7 @@ template<class App,class F> void forEachExtendedVisualGroup(App& app,F&& visit){
     visit("material_visual",material_visualValues(app));
     visit("lens_visual",lens_visualValues(app));
     visit("lighting_visual",lighting_visualValues(app));
+    visit("weapon_lighting",std::tie(app.weaponSunMultiplier,app.weaponAmbientMultiplier));
     visit("campath_visual",campath_visualValues(app));
     visit("water_placement",water_placementValues(app));
     visit("sky_calibration",sky_calibrationValues(app));

@@ -1,4 +1,5 @@
 #include "render/RainField.h"
+#include "render/ShelterCeilingReuse.h"
 #include "render/RainBlockers.h"
 #include "render/SurfaceWeather.h"
 #include <sstream>
@@ -7,6 +8,25 @@
 #define CHECK(x) do{if(!(x)){std::cerr<<"FAIL "<<__LINE__<<" "<<#x<<'\n';return 1;}}while(false)
 int main(){
     using namespace render::rain;
+    {ShelterCeilingReuse reuse;CHECK(!reuse.contains(5000));
+     reuse.set(300,1000,true,500);CHECK(reuse.contains(310)&&reuse.contains(999));
+     CHECK(!reuse.contains(309)&&!reuse.contains(1000));
+     reuse.set(300,1000,true,305);CHECK(!reuse.contains(500)); // clipped projection
+     reuse.set(300,1000,false,500);CHECK(!reuse.contains(500)); // empty/flat fallback
+     reuse.set(-300,1000,true,-200);CHECK(reuse.contains(-290)&&!reuse.contains(-291));
+     // Compare each allowed reuse against a fresh mesh selection/projection.
+     for(float previous=0;previous<1200;previous+=7){
+       float top=-1e8f,next=1e30f;int mask=0;
+       const float lo[]={-100,400,800},hi[]={100,600,1000};
+       for(int i=0;i<3;++i){if(lo[i]>previous)next=std::min(next,lo[i]);else{mask|=1<<i;top=std::max(top,hi[i]);}}
+       reuse.set(top,next,true,previous);
+       for(float current=0;current<1200;current+=11)if(reuse.contains(current)){
+         float fresh=-1e8f;int freshMask=0;
+         for(int i=0;i<3;++i)if(lo[i]<=current){freshMask|=1<<i;fresh=std::max(fresh,hi[i]);}
+         CHECK(freshMask==mask);CHECK(std::min(fresh+10,current)==std::min(top+10,previous));
+       }
+     }
+    }
     CHECK(nonblockingSurface("MP_Shipment_CN_Skybox_01"));CHECK(nonblockingSurface("invisible_wall"));CHECK(!nonblockingSurface("skyscraper_roof"));CHECK(!nonblockingSurface("roof"));
     CHECK(Settings{}.blockerDistance==50);
     {render::WetSettings s;CHECK(s.droplets==1&&s.dropSize==.23f&&s.rivulets==.277f&&s.flow==1);CHECK(s.detail.randomness==1.3f&&s.detail.flowDisplacement==.541f&&s.detail.flowDetail==7.721f&&s.detail.normalStrength==.342f);}

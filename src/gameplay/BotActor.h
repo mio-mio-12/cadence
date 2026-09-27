@@ -23,6 +23,9 @@ struct Input {
     float forward{},right{};
     bool sprint{},jump{},ads{},fire{},reload{},melee{},equipment{};
 };
+inline float movementThrottleTarget(const Input& input){
+    return std::abs(input.forward)+std::abs(input.right)>.01f?1.f:0.f;
+}
 
 enum class BehaviorState { Idle, Patrol, Chase, Flank, Engage, Dead };
 

@@ -2,8 +2,11 @@
 #include <cgltf.h>
 
 #include "scene/GlbMap.h"
+#include "content/AssetPaths.h"
+#include "content/GltfDependencies.h"
 #include "scene/SpawnSelection.h"
 #include "scene/CodmMaterialMetadata.h"
+#include "scene/MapTextureCache.h"
 
 #include <algorithm>
 #include <array>
@@ -15,6 +18,17 @@
 #include <unordered_map>
 
 namespace scene::glb {
+static cgltf_result packageFileRead(const cgltf_memory_options* memory,const cgltf_file_options*,const char* filename,cgltf_size* size,void** data){
+    try{
+        // The map has already been resolved to its owning package. Read the
+        // validated relative buffer there, without another global pack lookup.
+        std::ifstream input(cadence::content::longPath(std::filesystem::u8path(filename)),std::ios::binary|std::ios::ate);
+        if(!input)return cgltf_result_file_not_found;const auto available=input.tellg();if(available<0)return cgltf_result_io_error;
+        const cgltf_size amount=*size?*size:static_cast<cgltf_size>(available);if(amount>static_cast<cgltf_size>(available))return cgltf_result_data_too_short;
+        const auto allocate=memory->alloc_func?memory->alloc_func:cgltf_default_alloc;const auto release=memory->free_func?memory->free_func:cgltf_default_free;
+        void* bytes=allocate(memory->user_data,amount);if(!bytes)return cgltf_result_out_of_memory;input.seekg(0);input.read(static_cast<char*>(bytes),amount);if(!input){release(memory->user_data,bytes);return cgltf_result_io_error;}*size=amount;*data=bytes;return cgltf_result_success;
+    }catch(...){return cgltf_result_io_error;}
+}
 namespace {
 
 constexpr float kMetersToWorld=100.0f;
@@ -34,7 +48,7 @@ void growBounds(Bounds& bounds,Vec3 p){if(!bounds.valid){bounds.minimum=bounds.m
 
 std::filesystem::path materialTexture(const cgltf_texture_view* view,const std::filesystem::path& source,const std::filesystem::path& cache,std::unordered_map<const cgltf_image*,std::filesystem::path>& extracted){
     if(!view||!view->texture)return {};const auto* texture=view->texture;const auto* image=texture->has_webp&&texture->webp_image?texture->webp_image:texture->image;if(!image)return {};
-    if(image->uri&&image->uri[0]&&std::string_view(image->uri).find("data:")!=0)return source.parent_path()/std::filesystem::u8path(image->uri);
+    if(image->uri)if(const auto resource=cadence::content::gltf::decodedResourcePath(source.parent_path(),image->uri))return cadence::content::resolveFor(*resource,source);
     if(const auto found=extracted.find(image);found!=extracted.end())return found->second;if(!image->buffer_view||!image->buffer_view->buffer||!image->buffer_view->buffer->data)return {};
     std::string extension=".bin";const std::string mime=image->mime_type?image->mime_type:"";if(mime.find("png")!=std::string::npos)extension=".png";else if(mime.find("jpeg")!=std::string::npos||mime.find("jpg")!=std::string::npos)extension=".jpg";else if(mime.find("webp")!=std::string::npos)extension=".webp";
     std::error_code ec;std::filesystem::create_directories(cache,ec);const auto path=cache/("image_"+std::to_string(extracted.size())+extension);const auto* bytes=static_cast<const std::uint8_t*>(image->buffer_view->buffer->data)+image->buffer_view->offset;std::ofstream output(path,std::ios::binary|std::ios::trunc);if(!output)return {};output.write(reinterpret_cast<const char*>(bytes),static_cast<std::streamsize>(image->buffer_view->size));if(!output)return {};extracted.emplace(image,path);return path;
@@ -150,6 +164,11 @@ bool visitRanges(const CollisionRangeIndex& index,std::size_t cell,
 } // namespace
 
 void Map::buildCollisionIndex(){
+    hasLadderTriangles=hasBounceTriangles=hasBoostTriangles=false;
+    for(const auto& tri:collision){
+        hasLadderTriangles|=tri.ladder;hasBounceTriangles|=tri.bounce;
+        hasBoostTriangles|=tri.speedboost||tri.speedboost2;
+    }
     shotGeometry.reset();
     if(authoredCollision.present && !scene.meshes.empty()){
         auto geometry=std::make_shared<Map>();
@@ -643,31 +662,44 @@ Map::SurfContact Map::findSurfContact(Vec3 position, float radius, float height,
     return result;
 }
 
-std::optional<Vec3> Map::mantleTarget(Vec3 position,Vec3 forward,float radius,float height,float stepHeight,float maxHeight,float checkRange,float minHeight,bool useAuthored) const{
+std::optional<Vec3> Map::mantleTarget(Vec3 position,Vec3 forward,float radius,float height,float stepHeight,float maxHeight,float checkRange,float minHeight,bool useAuthored,MantleGround* sharedGround) const{
     forward.z=0;if(length(forward)<0.5f)return std::nullopt;forward=normalize(forward);
     if(useAuthored)for(const auto direction:gameplay.mantleDirections(position,forward,radius,height,checkRange))
-        if(const auto target=mantleTarget(position,direction,radius,height,stepHeight,maxHeight,checkRange,minHeight,false))return target;
+        if(const auto target=mantleTarget(position,direction,radius,height,stepHeight,maxHeight,checkRange,minHeight,false,sharedGround))return target;
     constexpr float noGround=-std::numeric_limits<float>::max()*0.25f;
-    const float currentGround = navigationGroundHeight(position.x, position.y, position.z + stepHeight, noGround, radius * 0.45f);
+    const bool reuse=sharedGround&&sharedGround->owner==this&&sharedGround->position.x==position.x&&sharedGround->position.y==position.y&&sharedGround->position.z==position.z&&sharedGround->radius==radius&&sharedGround->stepHeight==stepHeight;
+    const float currentGround = reuse?sharedGround->ground:navigationGroundHeight(position.x, position.y, position.z + stepHeight, noGround, radius * 0.45f);
+    if(sharedGround&&!reuse)*sharedGround={this,position,radius,stepHeight,currentGround};
     const bool isAirborne = (currentGround > noGround * 0.5f) && (position.z > currentGround + 4.0f);
 
+    // Reject impossible destination heights before the expensive approach
+    // probes. Stop at the first viable sample and reuse that exact value:
+    // successful queries keep their original candidate order and query count.
+    const auto viableHeight=[&](float top){
+        if(top<=noGround*0.5f)return false;
+        const float rise=top-position.z;
+        if(rise<minHeight)return false;
+        if(isAirborne)return !(rise < -height*.45f||rise>maxHeight||
+            (currentGround>noGround*.5f&&top<=currentGround+stepHeight+2.f));
+        return !(rise<=stepHeight+4.f||rise>maxHeight);
+    };
+    const auto sampleTarget=[&](int sample){return position+forward*(radius+checkRange*(static_cast<float>(sample)/4.f));};
+    int firstCandidate=1;float firstTop=noGround;
+    for(;firstCandidate<=4;++firstCandidate){const auto target=sampleTarget(firstCandidate);
+        firstTop=navigationGroundHeight(target.x,target.y,position.z+maxHeight,noGround,radius*.70f);
+        if(viableHeight(firstTop))break;
+    }
+    if(firstCandidate>4)return std::nullopt;
+
     const float probeDistance=radius+checkRange;
-    bool frontBlocked=false;
+    // Airborne acquisition has always accepted an unobstructed approach.
+    // Previously both obstruction loops ran before forcing this true anyway.
+    // Keep the grounded probes and all destination/path checks unchanged.
+    bool frontBlocked=isAirborne;
     for(int sample=1;sample<=8&&!frontBlocked;++sample){
         const float distance=probeDistance*(static_cast<float>(sample)/8.0f);
         const Vec3 result=constrainMove(position,position+forward*distance,radius,height,stepHeight);
         frontBlocked=dot(result-position,forward)<distance-1.0f;
-    }
-    if(!frontBlocked && isAirborne && currentGround > noGround * 0.5f){
-        const Vec3 lowerPos{position.x, position.y, currentGround + stepHeight * 1.5f};
-        for(int sample=1;sample<=8&&!frontBlocked;++sample){
-            const float distance=probeDistance*(static_cast<float>(sample)/8.0f);
-            const Vec3 result=constrainMove(lowerPos,lowerPos+forward*distance,radius,height,stepHeight);
-            frontBlocked=dot(result-lowerPos,forward)<distance-1.0f;
-        }
-    }
-    if(!frontBlocked && isAirborne){
-        frontBlocked = true;
     }
     if(!frontBlocked)return std::nullopt;
     const auto capsuleClear=[&](Vec3 target){
@@ -703,21 +735,10 @@ std::optional<Vec3> Map::mantleTarget(Vec3 position,Vec3 forward,float radius,fl
         if(clear)clear=visitRanges(blockingRanges,gridBlocking.size(),globalBlocking,overlaps,testTriangle);
         return clear;
     };
-    for(int sample=1;sample<=4;++sample){
-        const float distance=radius+checkRange*(static_cast<float>(sample)/4.0f);
-        Vec3 target=position+forward*distance;
-        const float top=navigationGroundHeight(target.x,target.y,position.z+maxHeight,noGround,radius*0.70f);
-        if(top<=noGround*0.5f)continue;
-        const float rise=top-position.z;
-        // Minimum rise is measured from the current feet position for both
-        // grounded and airborne acquisition. Omitted preserves legacy policy.
-        if(rise<minHeight)continue;
-        if(isAirborne){
-            if(rise < -height * 0.45f || rise > maxHeight) continue;
-            if(currentGround > noGround * 0.5f && top <= currentGround + stepHeight + 2.0f) continue;
-        }else{
-            if(rise<=stepHeight+4.0f||rise>maxHeight)continue;
-        }
+    for(int sample=firstCandidate;sample<=4;++sample){
+        Vec3 target=sampleTarget(sample);
+        const float top=sample==firstCandidate?firstTop:navigationGroundHeight(target.x,target.y,position.z+maxHeight,noGround,radius*0.70f);
+        if(!viableHeight(top))continue;
         target.z=top;
         if(capsuleClear(target))return target;
     }
@@ -725,6 +746,7 @@ std::optional<Vec3> Map::mantleTarget(Vec3 position,Vec3 forward,float radius,fl
 }
 
 bool Map::isBounceSurface(float x, float y, float z, float radius) const {
+    if(!hasBounceTriangles)return false;
     const int minX = gridCoordX(x - radius), maxX = gridCoordX(x + radius);
     const int minY = gridCoordY(y - radius), maxY = gridCoordY(y + radius);
     const auto testTriangle = [&](std::uint32_t index) -> bool {
@@ -753,6 +775,7 @@ bool Map::isBounceSurface(float x, float y, float z, float radius) const {
 }
 
 int Map::speedBoostTier(float x, float y, float z, float radius) const {
+    if(!hasBoostTriangles)return 0;
     const int minX = gridCoordX(x - radius), maxX = gridCoordX(x + radius);
     const int minY = gridCoordY(y - radius), maxY = gridCoordY(y + radius);
     int tier = 0;
@@ -787,6 +810,7 @@ int Map::speedBoostTier(float x, float y, float z, float radius) const {
 }
 
 std::optional<Vec3> Map::findLadderContact(Vec3 position, float radius, float height) const {
+    if(!hasLadderTriangles)return std::nullopt;
     const int minX = gridCoordX(position.x - radius - 10.0f), maxX = gridCoordX(position.x + radius + 10.0f);
     const int minY = gridCoordY(position.y - radius - 10.0f), maxY = gridCoordY(position.y + radius + 10.0f);
     std::optional<Vec3> ladderNormal;
@@ -820,14 +844,28 @@ std::optional<Vec3> Map::findLadderContact(Vec3 position, float radius, float he
 }
 
 bool load(const std::filesystem::path& path,Map& map,std::string& error,float scaleMultiplier,bool buildRenderCollision){
-    error.clear();map={};map.scaleMultiplier=scaleMultiplier;cgltf_options options{};cgltf_data* data{};const auto utf8=path.u8string();const std::string filename(reinterpret_cast<const char*>(utf8.data()),utf8.size());auto result=cgltf_parse_file(&options,filename.c_str(),&data);if(result!=cgltf_result_success){error="Could not parse GLB (cgltf result "+std::to_string(static_cast<int>(result))+")";return false;}const auto cleanup=[&]{cgltf_free(data);};
+    error.clear();map={};map.scaleMultiplier=scaleMultiplier;cgltf_options options{};options.file.read=packageFileRead;cgltf_data* data{};const auto utf8=path.u8string();const std::string filename(reinterpret_cast<const char*>(utf8.data()),utf8.size());auto result=cgltf_parse_file(&options,filename.c_str(),&data);if(result!=cgltf_result_success){error="Could not parse GLB (cgltf result "+std::to_string(static_cast<int>(result))+")";return false;}const auto cleanup=[&]{cgltf_free(data);};
     try{
-        const auto validateUri=[&](const char* uri){if(uri&&uri[0]&&!std::string_view(uri).starts_with("data:"))codm::packageTexturePath(path.parent_path(),uri);};
+        // cgltf retains JSON escapes, then decodes URI percent escapes when
+        // opening buffers. Unescape JSON here, validate the eventual path, and
+        // leave percent escapes intact so the buffer loader decodes only once.
+        const auto validateUri=[&](char* uri){
+            if(!uri)return;
+            const std::string raw(uri);
+            const auto decoded=codm::parseJson("\""+raw+"\"").get<std::string>();
+            if(decoded.find('\0')!=std::string::npos||decoded.size()>raw.size())throw std::runtime_error("Invalid glTF resource string");
+            cadence::content::gltf::decodedResourcePath(path.parent_path(),decoded);
+            std::copy(decoded.begin(),decoded.end(),uri);uri[decoded.size()]='\0';
+        };
         for(cgltf_size i=0;i<data->images_count;++i)validateUri(data->images[i].uri);
         for(cgltf_size i=0;i<data->buffers_count;++i)validateUri(data->buffers[i].uri);
     }catch(const std::exception& e){cleanup();error=std::string("Unsafe GLB package resource: ")+e.what();return false;}
     result=cgltf_load_buffers(&options,data,filename.c_str());if(result!=cgltf_result_success){cleanup();error="Could not load GLB buffers";return false;}if(cgltf_validate(data)!=cgltf_result_success){cleanup();error="GLB validation failed";return false;}
-    std::error_code ec;const auto cache=std::filesystem::temp_directory_path(ec)/"CastStage"/"glb_cache"/path.stem();std::unordered_map<const cgltf_image*,std::filesystem::path> extracted;std::unordered_map<const cgltf_material*,std::size_t> materialMeshes;
+    std::filesystem::path cache;
+    try{
+        for(cgltf_size i=0;i<data->images_count;++i)if(data->images[i].buffer_view){cache=textureCacheDirectory(path);break;}
+    }catch(const std::exception& e){cleanup();error=std::string("Map texture cache failed: ")+e.what();return false;}
+    std::unordered_map<const cgltf_image*,std::filesystem::path> extracted;std::unordered_map<const cgltf_material*,std::size_t> materialMeshes;
     std::optional<Vec3> authoredSpawn;
     for(cgltf_size nodeIndex=0;nodeIndex<data->nodes_count;++nodeIndex){const auto& node=data->nodes[nodeIndex];
         const std::string rawName = node.name ? node.name : (node.mesh && node.mesh->name ? node.mesh->name : "");

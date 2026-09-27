@@ -1,6 +1,6 @@
 // Included by BotActor.h inside gameplay::bot after Actor is defined.
 // Policy chooses committed intentions; map routing validates their next waypoint.
-inline void steerSpMovement(Actor& a,scene::Vec3 waypoint,float dt){
+inline void steerSpMovement(Actor& a,scene::Vec3 waypoint,float dt,bool allowStrafe=false){
     if(!a.spWantsMove)return;
     const auto d=waypoint-a.position;
     const float travelYaw=std::atan2(d.y,d.x);
@@ -9,8 +9,10 @@ inline void steerSpMovement(Actor& a,scene::Vec3 waypoint,float dt){
     const float desired=movingAim?std::atan2(aim.y,aim.x):travelYaw,turn=wrapAngle(desired-a.yaw);
     a.yaw=wrapAngle(a.yaw+std::clamp(turn*(1.0f-std::exp(-6.0f*dt)),-5.0f*dt,5.0f*dt));
     const float travelError=wrapAngle(travelYaw-a.yaw),remaining=std::abs(travelError);
-    const bool canMove=horizontalDistance(waypoint,a.position)>iw::worldUnits(8.0f)&&(movingAim||remaining<1.1f);
-    const float arrivalScale=horizontalDistance(waypoint,a.spMoveGoal)<30.f?std::clamp(horizontalDistance(waypoint,a.position)/140.f,.15f,1.f):1.f;
+    const bool finalGoal=horizontalDistance(waypoint,a.spMoveGoal)<30.f;
+    const float waypointDistance=horizontalDistance(waypoint,a.position);
+    const bool canMove=waypointDistance>(finalGoal?iw::worldUnits(8.0f):1.f)&&(movingAim||allowStrafe||remaining<1.1f);
+    const float arrivalScale=std::clamp(waypointDistance/(finalGoal?140.f:40.f),.15f,1.f);
     const float throttle=canMove?a.spMoveThrottle*arrivalScale:0;
     // Smooth facing independently, but keep translation aimed at the validated
     // segment instead of drawing a wide forward-only arc off its support.

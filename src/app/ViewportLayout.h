@@ -2,6 +2,13 @@
 #include <algorithm>
 #include <cmath>
 namespace cadence {
+struct ReplayStripLayout {float imageHeight{},stripHeight{};};
+inline ReplayStripLayout replayStripLayout(float height,float requested){
+    height=std::isfinite(height)?std::max(1.f,height):1.f;
+    requested=std::isfinite(requested)?std::max(0.f,requested):0.f;
+    const float strip=std::min(requested,std::max(0.f,height-1.f));
+    return {height-strip,strip};
+}
 struct ViewportLayout {float width{},height{},left{},top{};int renderWidth{},renderHeight{};};
 inline ViewportLayout viewportLayout(float width,float height,bool lock,float aspect,float scale,bool exporting,int exportWidth,int exportHeight){
     width=std::isfinite(width)?std::max(1.f,width):1.f;height=std::isfinite(height)?std::max(1.f,height):1.f;

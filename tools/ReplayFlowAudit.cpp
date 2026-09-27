@@ -109,6 +109,18 @@ int main(int argc,char** argv){
         if(!app.renderer.saveColorPng(output/(saved?"loaded-third.png":"fresh-third.png"),error))return 13;
         draw(false);draw(true);if(!app.takeFirstPersonView||!app.takePreview||!checkCamera())return 14;
         const auto livePosition=app.actorPosition;const auto liveClock=app.gameplayClock;
+        // An editor visit must not advance a playing replay or steal its camera.
+        const auto pausedTime=app.takeTime;
+        const auto pausedFrame=app.animationFrame;
+        const auto pausedPlaying=app.takePlaying;
+        const auto pausedFirstPerson=app.takeFirstPersonView;
+        app.workspaceMode=3;
+        for(int i=0;i<4;++i){
+            draw(i==0,true);
+            if(app.takeTime!=pausedTime||app.animationFrame!=pausedFrame||app.takePlaying!=pausedPlaying||app.takeFirstPersonView!=pausedFirstPerson||app.gameplayClock!=liveClock||scene::length(app.actorPosition-livePosition)>.001f)return 80;
+        }
+        app.workspaceMode=0;draw(false,true);
+        report<<"PASS animation workspace preserves replay clock, pose, camera mode and live simulation\n";
         for(int i=0;i<4;++i){draw(false,true);if(!app.takePreview||!checkCamera()||scene::length(app.actorPosition-livePosition)>.001f||app.gameplayClock!=liveClock)return 19;}
         draw(false);toggleTakePlayback(app);draw();if(app.takePlaying||!app.takePreview||!checkCamera())return 15;
         // Conflicting live flags must not replace the recorded camera or rig.

@@ -9,15 +9,20 @@ int main(int argc,char** argv) try {
  ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;ImGui_ImplGlfw_InitForOpenGL(w,true);ImGui_ImplOpenGL3_Init("#version 330");
  auto state=std::make_unique<AppState>();auto& a=*state;a.window=w;a.defaultSalukiDirectory=cadence::local_assets::exportPath("");std::string error;
  if(!a.renderer.initialize(error))return 2;
- for(auto g:{"bo2","mw3","pointblank"})if(!assets::appendScan(a.defaultSalukiDirectory/g,g,a.assetCatalog,error))return 3;
+ const bool imported=argc>2&&std::string(argv[2]).starts_with("imported-");
+ const bool nativeImported=imported&&std::string(argv[2])=="imported-native";
+ const std::vector<std::string> games=imported?std::vector<std::string>{"eldewrito","cs1.6","cz","css","csnz","cso2"}:std::vector<std::string>{"bo2","pointblank","mw3"};
+ auto scanGames=games;if(imported)scanGames.push_back("bo2");
+ for(const auto& g:scanGames)if(!assets::appendScan(a.defaultSalukiDirectory/g,g,a.assetCatalog,error))return 3;
  const bool fixedPb=argc>2&&std::string(argv[2])=="pb-fixed";
  if(fixedPb){const std::set<std::string> names={"playermode_Bella_fb","playermode_Hide_Recon_fb","playermode_Hide_Soccer_fb","playermode_Hide_Kopassus_fb","playermode_REBEL_Soccer_fb"};std::erase_if(a.assetCatalog.entries,[&](const auto& entry){return entry.game=="pointblank"&&entry.name.starts_with("playermode_")&&!names.contains(entry.name);});}
  for(size_t i=0;i<a.assetCatalog.entries.size();++i)if(a.assetCatalog.entries[i].name=="t6_wpn_ar_an94_view_LOD0")a.selectedWeaponAsset=i;
  a.enemyBotCount=5;a.botTeamSide=3;a.botAnimationGame="bo2+bo2_sp";a.playing=true;a.actorPosition={0,0,0};a.botSystemMode=1;a.showBotAnimationClips=true;
+ if(nativeImported)a.botAnimationGame.clear();
  std::filesystem::create_directories(output);std::ofstream log(output/"results.txt");
- for(auto g:{"bo2","pointblank","mw3"}){
+ for(const auto& g:games){
   if(fixedPb&&std::string(g)!="pointblank")continue;
-  a.botGame=g;rebuildBotActors(a);log<<"BUILD "<<g<<" "<<a.status<<std::endl;if(!a.botActorScene)return 4;
+  a.botGame=g;a.botModelAsset=static_cast<std::size_t>(-1);rebuildBotActors(a);log<<"BUILD "<<g<<" "<<a.status<<std::endl;if(!a.botActorScene)return 4;
   auto&s=*a.botActorScene;log<<"BONES "<<s.skeleton.bones.size()<<" CLIPS "<<s.animations.size()<<std::endl;
   for(int weapon=0;weapon<=int(scene::WeaponClass::RC);++weapon)for(auto m:{scene::MotionRole::Idle,scene::MotionRole::Walk,scene::MotionRole::Run,scene::MotionRole::Sprint}){
    scene::AnimationQuery q;q.domain=scene::AnimationDomain::PlayerBody;q.motion=m;q.stance=scene::Stance::Stand;q.weapon=scene::WeaponClass(weapon);q.direction=scene::Direction::Forward;

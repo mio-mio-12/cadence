@@ -58,6 +58,27 @@ int main(int argc,char** argv){
         CHECK(baseline==optimized);++compared;
     }
     CHECK(renderer.renderStats(false).poseUploads>0);
+    if(argc>2&&std::string(argv[2])=="inactive-dof"){
+        std::ofstream timings(out/"inactive-dof-timings.txt");
+        rig.hiddenBones.clear();auto pose=rig.samplePose(0,10.f);renderer.setActorOverlays({},0,{}, {},false);
+        const scene::Vec3 eye{260,-350,190};renderer.setCameraPosition(eye);
+        const auto vp=scene::perspective(55*scene::kPi/180,1920.f/1080,1.f,2000.f)*scene::lookAt(eye,{0,60,65},{0,0,1});
+        for(int mode=0;mode<8;++mode){render::DepthOfFieldSettings settings;settings.enabled=true;settings.downsample=1;settings.nearRadius=mode%4<2?0:8;settings.farRadius=mode%2?4.4f:0;settings.gamma=32;settings.samples=10;settings.preview=mode>=4;settings.focusDistance=350;settings.focusRange=100;settings.farTransition=100;renderer.setDepthOfField(settings);
+            const auto draw=[&]{renderer.render(rig,pose,vp,1920,1080,false,false,false,&rig,&bots,&variants,&rig,&pose,true,&map);};
+            // Alternate reference/optimized order; include disabled-to-enabled
+            // transitions, alpha-only preview and both active blur passes.
+            std::array<std::vector<std::uint8_t>,2> images;
+            for(int run=0;run<4;++run){const bool optimizedPath=(run+mode)%2;renderer.setInactiveDofPassElisionEnabled(optimizedPath);
+                for(int i=0;i<8;++i)draw();glFinish();const auto begin=std::chrono::steady_clock::now();
+                for(int i=0;i<40;++i)draw();glFinish();
+                const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count()/40;
+                timings<<"mode="<<mode<<" optimized="<<optimizedPath<<" average_completed_frame_ms="<<ms<<" delayed_gpu_ms="<<renderer.gpuFrameMilliseconds()<<std::endl;
+                CHECK(renderer.readColorRgba(images[optimizedPath],error));
+                if(run>0)CHECK(images[0]==images[1]);
+            }
+        }
+        std::cout<<"PASS inactive DOF: byte-identical 1080p output for eight near/far/preview cases\n";
+    }
     std::cout<<"PASS "<<compared<<" byte-identical rendered comparisons: five BO2 actors, shadows, transparent/additive surfaces, backward seeks, hide/show, scene replacement\n";
     if(argc>2&&std::string(argv[2])=="postfx"){
         std::ofstream timings(out/"postfx-timings.txt");

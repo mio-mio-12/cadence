@@ -1,4 +1,5 @@
 #include "weapon/WeaponProfile.h"
+#include "render/ViewmodelProjection.h"
 
 #include <cmath>
 #include <filesystem>
@@ -6,6 +7,18 @@
 #include <iostream>
 
 int main(){int failures{};const auto expect=[&](bool value,const char* message){if(!value){std::cerr<<message<<'\n';++failures;}};
+  {const scene::Vec3 camera{33,-24,18},point{64,15,27};
+   const auto vp=scene::perspective(75.f*scene::kPi/180.f,1.77f,.1f,1000.f)*scene::lookAtDirection(camera,scene::normalize(scene::Vec3{1,.5f,.2f}),{0,0,1});
+   for(float multiplier:{1.f,.7f,1.4f})for(bool flip:{false,true}){
+    const auto projected=render::viewmodel_projection::worldOrigin(point,camera,vp,75,multiplier,flip);
+    const auto weapon=render::viewmodel_projection::adjusted(vp,75,multiplier,flip);
+    for(int row=0;row<4;++row){const auto coord=[&](const scene::Mat4& m,scene::Vec3 p){return m.v[row]*p.x+m.v[4+row]*p.y+m.v[8+row]*p.z+m.v[12+row];};expect(std::abs(coord(vp,projected)-coord(weapon,point))<.0001f,"trail muzzle must match foreground projection including flip/FOV/depth");}
+   }}
+  {const auto original=scene::perspective(80.f*scene::kPi/180.f,1.77f,.1f,1000.f);
+   const auto defaults=render::viewmodel_projection::adjusted(original,80,1,false);
+   const auto changed=render::viewmodel_projection::adjusted(original,80,1.25f,true);
+   for(int i=0;i<16;++i){expect(defaults.v[i]==original.v[i],"default viewmodel projection is unchanged");if(i%4>=2)expect(changed.v[i]==original.v[i],"viewmodel projection preserves depth and clip W");}
+   expect(changed.v[0]<0&&std::abs(changed.v[0])<original.v[0]&&changed.v[5]<original.v[5],"viewmodel wider FOV and mirror affect only screen axes");}
   expect(weapon::inferArchetype("weapon_arx_160_LOD0")==weapon::Archetype::Rifle,"Ghosts separated ARX-160 identity must retain rifle posture");
   expect(weapon::inferArchetype("viewmodel_AR_AK-47_DualMag")==weapon::Archetype::Rifle,"DualMag is a rifle magazine, not dual wield");
   expect(weapon::inferArchetype("viewmodel_Dual_DesertEagle")==weapon::Archetype::DualWield,"real dual weapons retain dual wield");
@@ -19,6 +32,9 @@ int main(){int failures{};const auto expect=[&](bool value,const char* message){
   auto profile = weapon::makeGenerated("AN94 custom", weapon::Archetype::Rifle,
                                        "viewmodel_an94_");
   expect(!profile.materials.overrideMetalness,"metalness override must default off");
+  expect(profile.viewmodelFovMultiplier==1.f&&!profile.flipViewmodel,"viewmodel projection defaults retain prior appearance");
+  profile.viewmodelFovMultiplier=1.25f;profile.flipViewmodel=true;
+  expect(profile.sprintBobMultiplier==1.f,"sprint bob default preserves existing behavior");profile.sprintBobMultiplier=.25f;
   {
     const auto bad=std::filesystem::temp_directory_path()/"cadence_v139_invalid_metalness.iwweapon";
     for(const auto*value:{"1 2","1 nan","2 .5","1"}){
@@ -31,6 +47,11 @@ int main(){int failures{};const auto expect=[&](bool value,const char* message){
     }
     {std::ofstream f(bad);f<<"IWWEAPON 1\nname old\n";}
     auto legacy=profile;legacy.materials.overrideMetalness=true;std::string error;expect(weapon::load(bad,legacy,error)&&!legacy.materials.overrideMetalness,"legacy profile must retain original material behavior");
+    expect(legacy.viewmodelFovMultiplier==1.f&&!legacy.flipViewmodel,"old weapfiles reset projection to neutral defaults");
+    for(const auto* value:{"0 0","-1 1","nan 0","1 2","1"}){
+      {std::ofstream f(bad);f<<"IWWEAPON 1\nviewmodel_projection "<<value<<'\n';}
+      auto unchanged=profile;expect(!weapon::load(bad,unchanged,error),"invalid viewmodel projection rejects load");
+    }
     std::error_code ec;std::filesystem::remove(bad,ec);
   }
   expect(std::abs(profile.stats.yyReturnScale - 1.5f) < .0001f,
@@ -90,9 +111,13 @@ int main(){int failures{};const auto expect=[&](bool value,const char* message){
   const auto path = std::filesystem::temp_directory_path() /
                     "cast_stage_weapon_profile_test.iwweapon";
   std::string error;
+  profile.stats.firstRaiseTime=1.73f;profile.stats.raiseTime=.42f;
   expect(weapon::save(profile, path, error), "profile save failed");
   weapon::Profile loaded;
   expect(weapon::load(path, loaded, error), "profile load failed");
+  expect(loaded.viewmodelFovMultiplier==1.25f&&loaded.flipViewmodel,"viewmodel projection fields round trip");
+  expect(loaded.sprintBobMultiplier==.25f,"sprint bob multiplier round trips");
+  expect(std::abs(loaded.stats.firstRaiseTime-1.73f)<.0001f&&std::abs(loaded.stats.raiseTime-.42f)<.0001f,"first raise and pullout timings must round-trip independently");
   expect(loaded.rigMounts.size()==1&&loaded.rigMounts[0].attachedModel&&loaded.rigMounts[0].parentTag=="tag_scope"&&loaded.rigMounts[0].position.z==3&&loaded.rigMounts[0].attachmentRotationDegrees.y==20&&loaded.rigMounts[0].attachmentScale.y==2,"live attachment transform did not round trip");
   expect(!loaded.stats.canFireWhileRechambering&&std::abs(loaded.stats.rechamberFireUnlock-.3f)<.0001f,"rechamber firing settings did not round-trip");
   expect(loaded.stats.rechamberDelayFromFireEnd&&std::abs(loaded.stats.rechamberStartDelay-.12f)<.0001f,"new signed bolt timing did not round-trip");

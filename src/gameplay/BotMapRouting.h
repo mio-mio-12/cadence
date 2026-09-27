@@ -51,7 +51,7 @@ struct BotMapRoute {
     MapRouteStatus status{MapRouteStatus::Idle};
     scene::Vec3 origin{}, goal{}, lastPosition{}, directPosition{};
     float refreshTime{}, checkTime{}, noProgressTime{}, bestDistance{std::numeric_limits<float>::max()};
-    float spacing{iw::worldUnits(32.0f)}, searchRadius{8000.0f};
+    float spacing{iw::worldUnits(32.0f)}, searchRadius{24000.0f};
     std::size_t nodeLimit{12000}, cursor{};
     unsigned searches{}, totalExpanded{};
     unsigned intentTag{};
@@ -66,6 +66,8 @@ struct BotMapRoute {
     std::priority_queue<Pending> open;
     std::vector<scene::Vec3> path;
     std::optional<scene::Vec3> preview;
+    std::optional<scene::Vec3> crowdWaypoint;
+    float crowdTime{};
 
     void reset() {
         status=MapRouteStatus::Idle; refreshTime=checkTime=noProgressTime=0;
@@ -73,10 +75,33 @@ struct BotMapRoute {
         nodes.clear(); cells.clear(); open={}; path.clear(); cursor=0;
         activeNode.reset(); nextEdge=0; goalPending=directPending=false;
         preview.reset();
+        crowdWaypoint.reset();crowdTime=0;
     }
 };
 
 inline float mapRouteDistance(scene::Vec3 a,scene::Vec3 b) { return scene::length(a-b); }
+
+// Reuse only a completed, same-goal path and validate the joining edge with
+// exactly the same body/support probe as a freshly searched edge.
+template<class Probe>
+bool joinMapRoute(BotMapRoute& route,scene::Vec3 position,scene::Vec3 goal,
+                  const BotMapRoute& peer,const Probe& probe){
+    if(&route==&peer||route.status==MapRouteStatus::Following||
+       (peer.status!=MapRouteStatus::Following&&peer.status!=MapRouteStatus::Arrived)||
+       peer.path.empty()||mapRouteDistance(goal,peer.goal)>1.f)return false;
+    std::size_t nearest=0;float best=500.f;
+    bool found=false;
+    for(std::size_t i=0;i<peer.path.size();++i){const float d=mapRouteDistance(position,peer.path[i]);if(d<best){nearest=i;best=d;found=true;}}
+    if(!found)return false;
+    // Joining a waypoint already under our feet proves nothing about its exit.
+    // Validate the next edge, or a blocked corner can rejoin forever on retry.
+    if(best<26.f&&nearest+1<peer.path.size())++nearest;
+    const auto end=probe(position,peer.path[nearest]);
+    if(!end||mapRouteDistance(*end,peer.path[nearest])>1.f)return false;
+    route.reset();route.origin=route.lastPosition=position;route.goal=goal;
+    route.path.assign(peer.path.begin()+nearest,peer.path.end());
+    route.status=MapRouteStatus::Following;return true;
+}
 
 // Probe returns the grounded, capsule-clear endpoint of this edge or nullopt.
 // Its contract includes walkable support, safe height changes and map boundaries;
@@ -170,7 +195,9 @@ MapRouteResult updateMapRoute(BotMapRoute& route, scene::Vec3 position,
     if(budget.followingPreview&&route.status==MapRouteStatus::Searching&&route.preview){
         const float distance=mapRouteDistance(position,*route.preview);
         if(distance<route.bestDistance-2){route.bestDistance=distance;route.noProgressTime=0;}else route.noProgressTime+=delta;
-        if(route.noProgressTime>1.5f){route.reset();return {MapRouteStatus::Searching,{},0};}
+        // A provisional waypoint can be occupied by a teammate. Do not throw
+        // away the entire in-flight search whenever the crowd delays it.
+        if(route.noProgressTime>1.5f){route.preview.reset();route.noProgressTime=0;route.bestDistance=std::numeric_limits<float>::max();}
     }
     if(route.status==MapRouteStatus::Searching&&!route.goalPending&&!route.directPending&&!route.preview&&!route.open.empty()&&canProbe()){
         std::vector<scene::Vec3> prefix;
@@ -259,7 +286,7 @@ MapRouteResult updateMapRoute(BotMapRoute& route, scene::Vec3 position,
         if(route.nextEdge>18)route.activeNode.reset();
     }
     if(route.status==MapRouteStatus::Following) {
-        const auto reaches=[&](scene::Vec3 target){const auto end=query(position,target);return end&&mapRouteDistance(*end,target)<std::min(20.f,spacing*.3f);};
+        const auto reaches=[&](scene::Vec3 target){const auto end=query(position,target);return end&&mapRouteDistance(*end,target)<1.f;};
         while(route.cursor<route.path.size() &&
               mapRouteDistance(position,route.path[route.cursor])<std::min(26.f,spacing*.65f)) {
             if(route.cursor+1<route.path.size() &&

@@ -73,7 +73,10 @@ void StageRenderer::renderRain(const scene::Mat4& vp){
     glDisable(GL_DEPTH_TEST);glDisable(GL_CULL_FACE);glDepthMask(GL_FALSE);glEnable(GL_BLEND);
     // Preserve destination alpha (isolated world/capture exports included).
     glapi::BlendFuncSeparate(GL_ONE,GL_ONE_MINUS_SRC_ALPHA,GL_ZERO,GL_ONE);
-    glapi::DrawArrays(GL_TRIANGLES,0,int(rainField_.lanes.size())*16*6);++lastTotalDrawCalls_;
+    const int laneVertices=int(rainField_.lanes.size())*16*6;
+    const int layers=int(std::clamp(std::ceil(double(rain_.density)),1.,double(2147483647/std::max(1,laneVertices))));
+    i("uRainLayers",layers);
+    glapi::DrawArrays(GL_TRIANGLES,0,laneVertices*layers);++lastTotalDrawCalls_;
     glDisable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_TRUE);glEnable(GL_DEPTH_TEST);
     glapi::BindFramebuffer(glapi::Framebuffer,framebuffer_);glapi::BindVertexArray(0);
     glapi::ActiveTexture(glapi::Texture0);glBindTexture(GL_TEXTURE_2D,tex0);

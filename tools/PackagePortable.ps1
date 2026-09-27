@@ -36,6 +36,7 @@ foreach($entry in @(
     @('build-ui/_deps/glfw-src/LICENSE.md','glfw.txt'),
     @('build-ui/_deps/imgui-src/LICENSE.txt','imgui.txt'),
     @('external/cgltf/LICENSE','cgltf.txt'),
+    @('external/miniz/LICENSE','miniz.txt'),
     @('external/libwebp/COPYING','libwebp.txt'),
     @('external/libwebp/PATENTS','libwebp-patents.txt'),
     @('external/libwebp/AUTHORS','libwebp-authors.txt')
