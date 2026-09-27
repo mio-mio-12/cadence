@@ -15,6 +15,8 @@ struct AnimationEditorState {
     std::array<char,160> search{};
     std::size_t model{std::numeric_limits<std::size_t>::max()};
     int action{static_cast<int>(scene::ActionRole::Death)};
+    int motionFilter{-1};
+    AnimationSet::Slot assignment{0,1,1,0,0,-1};
     int pendingOperation{};
     float speed{1.f}, pitch{-.15f}, yaw{scene::kPi}, zoom{1.f};
     scene::Vec3 pan{};

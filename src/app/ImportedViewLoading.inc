@@ -1,3 +1,35 @@
+std::filesystem::path nativePointBlankHandsPath(const AppState& app){
+    const auto find=[](const assets::Catalog& catalog){for(const auto& a:catalog.entries)if(lowerText(a.game)=="pointblank"&&lowerText(a.name)=="viewmodel_swat_male_hands")return a.path;return std::filesystem::path{};};
+    if(auto path=find(app.assetCatalog);!path.empty())return path;
+    assets::Catalog catalog;std::string error;
+    if(!app.defaultSalukiDirectory.empty()&&assets::appendScan(salukiExportRoot(app.defaultSalukiDirectory)/"pointblank","pointblank",catalog,error))return find(catalog);
+    return {};
+}
+bool assembleCodmViewHands(AppState& app,const cast::Document& weapon,const cast::Document& hands,scene::CastScene& output,std::string& error){
+    const auto skin=scene::buildScene(hands);
+    const bool native=skin.skeleton.boneByName.contains("b_LeftHand");
+    auto reference=hands;
+    if(!native){
+        assets::Catalog catalog;
+        auto ref=cadence::codm::referenceHands(app.assetCatalog);
+        if(ref)reference=cast::Document::load(app.assetCatalog.entries[*ref].path);
+        else{
+            if(app.defaultSalukiDirectory.empty()||!assets::appendScan(salukiExportRoot(app.defaultSalukiDirectory)/"codm","codm",catalog,error))return false;
+            ref=cadence::codm::referenceHands(catalog);
+            if(!ref){error="Missing native CODM reference viewhands";return false;}
+            reference=cast::Document::load(catalog.entries[*ref].path);
+        }
+    }
+    if(!scene::codm::assemble(weapon,reference,output,error))return false;
+    if(native)return true;
+    // Use the same native driver for live equipment and replay reconstruction.
+    if(assets::imported::supported(scene::imported::gameForPath(std::filesystem::path(hands.sourceName())))||
+       gameFromExportPath(std::filesystem::path(hands.sourceName()))=="bocw_sp"||gameFromExportPath(std::filesystem::path(hands.sourceName()))=="cs2"||scene::pointblank::exportedByPb2cast(hands))
+        return scene::imported::fitForeignViewSkin(output,skin,error);
+    auto referenceScene=scene::buildScene(reference);
+    scene::codm::normalizeToCentimetres(referenceScene,scene::codm::presentationScale);
+    return scene::codm::fitLegacyHands(output,referenceScene,hands,error);
+}
 bool importedViewPair(const AppState& app,const std::filesystem::path& handsPath,const std::string& driverGame){
     if(driverGame.empty()||driverGame=="cs2")return false;
     std::string handGame=scene::imported::gameForPath(handsPath);
@@ -13,14 +45,21 @@ bool importedViewPair(const AppState& app,const std::filesystem::path& handsPath
         // not games. In particular, never mistake that wrapper for CS2's game.
         if(handGame=="exported"||handGame=="_files")handGame.clear();
     }
-    return !handGame.empty()&&handGame!="cs2"&&(handGame!=lowerText(driverGame)||assets::imported::sourceFamily(handGame))&&
-        (assets::imported::supported(handGame)||assets::imported::supported(lowerText(driverGame)));
+    return !handGame.empty()&&(handGame!=lowerText(driverGame)||assets::imported::sourceFamily(handGame))&&
+        (assets::imported::supported(handGame)||handGame=="cs2"||handGame=="bocw_sp"||assets::imported::supported(lowerText(driverGame)));
 }
-bool prepareImportedViewHands(AppState& app,const cast::Document& hands,std::string driverGame,scene::CastScene& output,std::string& error){
+bool prepareImportedViewHands(AppState& app,const cast::Document& hands,std::string driverGame,scene::CastScene& output,std::string& error,const std::filesystem::path& recordedWeapon={}){
     driverGame=lowerText(std::move(driverGame));
     if(!importedViewPair(app,std::filesystem::path(hands.sourceName()),driverGame))return false;
     const assets::Asset* weapon=nullptr;
     if(app.selectedWeaponAsset<app.assetCatalog.entries.size()&&lowerText(app.assetCatalog.entries[app.selectedWeaponAsset].game)==driverGame)weapon=&app.assetCatalog.entries[app.selectedWeaponAsset];
+    // A take identifies its native weapon even when that library is disabled.
+    // Keep this descriptor local; do not enable or mutate the user's catalog.
+    assets::Asset replayWeapon;
+    if(!recordedWeapon.empty()){
+        replayWeapon.path=recordedWeapon;replayWeapon.game=driverGame;replayWeapon.name=recordedWeapon.stem().string();replayWeapon.role=assets::Role::ViewWeapon;
+        weapon=&replayWeapon;
+    }
     std::string exact;
     if(weapon&&assets::imported::supported(driverGame))exact=assets::imported::weaponStem(driverGame,weapon->name)+(driverGame=="cso2"?"_hand_707":"_hands");
     std::string nativeHandId;

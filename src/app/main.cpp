@@ -1,6 +1,7 @@
 #include "cast/CastDocument.h"
 #include "app/DemoLibrary.h"
 #include "app/AnimationSet.h"
+#include "app/AnimationSetRuntime.h"
 #include "app/AnimationEditorState.h"
 #include "app/ImportedBodyDonorCompatibility.h"
 #include "app/WorkspaceMode.h"
@@ -595,6 +596,7 @@ struct AppState {
     };
     ReferenceRigMode activeReferenceMode{ReferenceRigMode::None};
     cadence::AnimationSet animationSet;
+    cadence::AnimationSetRuntime botSetRuntime;
     bool animationSetForBots{};
     std::string animationSetPreset;
     std::vector<std::string> animationSetMissing;
@@ -935,6 +937,8 @@ struct AppState {
     float botSpSlipChance{.025f},botSpMovingPainChance{.35f};
     float botSpAmbientStumbleChance{.035f},botSpPatrolWalkChance{.08f},botSpSprintChance{.90f},botSpJumpChance{.42f},botSpCombatMobilityChance{.95f};
     cadence::sp::ContextLibrary botSpContextClips;
+    std::array<std::vector<std::size_t>,10> botSetBaseSpPools;
+    cadence::sp::ContextLibrary botSetBaseSpContexts;
     struct SpContextState {int varietyGrant{-1};unsigned contextCursor{},actionsStarted{},actionsCompleted{};float throwSettle{};gameplay::bot::SpVarietyClock clock;float wounded{},cover{},cooldown{},frame{},weight{},throwTime{},lastHealth{100},coverHeightIw{};std::size_t overlay{static_cast<std::size_t>(-1)},throwClip{static_cast<std::size_t>(-1)};unsigned sequence{},woundedSequence{};float coverSeek{},coverCheck{},coverStall{},coverBestDistance{};scene::Vec3 coverGoal{};unsigned coverIntent{};std::size_t coverClip{static_cast<std::size_t>(-1)};float coverElapsed{};
         std::size_t previousOverlay{static_cast<std::size_t>(-1)};float previousFrame{},transitionElapsed{.16f};
     };
@@ -1430,7 +1434,7 @@ int attachmentSocketForName(const scene::Skeleton& skeleton,std::string name,int
 
 #include "PointBlankCodHands.inc"
 #include "ImportedViewLoading.inc"
-void loadFile(AppState& app, const std::filesystem::path& path,const std::string& handDriverGame={}) {
+void loadFile(AppState& app, const std::filesystem::path& path,const std::string& handDriverGame={},const std::filesystem::path& recordedWeapon={}) {
     app.iw4FireCycle.clear();
     app.loadingActive=true;app.loadingProgress=0.05f;app.loadingLabel="Loading model";app.loadingDetail=path.filename().string();
     app.status = "Loading " + path.string() + "...";
@@ -1461,7 +1465,7 @@ void loadFile(AppState& app, const std::filesystem::path& path,const std::string
     if (app.document->valid()) {
         app.scene = scene::buildScene(*app.document);
         if(importedViewPair(app,path,handDriverGame)){
-            std::string error;if(!prepareImportedViewHands(app,*app.document,handDriverGame,app.scene,error))app.scene.warnings.push_back("Cross-game viewhands: "+error);
+            std::string error;if(!prepareImportedViewHands(app,*app.document,handDriverGame,app.scene,error,recordedWeapon))app.scene.warnings.push_back("Cross-game viewhands: "+error);
         }else if(!handDriverGame.empty()&&handDriverGame!="codm"&&handDriverGame!="pointblank"&&((handDriverGame!="cs2"&&scene::pointblank::exportedByPb2cast(*app.document)&&path.stem().string().starts_with("viewmodel_")&&path.stem().string().ends_with("_hands"))||app.scene.skeleton.boneByName.contains("b_LeftHand"))){
             std::string error;
             if(!preparePointBlankCodHands(app,*app.document,handDriverGame,app.scene,error))app.scene.warnings.push_back("Cross-game viewhands: "+error);
@@ -2638,11 +2642,12 @@ void addRigModelFile(AppState& app,const std::filesystem::path& path,bool finali
     std::size_t meshes{};
     if(scene::pointblank::exportedByPb2cast(document)&&path.stem().string().starts_with("viewmodel_")&&app.document&&assets::classifyModelPath(std::filesystem::path(app.document->sourceName()),std::filesystem::path(app.document->sourceName()).stem().string())==assets::Role::ViewHands){
         auto reference=*app.document;const bool legacy=!scene::pointblank::exportedByPb2cast(reference)||lowerText(std::filesystem::path(reference.sourceName()).stem().string())!="viewmodel_swat_male_hands";
-        if(legacy){auto ref=std::find_if(app.assetCatalog.entries.begin(),app.assetCatalog.entries.end(),[](const auto&a){return lowerText(a.game)=="pointblank"&&lowerText(a.name)=="viewmodel_swat_male_hands";});if(ref==app.assetCatalog.entries.end()){app.status="Point Blank reconstruction needs native SWAT Male hands";return;}reference=cast::Document::load(ref->path);}
+        if(legacy){const auto ref=nativePointBlankHandsPath(app);if(ref.empty()){app.status="Point Blank reconstruction needs native SWAT Male hands";return;}reference=cast::Document::load(ref);}
         scene::CastScene assembled;std::string error;
         if(!scene::pointblank::assemble(document,reference,assembled,error)){app.status=error;return;}
         if(legacy){
-            const bool importedSkin=assets::imported::supported(scene::imported::gameForPath(std::filesystem::path(app.document->sourceName())));
+            const auto skinGame=gameFromExportPath(std::filesystem::path(app.document->sourceName()));
+            const bool importedSkin=assets::imported::supported(scene::imported::gameForPath(std::filesystem::path(app.document->sourceName())))||skinGame=="bocw_sp"||skinGame=="cs2";
             if(!(importedSkin?scene::imported::fitForeignViewSkin(assembled,scene::buildScene(*app.document),error):scene::pointblank::fitHands(assembled,reference,*app.document,error))){app.status=error;return;}
         }
         // Replay reconstruction does not reload the live action library. Apply
@@ -2656,6 +2661,10 @@ void addRigModelFile(AppState& app,const std::filesystem::path& path,bool finali
                 assembled.animations.clear();break;
             }
         }
+        app.scene=std::move(assembled);meshes=app.scene.meshes.size();
+    }else if(gameFromExportPath(path)=="codm"&&assets::classifyModelPath(path,path.stem().string())==assets::Role::ViewWeapon&&app.document&&assets::classifyModelPath(std::filesystem::path(app.document->sourceName()),std::filesystem::path(app.document->sourceName()).stem().string())==assets::Role::ViewHands&&scene::codm::metadata(path).is_object()&&scene::codm::metadata(path).value("t6Compatible",true)==false){
+        scene::CastScene assembled;std::string error;
+        if(!assembleCodmViewHands(app,document,*app.document,assembled,error)){app.status=error;return;}
         app.scene=std::move(assembled);meshes=app.scene.meshes.size();
     }else meshes=scene::appendRigModel(document,app.scene,path.stem().string(),sourceMount,uniformScale);
     if(!meshes){app.status="No rig meshes found in "+path.filename().string();return;}
@@ -4094,18 +4103,18 @@ bool restoreTakeActorInternal(AppState& app,const take::ActorManifest& actor,std
         app.classSlotRigs={};
         app.activeClassSlot=-1;
     }
-    std::string handDriverGame;
+    std::string handDriverGame;std::filesystem::path recordedWeapon;
     if(!originalPbLayout&&((base->stem().string().starts_with("viewmodel_")&&base->stem().string().ends_with("_hands"))||gameFromExportPath(*base)=="codm"))for(const auto& path:rigModels){if(assets::classifyModelPath(path,path.stem().string())==assets::Role::ViewWeapon){handDriverGame=gameFromExportPath(path);break;}}
     if(!originalPbLayout)for(const auto& path:rigModels){
         const auto sourceGame=gameFromExportPath(path),skinGame=gameFromExportPath(*base);
-        if(sourceGame=="cs2"||skinGame=="cs2"||(!assets::imported::supported(sourceGame)&&!assets::imported::supported(skinGame)))continue;
+        if(sourceGame=="cs2"||(!assets::imported::supported(sourceGame)&&!assets::imported::supported(skinGame)&&skinGame!="bocw_sp"&&skinGame!="cs2"))continue;
         if(assets::classifyModelPath(path,path.stem().string())!=assets::Role::ViewWeapon)continue;
-        handDriverGame=sourceGame;
+        handDriverGame=sourceGame;recordedWeapon=path;
         app.selectedWeaponAsset=app.assetCatalog.entries.size();
         for(std::size_t i=0;i<app.assetCatalog.entries.size();++i)if(app.assetCatalog.entries[i].path==path&&app.assetCatalog.entries[i].role==assets::Role::ViewWeapon){app.selectedWeaponAsset=i;break;}
         break;
     }
-    loadFile(app,*base,handDriverGame);
+    loadFile(app,*base,handDriverGame,recordedWeapon);
     app.takeRecording=wasRecording;app.takePlaying=wasPlaying;app.takePreview=wasPreview;app.takeTime=savedTakeTime;app.takeAccumulator=savedAccumulator;
     if(!app.document||!app.document->valid()){error="Take actor base model could not be loaded";return false;}
     for(const auto& path:rigModels){
@@ -4155,9 +4164,9 @@ bool restoreTakeActor(AppState& app,const take::ActorManifest& actor,std::size_t
 }
 
 bool restoreTakeBotActor(AppState& app,const take::ActorManifest& actor,std::size_t expectedBones,std::string& error){
-    error.clear();if(actor.empty()||expectedBones==0){app.botActorScene.reset();app.botActorPoses.clear();app.bots.clear();app.botActorGpuReady=false;return true;}const auto base=resolveTakeModelPath(app,actor.baseModel);if(!base){error="Take bot model is missing: "+actor.baseModel;return false;}auto document=cast::Document::load(*base);if(!document.valid()){error="Take bot model could not be loaded";return false;}scene::CastScene restored=scene::buildScene(document);if(!restoreCharacterRigParts(app,actor,restored,error))return false;
+    error.clear();if(actor.empty()||expectedBones==0){app.botActorScene.reset();app.botSetRuntime={};app.botActorPoses.clear();app.bots.clear();app.botActorGpuReady=false;return true;}const auto base=resolveTakeModelPath(app,actor.baseModel);if(!base){error="Take bot model is missing: "+actor.baseModel;return false;}auto document=cast::Document::load(*base);if(!document.valid()){error="Take bot model could not be loaded";return false;}scene::CastScene restored=scene::buildScene(document);if(!restoreCharacterRigParts(app,actor,restored,error))return false;
     if(!restoreCharacterAttachments(app,actor,restored,error))return false;
-    if(restored.skeleton.bones.size()!=expectedBones){error="Take bot rebuilt with "+std::to_string(restored.skeleton.bones.size())+" bones; recording expects "+std::to_string(expectedBones);return false;}app.botActorScene=std::move(restored);app.bots.clear();app.botActorPoses.clear();app.rendererError.clear();
+    if(restored.skeleton.bones.size()!=expectedBones){error="Take bot rebuilt with "+std::to_string(restored.skeleton.bones.size())+" bones; recording expects "+std::to_string(expectedBones);return false;}app.botActorScene=std::move(restored);app.botSetRuntime={};app.bots.clear();app.botActorPoses.clear();app.rendererError.clear();
     if(app.deferSceneUpload){app.botActorGpuReady=false;return true;}
     const bool actorsReady=app.renderer.loadAuxiliaryScenes(app.loadedMap?&app.loadedMap->scene:nullptr,app.hiddenWorldActor?&*app.hiddenWorldActor:nullptr,&*app.botActorScene,app.rendererError);app.mapGpuReady=actorsReady&&app.loadedMap.has_value();app.worldActorGpuReady=actorsReady&&app.hiddenWorldActor.has_value();app.botActorGpuReady=actorsReady;if(!app.botActorGpuReady){error="Take bot GPU upload failed: "+app.rendererError;return false;}return true;
 }
@@ -8472,14 +8481,7 @@ bool equipNativeCodm(AppState& app,std::size_t weaponIndex){
     const bool legacyHands=lowerText(app.assetCatalog.entries[app.selectedBaseAsset].game)!="codm";
     const auto handPath=app.assetCatalog.entries[app.selectedBaseAsset].path;
     auto weaponDocument=cast::Document::load(weapon.path),handsDocument=cast::Document::load(handPath);scene::CastScene composite;
-    auto referenceDocument=handsDocument;
-    if(legacyHands){
-        const auto ref=cadence::codm::referenceHands(app.assetCatalog);
-        if(!ref){app.status="CODM adapter requires C_M_Ghost_1P native viewhands in the loaded CODM catalog (codm_viewhands_ or viewhands_ prefix).";return true;}
-        referenceDocument=cast::Document::load(app.assetCatalog.entries[*ref].path);
-    }
-    if(!scene::codm::assemble(weaponDocument,referenceDocument,composite,metadataError)){app.status=metadataError;return true;}
-    if(legacyHands){auto reference=scene::buildScene(referenceDocument);scene::codm::normalizeToCentimetres(reference,scene::codm::presentationScale);if(!scene::codm::fitLegacyHands(composite,reference,handsDocument,metadataError)){app.status="Unsupported CODM hand adapter: "+metadataError;return true;}}
+    if(!assembleCodmViewHands(app,weaponDocument,handsDocument,composite,metadataError)){app.status=metadataError;return true;}
     loadFile(app,handPath);app.scene=std::move(composite);app.animationSources.clear();app.animationDocuments.clear();app.loadedRigModelPaths={weapon.path};app.equippedRigAssets={weaponIndex};
     const auto folder=animationFolderFor(weapon);const auto prefix=lowerText(weapon.name)+"_";
     std::vector<std::filesystem::path> files;std::error_code ec;
@@ -9957,6 +9959,7 @@ void rebuildBotActors(AppState &app) {
   app.bots.clear();
   app.botActorPoses.clear();
   app.botActorScene.reset();
+  app.botSetRuntime={};
   app.botActorGpuReady = false;
   app.botWeaponChoices.clear();
   app.enemyBotCount = std::clamp(app.enemyBotCount, 0, 18);
@@ -10160,8 +10163,8 @@ void rebuildBotActors(AppState &app) {
   loadPhase("SP scenario preparation");
   applyBotAnimationSet(app,actorScene,model.game);
   gameplay::bot::configureBotOneShots(actorScene);
-  app.botDeathChoices=cadence::prepareBotDeaths(actorScene);
-  if(app.animationSetForBots)for(std::size_t i=0;i<actorScene.animations.size();++i){const auto& a=actorScene.animations[i];if(a.action==scene::ActionRole::Death&&!a.tracks.empty()&&app.animationSet.explicitEnabled(a)&&std::none_of(app.botDeathChoices.begin(),app.botDeathChoices.end(),[&](const auto& c){return c.animation==i;}))app.botDeathChoices.push_back({i,a.sourceGame+":"+cadence::deathKey(a.sourceName),a.motion,a.stance,a.direction,a.weapon,false,false});}
+  app.botSetRuntime.refresh(actorScene,app.animationSet,app.animationSetForBots);
+  app.botDeathChoices=app.botSetRuntime.deaths(actorScene,app.animationSet,app.animationSetForBots);
   app.botActionQueryCache.clear();
   app.botAnimationClipCount = actorScene.animations.size();
   app.botClipAuthoredSpeeds.assign(actorScene.animations.size(), 0.0f);
@@ -10208,6 +10211,7 @@ void rebuildBotActors(AppState &app) {
       actorScene.bounds.valid ? actorScene.bounds.minimum.z : 0.0f;
   app.botHeadHeight = std::max(0.01f, authoredHead - authoredFloor);
   app.botActorScene = std::move(actorScene);
+  app.botSetRuntime.owner=&*app.botActorScene;
   prepareBotSpawnCandidates(app);
   for (int i = 0; i < app.enemyBotCount; ++i) {
     gameplay::bot::Actor bot;
@@ -10275,6 +10279,12 @@ void rebuildBotActors(AppState &app) {
 }
 
 std::optional<std::size_t> cachedBotAction(AppState& app,const scene::CastScene& actorScene,const scene::AnimationQuery& query){
+    if(app.botActorScene && &actorScene==&*app.botActorScene&&app.botSetRuntime.initialized){
+        if(app.animationSetForBots)if(auto assigned=app.botSetRuntime.find(query))return assigned;
+        auto selected=app.botActionQueryCache.find(app.botSetRuntime.selection,query);
+        if(!selected&&query.ads&&query.action!=scene::ActionRole::None){auto fallback=query;fallback.ads=false;selected=app.botActionQueryCache.find(app.botSetRuntime.selection,fallback);}
+        return selected;
+    }
     return app.botActionQueryCache.find(actorScene,query);
 }
 
@@ -10380,7 +10390,10 @@ struct BotLocoCache {
 static BotLocoCache g_botLocoCache;
 void resetBotLocomotionCache() { g_botLocoCache = {}; }
 
-std::optional<std::size_t> botLocomotionAnimation(const scene::CastScene& actorScene, const scene::AnimationQuery& query, const AppState* app){
+std::optional<std::size_t> botLocomotionAnimation(const scene::CastScene& inputScene, const scene::AnimationQuery& query, const AppState* app){
+    const bool botSet=app&&app->botActorScene && &inputScene==&*app->botActorScene&&app->botSetRuntime.initialized;
+    if(botSet&&app->animationSetForBots)if(auto assigned=app->botSetRuntime.find(query))return assigned;
+    const auto& actorScene=botSet?app->botSetRuntime.selection:inputScene;
     if (g_botLocoCache.scenePtr != &actorScene || g_botLocoCache.animCount != actorScene.animations.size() || g_botLocoCache.overrideOwner!=app || g_botLocoCache.overrideRevision!=(app?app->botLocomotionOverrideRevision:0) || (app&&(g_botLocoCache.overrideDecisionGame!=app->classifierDecisionGame||g_botLocoCache.overrideFilterGame!=app->classifierGameFilter))) {
         g_botLocoCache.entries.clear();
         g_botLocoCache.scenePtr = &actorScene;
@@ -10519,7 +10532,7 @@ std::optional<std::size_t> botLocomotionAnimation(const scene::CastScene& actorS
 std::optional<std::size_t> botDeathAnimation(const scene::CastScene& actorScene,const gameplay::bot::Actor& bot,scene::WeaponClass weaponClass,std::uint32_t sequence,AppState* app){
     if(!app)return {};
     app->botDeathHistory.beginBatch(sequence);
-    if(app->botDeathChoices.empty())app->botDeathChoices=cadence::prepareBotDeaths(actorScene);
+    if(app->botDeathChoices.empty()&&!app->botSetRuntime.initialized)app->botDeathChoices=cadence::prepareBotDeaths(actorScene);
     cadence::BotDeathRequest r;
     r.motion=botMotionRole(bot);r.direction=botMovementDirection(bot);
     r.stance=bot.stance;r.weapon=weaponClass;r.actor=bot.id;
@@ -11136,6 +11149,7 @@ app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPrese
         }
         if(app.activeBotSystemMode==1&&bot.spPatrolWalking&&bot.grounded&&!bot.mantling&&!bot.targetVisible&&!app.botSpWalkClips.empty()&&bot.weaponClass!=scene::WeaponClass::Pistol&&bot.spAnimatedSpeed>12.f)animation=app.botSpWalkClips[bot.id%app.botSpWalkClips.size()];
         if(const auto context=spContextBaseAnimation(app,bot))animation=context;
+        if(app.animationSetForBots)if(auto assigned=app.botSetRuntime.find(query))animation=assigned;
         if (animation && *animation != bot.animation) {
             bot.previousAnimation = bot.animation;
             bot.previousAnimationFrame = bot.animationFrame;
@@ -11320,6 +11334,7 @@ app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPrese
         if(bot.alive&&(bot.input.fire||bot.reloadStarted||bot.input.equipment)){
             const bool pbMelee=bot.weaponClass==scene::WeaponClass::Knife&&bot.viewWeaponAsset<app.assetCatalog.entries.size()&&lowerText(app.assetCatalog.entries[bot.viewWeaponAsset].game)=="pointblank";
             auto query=bot_animation::actionQuery(bot.input.equipment?scene::ActionRole::Throw:(bot.reloadStarted?scene::ActionRole::Reload:pbMelee?scene::ActionRole::Melee:scene::ActionRole::Fire),bot.input.equipment?scene::WeaponClass::Grenade:bot.weaponClass,bot.stance);
+            query.ads=bot.input.ads;
             auto action=cachedBotAction(app,actorScene,query);
             if(!action&&bot.input.equipment){query.action=scene::ActionRole::GrenadePrep;action=cachedBotAction(app,actorScene,query);}
             if(!action&&bot.input.equipment){query.domain=scene::AnimationDomain::PlayerBody;query.action=scene::ActionRole::Throw;action=cachedBotAction(app,actorScene,query);}
@@ -11370,7 +11385,7 @@ app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPrese
                 if(const auto idle=cachedBotAction(app,actorScene,q)){const auto& c=actorScene.animations[*idle];const float weight=bot.actionAnimation<actorScene.animations.size()?1-std::clamp(bot.actionBlendWeight,0.f,1.f):1;slots[1].nodes.push_back({*idle,c.durationFrames?std::fmod(bot.behaviorClock*c.framerate,static_cast<float>(c.durationFrames)):0,weight,scene::LayerMode::Override,true});}
             }
             if(bot.alive&&!(app.activeBotSystemMode==1&&bot.mantling)&&bot.actionBlendWeight>0.001f&&bot.actionAnimation<actorScene.animations.size()&&
-               bot_animation::postureCompatible(actorScene.animations[bot.actionAnimation],bot.stance)){
+               (bot_animation::postureCompatible(actorScene.animations[bot.actionAnimation],bot.stance)||(app.animationSetForBots&&app.botSetRuntime.assignedPosture(bot.actionAnimation,bot.stance)))){
                 slots[1].nodes.push_back({bot.actionAnimation,bot.actionFrame,bot.actionBlendWeight,scene::LayerMode::Override,true});
             }
             if(bot.alive&&app.activeBotSystemMode==1&&bot.spScenarioWeight>0&&bot.spScenario<actorScene.animations.size()&&
@@ -11504,6 +11519,7 @@ void drawBotActors(AppState& app){
       app.bots.clear();
       app.botActorPoses.clear();
       app.botActorScene.reset();
+      app.botSetRuntime={};
       app.botActorGpuReady = false;
       (void)app.renderer.replaceBotScene(nullptr,app.rendererError);
       app.status = "Removed enemy actors";
@@ -13239,6 +13255,7 @@ bool publishRecordedTakeOpen(AppState& app,PreparedTakeOpen& request){
         const int first=prepared->firstSlot;
         app.classSlotRigs=std::move(prepared->rigs);
         app.botActorScene=std::move(prepared->botActor);
+        app.botSetRuntime={};
         app.document=std::move(prepared->firstDocument);app.selectedNode=nullptr;
         app.bots.clear();app.botActorPoses.clear();app.hiddenWorldActorPose.clear();
         app.animationDocuments.clear();app.animationSources.clear();

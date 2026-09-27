@@ -53,9 +53,13 @@ int main() {
     {
         auto isolated=std::make_unique<AppState>();auto& a=*isolated;a.animationSetForBots=true;a.animationSet.curatedDeaths=true;
         scene::CastScene actor;scene::Animation death;death.action=scene::ActionRole::Death;death.domain=scene::AnimationDomain::PlayerBody;death.sourceGame="css";death.sourceName="pb_death.cast";death.tracks.resize(1);actor.animations.push_back(death);
-        a.botSpPainClips.push_back(0);applyBotAnimationSet(a,actor,"css");CHECK(actor.animations[0].tracks.empty());CHECK(a.botSpPainClips.empty());CHECK(cadence::prepareBotDeaths(actor).empty());
+        a.botSpPainClips.push_back(0);applyBotAnimationSet(a,actor,"css");CHECK(!actor.animations[0].tracks.empty());CHECK(a.botSpPainClips.empty());CHECK(a.botSetRuntime.deaths(actor,a.animationSet,true).empty());
+        a.animationSetForBots=false;applyBotAnimationSet(a,actor,"css");CHECK(a.botSpPainClips.size()==1);CHECK(a.botSetRuntime.deaths(actor,a.animationSet,false).size()==1);a.animationSetForBots=true;
         actor.animations[0]=death;a.animationSet.set("css",death.action,death.sourceName,true);applyBotAnimationSet(a,actor,"css");CHECK(!actor.animations[0].tracks.empty());
         a.botDeathChoices=cadence::prepareBotDeaths(actor);gameplay::bot::Actor bot;bot.id=1;CHECK(botDeathAnimation(actor,bot,scene::WeaponClass::Rifle,1,&a));CHECK(botDeathAnimation(actor,bot,scene::WeaponClass::Rifle,2,&a));
+        take::ActorManifest missing;missing.baseModel="definitely_absent_v262_bot_actor.cast";std::string error;
+        CHECK(!restoreTakeBotActor(a,missing,1,error));CHECK(a.botSetRuntime.initialized&&a.botSetRuntime.owner==&actor);
+        a.animationSet.models["css"]="absent_reference_v262";applyBotAnimationSet(a,actor,"css");CHECK(a.animationSetMissing.size()==1&&a.botSetRuntime.bound.empty());
     }
     {
         auto isolated=std::make_unique<AppState>();auto& a=*isolated;

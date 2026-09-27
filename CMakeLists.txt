@@ -973,7 +973,27 @@ add_executable(Cadence_v181 EXCLUDE_FROM_ALL src/app/main.cpp)
     target_compile_options(map_performance_audit PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
     target_link_libraries(map_performance_audit PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
     target_link_libraries(bot_pool_audit PRIVATE cast_core cast_scene)
-    add_executable(Cadence_v261 src/app/main.cpp)
+    add_executable(Cadence_v263 src/app/main.cpp)
+    target_compile_options(Cadence_v263 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v263 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v263 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v263>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v263>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v263>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v263>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v263>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v263> ${CMAKE_SOURCE_DIR}/Cadence_v263.exe)
+    add_executable(Cadence_v262 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v262 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v262 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v262 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v262>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v262>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v262>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v262>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v262>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v262> ${CMAKE_SOURCE_DIR}/Cadence_v262.exe)
+    add_executable(Cadence_v261 EXCLUDE_FROM_ALL src/app/main.cpp)
     target_compile_options(Cadence_v261 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
     target_link_libraries(Cadence_v261 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
     add_custom_command(TARGET Cadence_v261 POST_BUILD
@@ -1216,6 +1236,11 @@ add_executable(Cadence_v181 EXCLUDE_FROM_ALL src/app/main.cpp)
     target_link_libraries(imported_cross_replay_audit PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
     add_executable(imported_visual_audit EXCLUDE_FROM_ALL tools/ImportedVisualAudit.cpp)
     add_executable(imported_view_fit_audit EXCLUDE_FROM_ALL tools/ImportedViewFitAudit.cpp)
+    add_executable(viewhand_matrix_audit EXCLUDE_FROM_ALL tools/ViewHandMatrixAudit.cpp)
+    target_link_libraries(viewhand_matrix_audit PRIVATE cast_core cast_scene cast_assets)
+    add_executable(viewhand_runtime_audit EXCLUDE_FROM_ALL tools/ViewHandRuntimeAudit.cpp)
+    target_compile_options(viewhand_runtime_audit PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(viewhand_runtime_audit PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
     add_executable(imported_body_visual_audit EXCLUDE_FROM_ALL tools/ImportedBodyVisualAudit.cpp)
     target_link_libraries(imported_body_visual_audit PRIVATE cast_core cast_scene cast_assets cast_take cast_glb_map stage_renderer imgui_backend OpenGL::GL)
     add_executable(imported_world_grip_audit EXCLUDE_FROM_ALL tools/ImportedWorldGripAudit.cpp)

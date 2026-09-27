@@ -1,6 +1,7 @@
 #pragma once
 #include "scene/ImportedNative.h"
 #include "scene/VolumePreservingFit.h"
+#include "scene/NativeBoneNames.h"
 #include <stdexcept>
 
 namespace scene::imported {
@@ -25,7 +26,13 @@ inline ViewLayout viewLayout(const CastScene& scene){
         for(const auto& native:scene.skeleton.bones){if(!native.name.starts_with("cs_weapon_")||!native.name.ends_with("_"+suffix)||native.parent<0)continue;if(length(transformPoint(native.restGlobal,{})-transformPoint(hand.restGlobal,{}))>.001f)continue;const auto prefix=native.name.substr(0,native.name.size()-suffix.size());const auto& parent=scene.skeleton.bones[native.parent];if(!parent.name.starts_with(prefix))continue;const auto it=s.boneByName.find("cs_hand_"+parent.name.substr(prefix.size()));if(it==s.boneByName.end())continue;const auto candidate=static_cast<int>(it->second);if(recovered>=0&&recovered!=candidate)ambiguous=true;recovered=candidate;}
         if(!ambiguous&&recovered>=0&&recovered!=static_cast<int>(i))hand.parent=recovered;
     }
-    const auto find=[&](std::string name){const auto it=s.boneByName.find(name);return it==s.boneByName.end()?-1:static_cast<int>(it->second);};
+    const auto find=[&](const std::string& name){
+        if(const auto it=s.boneByName.find(name);it!=s.boneByName.end())return static_cast<int>(it->second);
+        // Cold War exports may retain exact hashed joint identities. Resolve
+        // locally: never rename animation tracks or change the native rig.
+        if(const auto it=s.boneByName.find(nativeBoneHash(name));it!=s.boneByName.end())return static_cast<int>(it->second);
+        return -1;
+    };
     const auto pos=[&](int b){return transformPoint(s.bones[b].restGlobal,{});};
     std::vector<std::vector<int>> children(s.bones.size());for(std::size_t i=0;i<s.bones.size();++i)if(s.bones[i].parent>=0&&static_cast<std::size_t>(s.bones[i].parent)<s.bones.size())children[s.bones[i].parent].push_back(static_cast<int>(i));
     const std::array<const char*,5> digits{"thumb","index","middle","ring","pinky"};
@@ -40,9 +47,23 @@ inline ViewLayout viewLayout(const CastScene& scene){
                 orderAnonymousFingerRoots(s,roots);
                 for(int f=0;f<5;++f){a.fingers[f][0]=roots[f];const auto stem=s.bones[roots[f]].name.substr(0,s.bones[roots[f]].name.size()-1);for(int j=1;j<3;++j)a.fingers[f][j]=find(stem+std::to_string(j));}
             }
+        }else if(find("cs_hand_"+word+"_H_Bone"+(side?"03":"21"))>=0){
+            // Flattened CSNZ H_Bone arm schema. Numbering differs between
+            // sides, but is shared across weapons using this exported rig.
+            const auto p="cs_hand_"+word+"_H_Bone";
+            a.shoulder=find(p+(side?"02":"37"));a.elbow=find(p+(side?"01":"20"));a.wrist=find(p+(side?"03":"21"));
+            std::vector<int> roots;for(int n:side?std::array<int,5>{4,7,10,13,17}:std::array<int,5>{22,25,28,31,34})roots.push_back(find(p+(n<10?"0":"")+std::to_string(n)));
+            if(std::all_of(roots.begin(),roots.end(),[](int b){return b>=0;})){orderAnonymousFingerRoots(s,roots);for(int f=0;f<5;++f){const int n=std::stoi(s.bones[roots[f]].name.substr(p.size()));for(int j=0;j<3;++j)a.fingers[f][j]=find(p+(n+j<10?"0":"")+std::to_string(n+j));}}
+        }else if(find("cs_hand_zombieF"+cap+"ArmPalm")>=0){
+            const auto p="cs_hand_zombieF"+cap+"Arm";a.shoulder=find(p+"1");a.elbow=find(p+"21");a.wrist=find(p+"Palm");
+            std::vector<int> roots;for(int f=1;f<=5;++f)roots.push_back(find(p+"Digit"+std::to_string(f)+"1"));
+            if(std::all_of(roots.begin(),roots.end(),[](int b){return b>=0;})){orderAnonymousFingerRoots(s,roots);for(int f=0;f<5;++f){const auto stem=s.bones[roots[f]].name.substr(0,s.bones[roots[f]].name.size()-1);for(int j=0;j<3;++j)a.fingers[f][j]=find(stem+std::to_string(j+1));}}
+        }else if(find("arm_lower_"+cap)>=0&&find("hand_"+cap)>=0){
+            a.shoulder=find("armUpperShoulder_"+cap);a.elbow=find("arm_lower_"+cap);a.wrist=find("hand_"+cap);
+            for(int f=0;f<5;++f)for(int j=0;j<3;++j)a.fingers[f][j]=find("finger_"+std::string(digits[f])+"_"+std::to_string(j)+"_"+cap);
         }else if(find("j_wrist_"+cod)>=0){
             a.shoulder=find("j_shoulder_"+cod);a.elbow=find("j_elbow_"+cod);a.wrist=find("j_wrist_"+cod);
-            const bool oneBased=find("j_metaindex_"+cod+"_1")>=0&&find("j_pinky_"+cod+"_0")<0;
+            const bool oneBased=find("j_pinky_"+cod+"_0")<0&&find("j_pinky_"+cod+"_3")>=0;
             for(int f=0;f<5;++f)for(int j=0;j<3;++j)a.fingers[f][j]=find("j_"+std::string(f==2?"mid":digits[f])+"_"+cod+"_"+std::to_string(j+(oneBased?1:0)));
         }else if(find(lr+"_hand")>=0){
             a.shoulder=find(lr+"_upperarm");a.elbow=find(lr+"_forearm");a.wrist=find(lr+"_hand");
@@ -103,10 +124,6 @@ inline bool fitForeignViewSkin(CastScene& driver,const CastScene& skin,std::stri
     try{
         for(int side=0;side<2;++side){const auto& a=from.arms[side];const auto& b=to.arms[side];
             if(!a.valid()||!b.valid())continue;
-            // Never invent a target joint or collapse two visible fingers onto
-            // one driver chain. Subset skins are supported; the reverse pairing
-            // needs an explicitly authored extra-digit animation policy.
-            for(std::size_t f=0;f<a.fingers.size();++f)if(a.hasFinger(f)&&!b.hasFinger(f))throw std::runtime_error("Native viewhand driver lacks a digit required by the selected skin");
             const auto an=normalize(cross(pos(s,a.fingers[1][0])-pos(s,a.wrist),pos(s,a.fingers[4][0])-pos(s,a.wrist))),bn=normalize(cross(pos(d,b.fingers[1][0])-pos(d,b.wrist),pos(d,b.fingers[4][0])-pos(d,b.wrist)));
             const float width=length(pos(d,b.fingers[1][0])-pos(d,b.fingers[4][0]))/length(pos(s,a.fingers[1][0])-pos(s,a.fingers[4][0]));
             if(!std::isfinite(width)||width<.001f||width>1000)throw std::runtime_error("Invalid imported hand scale");
@@ -145,7 +162,24 @@ inline bool fitForeignViewSkin(CastScene& driver,const CastScene& skin,std::stri
                     length(pos(s,a.wrist)-se)*.12f});
             }}
             const auto transport=[](Vec3 normal,Vec3 from,Vec3 to){from=normalize(from);to=normalize(to);const float dotp=std::clamp(dot(from,to),-1.f,1.f);Quat q;if(dotp<-.9999f)q=fromAxisAngle(normal,kPi);else{const auto axis=cross(from,to);q=normalize(Quat{axis.x,axis.y,axis.z,1+dotp});}return normalize(volume_fit::vector(rotation(q),normal));};
-            for(int f=0;f<5;++f){if(!a.hasFinger(f))continue;Vec3 sn=an,dn=bn,prevS{},prevD{};
+            for(int f=0;f<5;++f){if(!a.hasFinger(f))continue;
+                if(!b.hasFinger(f)){
+                    // Four-digit drivers have no authored motion for a human
+                    // middle/ring digit. Interpolate its two neighbours while
+                    // retaining a separate bind-space finger, not a collapsed
+                    // duplicate. This is skinning only; no new animated rig.
+                    int left=f-1,right=f+1;while(left>=1&&!b.hasFinger(left))--left;while(right<5&&!b.hasFinger(right))++right;
+                    if(left<1||right>=5)throw std::runtime_error("Missing driver digit has no anatomical neighbours");
+                    const float t=float(f-left)/float(right-left);
+                    for(int j=0;j<3;++j){const int sb=a.fingers[f][j],dl=b.fingers[left][j],dr=b.fingers[right][j];
+                        const auto next=[](const Skeleton& rig,const std::array<int,3>& chain,int joint){return joint<2?transformPoint(rig.bones[chain[joint+1]].restGlobal,{}):transformPoint(rig.bones[chain[2]].restGlobal,{})*2.f-transformPoint(rig.bones[chain[1]].restGlobal,{});};
+                        const auto snext=next(s,a.fingers[f],j);fit(sb,dl,snext,next(d,b.fingers[left],j));const auto first=deform[sb];fit(sb,dr,snext,next(d,b.fingers[right],j));
+                        for(int k=0;k<16;++k)deform[sb].v[k]=first.v[k]*(1-t)+deform[sb].v[k]*t;
+                        map[sb]=dl;secondary[sb]=dr;secondaryWeight[sb]=t;
+                    }
+                    continue;
+                }
+                Vec3 sn=an,dn=bn,prevS{},prevD{};
                 for(int j=0;j<2;++j){const auto sb=a.fingers[f][j],db=b.fingers[f][j];const auto sa=pos(s,a.fingers[f][j+1])-pos(s,sb),da=pos(d,b.fingers[f][j+1])-pos(d,db);
                     if(j==0){const auto sx=normalize(sa),dx=normalize(da);sn=normalize(an-sx*dot(an,sx));dn=normalize(bn-dx*dot(bn,dx));}else{sn=transport(sn,prevS,sa);dn=transport(dn,prevD,da);}
                     fit(sb,db,pos(s,sb)+sa,pos(d,db)+da,sn,dn);prevS=sa;prevD=da;
@@ -173,6 +207,15 @@ inline bool fitForeignViewSkin(CastScene& driver,const CastScene& skin,std::stri
                 // helpers cannot inherit an anatomical parent by traversal.
                 if(name=="cs_hand_"+lr+".clavicle"&&from.arms[side].shoulder>=0)p=from.arms[side].shoulder;
                 if(name.find(lr+"_wrist_helper")!=std::string::npos)p=from.arms[side].wrist;
+                if(name=="arm_upper_"+lr&&from.arms[side].shoulder>=0)p=from.arms[side].shoulder;
+                // These exported helpers are flat roots, not independent
+                // controls. Recover their nearest anatomical attachment only
+                // within the explicitly named arm, never unrelated face parts.
+                if(name.starts_with(std::string("cs_hand_")+(side?"right":"left")+"_point_")||name.starts_with("cs_hand_zombief_"+lr)||name=="cs_hand_zombief"+lr+"arm22"){
+                    const auto& arm=from.arms[side];float best=std::numeric_limits<float>::max();
+                    std::vector<int> candidates{arm.elbow,arm.wrist};for(const auto& finger:arm.fingers)for(int b:finger)if(b>=0)candidates.push_back(b);
+                    for(int b:candidates){const auto distance=length(pos(s,static_cast<int>(i))-pos(s,b));if(distance<best){best=distance;p=b;}}
+                }
                 // GoldSrc and CSS insert weighted wrist bridge/root nodes just
                 // before the digit fan. They belong to the hand, not elbow.
                 const auto wrist=from.arms[side].wrist,elbow=from.arms[side].elbow;
@@ -185,7 +228,7 @@ inline bool fitForeignViewSkin(CastScene& driver,const CastScene& skin,std::stri
         for(const auto& sleeve:straightSleeves)fits[sleeve.shoulder]=volume_fit::prepare(deform[sleeve.shoulder],sleeve.origin);
         // Distributed twist helpers sit along the forearm, not at its elbow.
         // Preserve that distribution through both bind fitting and animation.
-        for(std::size_t i=0;i<s.bones.size();++i)if(assets::imported::lower(s.bones[i].name).find("foretwist")!=std::string::npos){for(int side=0;side<2;++side){if(!from.arms[side].valid()||!to.arms[side].valid())continue;const auto token=std::string(side?"r":"l")+" foretwist";if(assets::imported::lower(s.bones[i].name).find(token)==std::string::npos)continue;const auto& arm=from.arms[side];const auto axis=pos(s,arm.wrist)-pos(s,arm.elbow);const float t=std::clamp(dot(pos(s,static_cast<int>(i))-pos(s,arm.elbow),axis)/dot(axis,axis),0.f,1.f);const std::array<uint32_t,4> ids{static_cast<uint32_t>(arm.elbow),static_cast<uint32_t>(arm.wrist),0,0};const std::array<float,4> weights{1-t,t,0,0};Mat4 differential;const auto pivot=pos(s,static_cast<int>(i));const auto point=volume_fit::position(fits,pivot,ids,weights,&differential);const auto offset=point-volume_fit::vector(differential,pivot);differential.v[12]=offset.x;differential.v[13]=offset.y;differential.v[14]=offset.z;fits[i]=volume_fit::prepare(differential,pivot);map[i]=to.arms[side].elbow;secondary[i]=to.arms[side].wrist;secondaryWeight[i]=t;}}
+        for(std::size_t i=0;i<s.bones.size();++i)if(assets::imported::lower(s.bones[i].name).find("twist")!=std::string::npos){for(int side=0;side<2;++side){if(!from.arms[side].valid()||!to.arms[side].valid())continue;const auto lr=std::string(side?"r":"l"),name=assets::imported::lower(s.bones[i].name);if(name.find(lr+" foretwist")==std::string::npos&&!name.starts_with("arm_lower_"+lr+"_twist"))continue;const auto& arm=from.arms[side];const auto axis=pos(s,arm.wrist)-pos(s,arm.elbow);const float t=std::clamp(dot(pos(s,static_cast<int>(i))-pos(s,arm.elbow),axis)/dot(axis,axis),0.f,1.f);const std::array<uint32_t,4> ids{static_cast<uint32_t>(arm.elbow),static_cast<uint32_t>(arm.wrist),0,0};const std::array<float,4> weights{1-t,t,0,0};Mat4 differential;const auto pivot=pos(s,static_cast<int>(i));const auto point=volume_fit::position(fits,pivot,ids,weights,&differential);const auto offset=point-volume_fit::vector(differential,pivot);differential.v[12]=offset.x;differential.v[13]=offset.y;differential.v[14]=offset.z;fits[i]=volume_fit::prepare(differential,pivot);map[i]=to.arms[side].elbow;secondary[i]=to.arms[side].wrist;secondaryWeight[i]=t;}}
         std::vector<Mesh> meshes;
         for(auto mesh:skin.meshes){if(mesh.viewmodelWeapon)continue;std::vector<bool> valid(mesh.vertices.size(),true);for(std::size_t i=0;i<mesh.vertices.size();++i){auto& v=mesh.vertices[i];float total{};const auto old=v.position;
                 for(int k=0;k<4;++k)if(v.weights[k]>0){const auto bone=v.bones[k];if(bone>=map.size()||map[bone]<0){valid[i]=false;break;}total+=v.weights[k];}
