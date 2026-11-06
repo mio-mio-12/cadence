@@ -1,5 +1,7 @@
 #include "cast/CastDocument.h"
 #include "scene/CastScene.h"
+#include "scene/MuzzleGeometry.h"
+#include "scene/Source2BodyPolicy.h"
 #include "scene/TestCourse.h"
 #include "scene/T6Magazine.h"
 #include "scene/NativeBoneNames.h"
@@ -40,11 +42,13 @@ Bytes node(std::uint32_t id,std::uint64_t hash,std::vector<Bytes> properties,std
     Bytes out;append(out,id);append(out,size);append(out,hash);append<std::uint32_t>(out,static_cast<std::uint32_t>(properties.size()));append<std::uint32_t>(out,static_cast<std::uint32_t>(children.size()));
     for(auto& p:properties)appendRaw(out,p.data(),p.size());for(auto& c:children)appendRaw(out,c.data(),c.size());return out;
 }
-Bytes animatedTriangle(std::string_view materialName="test_material",std::string_view boneName="root",std::string_view albedo="textures/test.png"){
+Bytes animatedTriangle(std::string_view materialName="test_material",std::string_view boneName="root",std::string_view albedo="textures/test.png",bool pbBody=false){
     const char i[2]={'i','\0'},l[2]={'l','\0'},b[2]={'b','\0'},f[2]={'f','\0'},v2[2]={'2','v'},v3[2]={'3','v'},v4[2]={'4','v'};
     auto bone=node(0x656E6F62,3,{stringProperty("n",boneName),numericProperty(i,"p",1,std::vector<std::uint32_t>{0xffffffffu}),
         numericProperty(v3,"lp",1,std::vector<float>{0,0,0}),numericProperty(v4,"lr",1,std::vector<float>{0,0,0,1}),numericProperty(v3,"s",1,std::vector<float>{1,1,1})});
-    auto skeleton=node(0x6C656B73,2,{}, {std::move(bone)});
+    std::vector<Bytes> bones{std::move(bone)};
+    if(pbBody)for(const auto name:{"Pelvis","L Thigh","R Thigh"})bones.push_back(node(0x656E6F62,100+bones.size(),{stringProperty("n",name),numericProperty(i,"p",1,std::vector<std::uint32_t>{0})}));
+    auto skeleton=node(0x6C656B73,2,{}, std::move(bones));
     auto textureFile=node(0x656C6966,11,{stringProperty("p",albedo)});
     auto material=node(0x6C74616D,10,{stringProperty("n",materialName),stringProperty("t","pbr"),numericProperty(l,"diffuse",1,std::vector<std::uint64_t>{11})},{std::move(textureFile)});
     auto mesh=node(0x6873656D,4,{stringProperty("n","triangle"),numericProperty(v3,"vp",3,std::vector<float>{-1,0,0,1,0,0,0,0,2}),
@@ -71,7 +75,95 @@ bool expect(bool value,const char* message){if(!value)std::cerr<<"FAILED: "<<mes
 
 int main(){
     int failures{};
+    {
+        scene::CastScene gun;scene::Bone bone;bone.name="gun";gun.skeleton.bones.push_back(bone);
+        scene::Mesh mesh;for(float y:{2.f,8.f}){scene::Vertex v;v.position={0,y,0};v.bones={0,0,0,0};v.weights={1,0,0,0};mesh.vertices.push_back(v);}gun.meshes.push_back(mesh);
+        const std::vector<scene::Mat4> idle{scene::rotation(scene::fromEulerRadians({0,0,-scene::kPi*.5f}))};
+        const auto anchor=scene::imported::geometryMuzzle(gun,{1,0,0},{},&idle);
+        failures+=!expect(anchor&&scene::length(anchor->local-scene::Vec3{0,8,0})<.001f,"muzzle calibration uses animated forward despite reversed bind axis");
+        if(anchor){gun.muzzleAnchors.push_back(*anchor);const std::vector<scene::Mat4> recoil{scene::translation({3,4,5})*idle[0]};const auto p=scene::resolveMuzzlePosition(gun,recoil);failures+=!expect(p&&scene::length(*p-scene::Vec3{11,4,5})<.001f,"calibrated muzzle follows the moving gun bone");}
+    }
+    {
+        scene::CastScene fitted;fitted.skeleton.bones.resize(5);
+        std::vector<scene::Transform> local(5);
+        local[0].position={10,0,0};local[1].position={30,0,0};local[2].position={0,0,8};
+        const auto mutableAdapter=std::make_shared<scene::CodmRigAdapter>();fitted.codmRigAdapter=mutableAdapter;auto& adapter=*mutableAdapter;
+        adapter.firstBone=3;adapter.bindings.resize(2);adapter.weaponFitScale=.75f;adapter.weaponFitAnchor=0;adapter.weaponFitCameras={2};
+        adapter.positionLinks.push_back({3,0,3,{2,0,0}});adapter.positionLinks.push_back({4,3,3,{5,0,0}});
+        const auto pose=fitted.globalPose(local);
+        failures+=!expect(std::abs(pose[1].v[12]-25.f)<.0001f&&std::abs(pose[1].v[0]-.75f)<.0001f,"weapon fit scales position and geometry around grip");
+        failures+=!expect(std::abs(pose[2].v[14]-8.f)<.0001f&&pose[2].v[0]==1.f,"weapon fit leaves camera unchanged");
+        failures+=!expect(std::abs(pose[4].v[12]-pose[3].v[12]-5.f)<.0001f&&pose[3].v[0]==1.f,"weapon fit preserves donor lengths and scale");
+        adapter.weaponFitScale=1.5f;const auto enlarged=fitted.globalPose(local);
+        failures+=!expect(std::abs(enlarged[1].v[12]-40.f)<.0001f&&std::abs(enlarged[1].v[0]-1.5f)<.0001f,"undersized weapon enlarges around grip");
+        failures+=!expect(enlarged[2].v[14]==8.f&&std::abs(enlarged[4].v[12]-enlarged[3].v[12]-5.f)<.0001f,"enlargement preserves camera and donor anatomy");
+        adapter.weaponFitScale=1.f;const auto unchanged=fitted.globalPose(local);
+        failures+=!expect(unchanged[1].v[12]==30.f&&unchanged[1].v[0]==1.f,"default weapon fit remains identity");
+    }
+    {
+        const auto document=cast::Document::parse(animatedTriangle("test","R Hand","textures/test.png",true));
+        auto target=scene::buildScene(document,false);const auto original=target.meshes[0];target.meshes.clear();
+        const auto correction=scene::trs({8,3,2},scene::fromEulerRadians({0,0,.7f}),{1,1,1});
+        for(auto& bone:target.skeleton.bones){bone.restGlobal=correction*bone.restGlobal;bone.inverseBind=scene::inverseAffine(bone.restGlobal);}
+        const auto count=target.skeleton.bones.size();
+        scene::appendRigModel(document,target,"PB body variant");
+        failures+=!expect(target.skeleton.bones.size()==count,"PB skin rebase keeps recorded bone layout");
+        for(size_t v=0;v<original.vertices.size();++v){
+            failures+=!expect(scene::length(target.meshes[0].vertices[v].position-scene::transformPoint(correction,original.vertices[v].position))<.0001f,"PB variant uses shared bind before skinning");
+            failures+=!expect(target.meshes[0].vertices[v].uv.x==original.vertices[v].uv.x&&target.meshes[0].vertices[v].weights==original.vertices[v].weights,"PB rebase preserves UVs and weights");
+        }
+        const auto torsoDoc=cast::Document::parse(animatedTriangle("test","Spine1","textures/test.png",true));
+        auto torso=scene::buildScene(torsoDoc,false);const auto torsoVertices=torso.meshes[0].vertices;torso.meshes.clear();
+        for(auto& bone:torso.skeleton.bones){bone.restGlobal=correction*bone.restGlobal;bone.inverseBind=scene::inverseAffine(bone.restGlobal);}
+        scene::appendRigModel(torsoDoc,torso,"PB torso variant");
+        for(size_t v=0;v<torsoVertices.size();++v)failures+=!expect(scene::length(torso.meshes[0].vertices[v].position-torsoVertices[v].position)<.0001f,"PB arm correction leaves torso and head proportions unchanged");
+    }
     failures+=testImportedNativeHandCorrespondence();
+    {
+        scene::CastScene s;scene::Bone root;root.name="CharacterWorldSpaceTM";root.parent=-1;root.restGlobal=scene::Mat4::identity();root.inverseBind=scene::Mat4::identity();s.skeleton.bones.push_back(root);s.skeleton.boneByName[root.name]=0;
+        scene::Bone camera;camera.name="tag_camera";camera.parent=-1;camera.restLocal.position={0,0,150};camera.restGlobal=scene::translation(camera.restLocal.position);camera.inverseBind=scene::inverseAffine(camera.restGlobal);s.skeleton.bones.push_back(camera);s.skeleton.boneByName[camera.name]=1;
+        scene::imported::parentSyntheticViewCamera(s,"gitsfa");
+        failures+=!expect(s.skeleton.bones[1].parent==0&&s.skeleton.bones[1].restGlobal.v==camera.restGlobal.v,"synthetic GITS camera follows placement without changing bind");
+        std::vector<scene::Transform> local{root.restLocal,s.skeleton.bones[1].restLocal};local[0].position.z=-98;const auto pose=s.globalPose(local);
+        failures+=!expect(std::abs(pose[1].v[14]-52)<.0001f,"GITS reload root displacement includes camera");
+        s.skeleton.bones[1]=camera;s.skeleton.boneByName["Camera_dummy"]=0;scene::imported::parentSyntheticViewCamera(s,"gitsfa");
+        failures+=!expect(s.skeleton.bones[1].parent==-1,"authored GITS camera rigs remain untouched");
+    }
+    {
+        scene::CastScene native;scene::Bone bone;bone.name="root";bone.restLocal.position={3,4,5};bone.restLocal.rotation=scene::fromEulerRadians({.2f,.3f,.4f});bone.restLocal.scale={2,3,4};native.skeleton.bones.push_back(bone);
+        scene::Transform mount;mount.position={1,2,3};mount.rotation=scene::fromEulerRadians({.1f,0,0});native.rigMountReferences[0]=mount;
+        for(bool aim:{false,true}){scene::Animation a;a.sourceName=aim?"AR_Zoom_Idle.cast":"AR_Idle.cast";a.domain=scene::AnimationDomain::ViewModel;
+            scene::Track t;t.boneIndex=0;t.property=scene::TrackProperty::TranslationX;t.frames={0};t.scalarValues={aim?8.f:2.f};a.tracks.push_back(t);
+            t.property=scene::TrackProperty::ScaleY;t.scalarValues={aim?5.f:3.f};a.tracks.push_back(t);
+            t.property=scene::TrackProperty::Rotation;t.scalarValues.clear();t.rotationValues={scene::fromEulerRadians({aim?.8f:.1f,.2f,.3f})};a.tracks.push_back(t);native.animations.push_back(a);}
+        const auto untouched=native;const auto hip=native.sampleLocalPose(0,0)[0],ads=native.sampleLocalPose(1,0)[0];
+        assets::Asset asset;asset.game="dirtybomb";asset.name="viewmodel_SK_Wpn_AssaultRifle_04";weapon::Profile profile;
+        cadence::imported_actions::populate(native,profile,asset);
+        failures+=!expect(native.animations.size()==4&&profile.animations.contains("ads_up")&&profile.animations.contains("ads_down"),"missing imported ADS transitions generated from poses");
+        const auto close=[](const scene::Transform& a,const scene::Transform& b){const auto x=scene::trs(a.position,a.rotation,a.scale),y=scene::trs(b.position,b.rotation,b.scale);for(int i=0;i<16;++i)if(std::abs(x.v[i]-y.v[i])>.0001f)return false;return true;};
+        if(native.animations.size()==4){
+            failures+=!expect(close(native.sampleLocalPose(2,0)[0],hip)&&close(native.sampleLocalPose(2,30)[0],ads)&&close(native.sampleLocalPose(3,0)[0],ads)&&close(native.sampleLocalPose(3,30)[0],hip),"ADS endpoints preserve transforms including scale and mounted channels");
+            failures+=!expect(native.animations[2].notifications.empty()&&!native.animations[2].looping,"ADS fallback does not invent events or loop");
+        }
+        cadence::imported_actions::populate(native,profile,asset);failures+=!expect(native.animations.size()==4,"ADS preparation idempotent");
+        failures+=!expect(!cadence::imported_actions::useAdsPose(native,3,false,false),"completed generated ADS cannot mask primary reload");
+        failures+=!expect(cadence::imported_actions::useAdsPose(native,3,true,false)&&cadence::imported_actions::useAdsPose(native,3,false,true),"generated ADS remains during engagement or release");
+        failures+=!expect(cadence::imported_actions::useAdsPose(native,0,false,false),"authored sparse ADS behavior unchanged");
+        auto black=native;black.viewHandsDriverGame="blacksquad";
+        black.animations[0].sourceName="SK_AK47_1P__mesh_abc__ZoomOut__export_1.cast";
+        failures+=!expect(!cadence::imported_actions::useAdsPose(black,0,false,false),"cached Black Squad hip endpoint cannot mask pullout");
+        failures+=!expect(cadence::imported_actions::useAdsPose(black,0,true,false)&&cadence::imported_actions::useAdsPose(black,0,false,true),"Black Squad active ADS and release retained");
+        profile={};cadence::imported_actions::populate(native,profile,asset);failures+=!expect(native.animations.size()==4&&profile.animations.contains("ads_up"),"fresh profiles reuse generated ADS indices");
+        const auto savedProfile=profile;native=untouched;native.viewHandsDriverGame="dirtybomb";
+        cadence::imported_actions::restoreAdsEndpoints(native,savedProfile);
+        failures+=!expect(native.animations.size()==4&&close(native.sampleLocalPose(2,30)[0],ads),"saved generated ADS restores from exact endpoints");
+        cadence::imported_actions::restoreAdsEndpoints(native,savedProfile);failures+=!expect(native.animations.size()==4,"ADS profile restoration idempotent");
+        native=untouched;native.viewHandsDriverGame="dirtybomb";auto unavailable=savedProfile;unavailable.animations["ads_idle"]="missing.cast";cadence::imported_actions::restoreAdsEndpoints(native,unavailable);failures+=!expect(native.animations.size()==2,"missing saved aim endpoint stays missing");
+        native=untouched;profile={};profile.stats.instantScope=true;cadence::imported_actions::populate(native,profile,asset);failures+=!expect(native.animations.size()==2,"instant scope unchanged");
+        native=untouched;profile={};asset.name="viewmodel_SK_Wpn_SniperRifle_03";cadence::imported_actions::populate(native,profile,asset);failures+=!expect(native.animations.size()==2,"native sniper category excluded regardless of profile archetype");
+        native=untouched;profile={};asset.game="cs2";cadence::imported_actions::populate(native,profile,asset);failures+=!expect(native.animations.size()==2,"CS2 excluded from endpoint generation");
+        native=untouched;profile={};asset.game="dirtybomb";asset.name="viewmodel_SK_Wpn_AssaultRifle_04";profile.animations["ads_up"]="AR_Zoom_Idle.cast";cadence::imported_actions::populate(native,profile,asset);failures+=!expect(native.animations.size()==2&&profile.animations.at("ads_up")=="AR_Zoom_Idle.cast","explicit ADS mapping not replaced");
+    }
     {
         scene::CastScene native;assets::Asset asset;asset.game="csnz";asset.name="viewmodel_v_nataknifed";
         for(const auto name:{"viewmodel_v_nataknifed_melee.cast","viewmodel_v_nataknifed_melee_variant1.cast","diagnostic_native_v_nataknifed_stap_miss2_clip99.cast"}){scene::Animation clip;clip.sourceName=name;clip.domain=scene::AnimationDomain::ViewModel;clip.tracks.emplace_back();native.animations.push_back(std::move(clip));}
@@ -92,6 +184,22 @@ int main(){
         }
         weapon::Profile profile;cadence::imported_actions::populate(native,profile,asset);
         for(const auto slot:{"idle","fire","reload","pullout"})failures+=!expect(profile.animations[slot].find("_mag1_")!=std::string::npos,"native action variant remains consistent regardless of opaque clip ID length");
+    }
+    {
+        scene::CastScene native;assets::Asset asset;asset.game="blacksquad";asset.name="SK_ASW338_1P__123";
+        for(const auto action:{"Idle","Equip","ADD_Run","ADD_Fire"}){
+            scene::Animation clip;clip.sourceName="SK_ASW338_1P__mesh_123__"+std::string(action)+"__Startup_12.cast";
+            clip.tracks.emplace_back();native.animations.push_back(std::move(clip));
+        }
+        weapon::Profile profile;cadence::imported_actions::populate(native,profile,asset);
+        failures+=!expect(profile.animations["sprint_loop"].find("ADD_Run")!=std::string::npos,"hashed native sprint binds through semantic action");
+        failures+=!expect(profile.animations["pullout"].find("Equip")!=std::string::npos,"hashed native equip binds through semantic action");
+        failures+=!expect(profile.animations["fire"].find("ADD_Fire")!=std::string::npos,"hashed native fire binds through semantic action");
+        native.animations.clear();asset.game="dirtybomb";asset.name="viewmodel_SK_Wpn_SniperRifle_03_123";
+        scene::Animation shared;shared.name="shared: fire";shared.sourceName="SK_Wpn_AssaultRifle_04_Fire_01_123.cast";shared.tracks.emplace_back();native.animations.push_back(shared);
+        scene::Animation exact;exact.sourceName="SK_Wpn_SniperRifle_03_Fire_01_Part_01_123.cast";exact.tracks.emplace_back();native.animations.push_back(exact);
+        profile={};cadence::imported_actions::populate(native,profile,asset);
+        failures+=!expect(profile.animations["fire"]==exact.sourceName,"weapon-specific action outranks shared fallback");
     }
     for(const char* game:{"eldewrito","cs1.6","cz","css","csnz","cso2"}){
         const auto s=scene::buildScene(cast::Document::parse(animatedTriangle(),std::string("fixture/")+game+"/models/viewmodel_rifle_test.cast"),false);
@@ -198,7 +306,53 @@ int main(){
         scene::Animation ads=idle;ads.sourceName="vm_test_ads.cast";
         scene::Track move;move.boneIndex=1;move.property=scene::TrackProperty::TranslationX;move.mode=scene::TrackMode::Absolute;move.ownsLayer=true;move.frames={0,1};move.scalarValues={0,10};ads.tracks.push_back(move);
         source.animations={idle,ads};target.animations=source.animations;
+        failures+=!expect(scene::coldWarLegacyTarget(target.skeleton),"T9 bridge eligibility uses complete legacy anatomy without a game whitelist");
+        {auto missing=target.skeleton;missing.boneByCanonicalName.erase("j_wrist_le");failures+=!expect(!scene::coldWarLegacyTarget(missing),"incomplete legacy target rejected");
+         missing=target.skeleton;missing.boneByCanonicalName["j_wrist_le"]=missing.bones.size();failures+=!expect(!scene::coldWarLegacyTarget(missing),"invalid legacy target alias rejected");}
         failures+=!expect(scene::retargetColdWarLegacyRange(target,0,source,0),"T9 legacy bridge accepts complete constraint skeleton");
+        {
+            scene::CastScene iw;iw.animations=source.animations;
+            add(iw,"tag_view",-1);add(iw,"tag_ads",0);add(iw,"tag_torso",1);
+            const auto spineRoot=add(iw,"j_mainroot",2),spine=add(iw,"j_spineupper",static_cast<int>(spineRoot));
+            for(const auto side:{"le","ri"}){
+                const auto clav=add(iw,std::string("j_clavicle_")+side,static_cast<int>(spine));
+                const auto shoulder=add(iw,std::string("j_shoulder_")+side,static_cast<int>(clav));
+                const auto elbow=add(iw,std::string("j_elbow_")+side,static_cast<int>(shoulder));
+                add(iw,std::string("j_wrist_")+side,static_cast<int>(elbow));
+            }
+            for(const auto& b:target.skeleton.bones){
+                int parent=b.parent>=0?static_cast<int>(iw.skeleton.boneByName.at(target.skeleton.bones[b.parent].name)):-1;
+                if(b.name=="j_shoulder_le"||b.name=="j_shoulder_ri"){
+                    const auto root=add(iw,"j_mainroot",2);
+                    parent=static_cast<int>(add(iw,"j_spineupper",static_cast<int>(root)));
+                    parent=static_cast<int>(add(iw,"j_clavicle_"+b.name.substr(b.name.size()-2),parent));
+                }
+                add(iw,b.name,parent);
+            }
+            const auto twist=add(iw,"j_wristfronttwist1_le",2);
+            for(const auto side:{"le","ri"}){
+                const auto meta=add(iw,std::string("j_metaindex_")+side+"_1",static_cast<int>(iw.skeleton.boneByName.at(std::string("j_wrist_")+side)));
+                iw.skeleton.boneByCanonicalName[std::string("j_index_")+side+"_0"]=meta;
+            }
+            auto bodySource=source;const auto bodyRoot=add(bodySource,"j_mainroot",0);add(bodySource,"j_spineupper",static_cast<int>(bodyRoot));
+            failures+=!expect(scene::retargetColdWarLegacyRange(iw,0,bodySource,0),"T9 bridge supports IW calibration composition");
+            const auto hip=iw.samplePose(0,0),aim=iw.sampleLayeredPose(0,0,1,1,1,scene::LayerMode::Override,false);
+            const auto wrist=iw.skeleton.boneByName.at("j_wrist_le");
+            failures+=!expect(std::abs((aim[wrist].v[12]-hip[wrist].v[12])-10.f)<.001f,"Sparse T9 ADS retains calibrated IW arm pose across body-only names");
+            for(const float phase:{0.f,1.f}){
+                const auto pose=iw.samplePose(1,phase);
+                const auto clavicle=iw.skeleton.boneByName.at("j_clavicle_le"),shoulder=iw.skeleton.boneByName.at("j_shoulder_le");
+                for(int k=0;k<16;++k)failures+=!expect(std::abs(pose[clavicle].v[k]-pose[shoulder].v[k])<.001f,"IW clavicle follows calibrated shoulder through ADS for identity test bind");
+            }
+            const auto calibration=scene::legacyToIwCalibration("j_wristfronttwist1_le");
+            failures+=!expect(calibration.has_value(),"IW wrist helper has explicit legacy calibration");
+            if(calibration){
+                const auto legacy=target.skeleton.boneByName.at(calibration->legacyBone);
+                const auto expected=target.samplePose(0,0)[legacy]*calibration->offset;
+                const auto actual=iw.samplePose(0,0)[twist];
+                for(int k=0;k<16;++k)failures+=!expect(std::abs(expected.v[k]-actual.v[k])<.001f,"T9 to IW wrist composes calibrated frames instead of legacy offset alone");
+            }
+        }
         for(const auto& track:target.animations[1].tracks)if(track.boneIndex==gun)failures+=!expect(!track.ownsLayer,"T9 ADS cannot own grip-relative gun channels across an unmapped mount");
         for(const float weight:{0.f,.5f,1.f}){
             const auto a=source.sampleLayeredPose(0,0,1,1,weight,scene::LayerMode::Override,false),b=target.sampleLayeredPose(0,0,1,1,weight,scene::LayerMode::Override,false);
@@ -206,6 +360,24 @@ int main(){
         }
         auto other=source;other.animations[0].sourceName="viewmodel_t6_idle.cast";auto output=target;output.animations.resize(1);
         failures+=!expect(!scene::retargetColdWarLegacyRange(output,0,other,0),"T9 conversion excludes non-native animation names");
+    }
+    {
+        scene::CastScene sleeves;
+        for(const auto* name:{"j_spineupper","j_clavicle_le","j_clavicle_ri","j_shouldertwist_le","j_hip_le"}){
+            scene::Bone b;b.name=name;sleeves.skeleton.boneByName[name]=sleeves.skeleton.bones.size();sleeves.skeleton.bones.push_back(b);
+        }
+        sleeves.skeleton.bones[1].restGlobal=scene::trs({0,10,0},{},{1,1,1});
+        sleeves.skeleton.bones[2].restGlobal=scene::trs({0,-10,0},{},{1,1,1});
+        scene::Mesh arm;scene::Vertex v;v.position={0,8,0};v.bones={0,3,0,0};v.weights={.4f,.6f,0,0};arm.vertices.push_back(v);
+        v.position.y=-8;arm.vertices.push_back(v);arm.indices={0,1,0};
+        auto body=arm;v.bones={4,0,0,0};v.weights={1,0,0,0};body.vertices.push_back(v);
+        auto weapon=arm;weapon.viewmodelWeapon=true;sleeves.meshes={arm,body,weapon};
+        scene::supportIwLegacySleeves(sleeves);
+        failures+=!expect(sleeves.meshes[0].vertices[0].bones[0]==1&&sleeves.meshes[0].vertices[1].bones[0]==2,"IW sleeve support chooses each bind-space side");
+        failures+=!expect(sleeves.meshes[1].vertices[0].bones[0]==0&&sleeves.meshes[2].vertices[0].bones[0]==0,"IW sleeve support preserves body and weapon weights");
+        failures+=!expect(sleeves.meshes[0].vertices[0].weights==arm.vertices[0].weights&&sleeves.meshes[0].indices==arm.indices,"IW sleeve support preserves weights and geometry");
+        scene::supportIwLegacySleeves(sleeves);
+        failures+=!expect(sleeves.meshes[0].vertices[0].bones[0]==1,"IW sleeve support is idempotent across appended clips");
     }
     {
         scene::CastScene native;
@@ -315,6 +487,12 @@ int main(){
         const auto correct=classified.motion==item.motion&&classified.action==item.action&&classified.weapon==item.weapon&&classified.stance==item.stance&&classified.direction==item.direction&&classified.domain==item.domain;
         failures+=!expect(correct,item.name);
     }
+    for(const char* name:{"pt_rifle_ar_slowfire_t9_male_stand_first_raise.cast","pt_rifle_ar_slowfire_t9_male_stand_first_pullout.cast"}){
+        scene::Animation raised;scene::classifyAnimationName(name,raised);
+        failures+=!expect(raised.action==scene::ActionRole::FirstRaise,"explicit first raise overrides fire-family label");
+    }
+    scene::Animation slowFire;scene::classifyAnimationName("pt_rifle_ar_slowfire_t9_male_stand_fire.cast",slowFire);
+    failures+=!expect(slowFire.action==scene::ActionRole::Fire,"actual slowfire firing clip remains fire");
     scene::Animation angular;scene::classifyAnimationName("pb_standmg42gunner_aim_45left_15down",angular);
     failures+=!expect(angular.hasAimYaw&&angular.aimYawDegrees==-45&&angular.hasAimPitch&&angular.aimPitchDegrees==-15,"BO2 angular aim sectors classify");
     scene::Animation alert;scene::classifyAnimationName("pb_crouch_alert_pistol",alert);
@@ -322,13 +500,39 @@ int main(){
     scene::Animation frontDeath;scene::classifyAnimationName("pb_death_headshot_front",frontDeath);
     failures+=!expect(frontDeath.action==scene::ActionRole::Death&&frontDeath.direction==scene::Direction::Forward,"BO2 death front tag maps to forward locomotion direction");
     scene::Animation rifleShoot;scene::classifyAnimationName("pb_stand_shoot_walk_forward",rifleShoot);
-    failures+=!expect(rifleShoot.action==scene::ActionRole::Fire&&rifleShoot.motion==scene::MotionRole::Walk&&rifleShoot.weapon==scene::WeaponClass::Rifle,"BO2 combined shoot-walk classifies as rifle locomotion action");
+    failures+=!expect(rifleShoot.action==scene::ActionRole::None&&rifleShoot.motion==scene::MotionRole::Walk&&rifleShoot.weapon==scene::WeaponClass::Rifle&&rifleShoot.ads,"combined shoot-walk is sustained aiming locomotion, not one-shot fire");
     scene::Animation shuffle;scene::classifyAnimationName("pb_rifle_stand_shuffle_f",shuffle);
     failures+=!expect(shuffle.motion==scene::MotionRole::Walk&&shuffle.direction==scene::Direction::Forward&&!shuffle.contextual,"rifle shuffle is walk, not idle");
     scene::Animation slope;scene::classifyAnimationName("pb_rifle_stand_run_slopedown",slope);
     failures+=!expect(slope.motion==scene::MotionRole::Run&&slope.contextual,"slope run is contextual");
+    {scene::CastScene selection;
+     for(const char* name:{"pb_rifle_swim_move_over_f","pb_rifle_dodge_run_long_f","pb_atv_passenger_fire","pb_rifle_zipline_idle","pb_rifle_stand_assassination_back_v1","pb_rifle_endgame_1stplace_idle"}){
+        scene::Animation a;scene::classifyAnimationName(name,a);a.sourceName=name;failures+=!expect(a.contextual,"scripted body action excluded from ordinary locomotion");selection.animations.push_back(a);
+     }
+     scene::Animation idle;scene::classifyAnimationName("pb_rifle_stand_idle_lowready",idle);selection.animations.push_back(idle);
+     scene::AnimationQuery q;q.domain=scene::AnimationDomain::PlayerBody;q.motion=scene::MotionRole::Idle;q.weapon=scene::WeaponClass::Rifle;q.requireMappedTracks=false;
+     failures+=!expect(scene::findBestAnimation(selection,q)==selection.animations.size()-1,"ordinary idle skips swim zipline and podium clips");
+     selection.animations.resize(1);q.allowContextual=true;
+     failures+=!expect(scene::findBestAnimation(selection,q)==0,"explicit contextual lookup retains special clips");
+     scene::Animation view;scene::classifyAnimationName("viewmodel_atv_idle",view);failures+=!expect(!view.contextual,"body context filter leaves viewmodel clips unchanged");}
     scene::Animation ballisticIdle;scene::classifyAnimationName("pb_b_knife_stand_idle",ballisticIdle);
     failures+=!expect(ballisticIdle.weapon==scene::WeaponClass::BallisticKnife&&ballisticIdle.direction==scene::Direction::Any,"ballistic prefix is not backward direction");
+    for(const char* suffix:{"f","b","l","r"})for(const char* ending:{"",".cast","_variant"}){
+        scene::Animation idleVariant;scene::classifyAnimationName(std::string("mp_stand_idle_twitch_")+suffix+ending,idleVariant);
+        failures+=!expect(idleVariant.motion==scene::MotionRole::Idle&&idleVariant.direction==scene::Direction::Any,"single-letter idle variants are not directional");
+    }
+    {scene::Animation explicitIdle,walkBack,runBack;
+     scene::classifyAnimationName("mp_stand_idle_backward",explicitIdle);
+     scene::classifyAnimationName("pb_stand_walk_b",walkBack);
+     scene::classifyAnimationName("pb_stand_run_b.cast",runBack);
+     failures+=!expect(explicitIdle.direction==scene::Direction::Backward&&walkBack.direction==scene::Direction::Backward&&runBack.direction==scene::Direction::Backward,"explicit idle directions and abbreviated locomotion directions remain valid");
+     scene::CastScene idleSelection;
+     scene::Animation twitch,neutral;
+     scene::classifyAnimationName("mp_stand_idle_twitch_b",twitch);twitch.looping=false;
+     scene::classifyAnimationName("mp_stand_idle",neutral);neutral.looping=true;
+     idleSelection.animations={twitch,neutral};
+     scene::AnimationQuery q;q.domain=scene::AnimationDomain::PlayerBody;q.motion=scene::MotionRole::Idle;q.direction=scene::Direction::Backward;q.requireMappedTracks=false;
+     failures+=!expect(scene::findBestAnimation(idleSelection,q)==1,"backward idle query prefers neutral loop over twitch variant b");}
     struct TorsoCase {const char* name;scene::ActionRole action;scene::WeaponClass weapon;scene::Stance stance;bool ads;};
     const TorsoCase torsoCases[]={
         {"pt_stand_shoot_ads_pistol",scene::ActionRole::Fire,scene::WeaponClass::Pistol,scene::Stance::Stand,true},
@@ -367,6 +571,21 @@ int main(){
     scene::AnimationQuery reloadQuery;reloadQuery.domain=scene::AnimationDomain::PlayerTorso;reloadQuery.action=scene::ActionRole::Reload;reloadQuery.weapon=scene::WeaponClass::Rifle;reloadQuery.stance=scene::Stance::Stand;
     const auto standardMatch=scene::findBestAnimation(reloadCatalog,reloadQuery);failures+=!expect(standardMatch&&*standardMatch==0,"standard reload does not select an attachment-specific variant");
     reloadQuery.reloadStyle=scene::ReloadStyle::GL;const auto glMatch=scene::findBestAnimation(reloadCatalog,reloadQuery);failures+=!expect(glMatch&&*glMatch==1,"reload mechanism selects the requested GL variant");
+    {
+        scene::CastScene bodyReloads;
+        for(const auto* name:{"mp_stand_bullpup_reload.cast","mp_stand_reload.cast"}){
+            scene::Animation clip;scene::classifyAnimationName(name,clip);clip.tracks.push_back({});bodyReloads.animations.push_back(clip);
+        }
+        failures+=!expect(bodyReloads.animations[0].reloadStyle==scene::ReloadStyle::RearClip,"body bullpup reload is rear-magazine style");
+        auto q=reloadQuery;q.reloadStyle=scene::ReloadStyle::Any;
+        failures+=!expect(scene::findBestAnimation(bodyReloads,q)==1,"unspecified body reload prefers standard over alphabetically first bullpup");
+        q.reloadStyle=scene::ReloadStyle::RearClip;
+        failures+=!expect(scene::findBestAnimation(bodyReloads,q)==0,"explicit rear-magazine reload retained");
+        bodyReloads.animations.pop_back();q.reloadStyle=scene::ReloadStyle::Any;
+        failures+=!expect(scene::findBestAnimation(bodyReloads,q)==0,"specialized-only body reload remains available");
+        q.reloadStyle=scene::ReloadStyle::Standard;
+        failures+=!expect(!scene::findBestAnimation(bodyReloads,q),"explicit standard request does not silently select bullpup");
+    }
     scene::CastScene layered;scene::Bone root;root.name="root";root.parent=-1;scene::Bone child;child.name="spine";child.parent=0;child.restLocal.position={1,0,0};
     layered.skeleton.bones={root,child};scene::Animation baseLayer,actionLayer;
     scene::Track baseRoot;baseRoot.boneIndex=0;baseRoot.property=scene::TrackProperty::TranslationX;baseRoot.frames={0};baseRoot.scalarValues={5};baseLayer.tracks.push_back(baseRoot);
@@ -410,7 +629,8 @@ int main(){
     scene::CastScene combinedFire;rifleShoot.tracks.push_back({});combinedFire.animations.push_back(rifleShoot);scene::AnimationQuery rifleFireQuery;
     rifleFireQuery.action=scene::ActionRole::Fire;rifleFireQuery.weapon=scene::WeaponClass::Rifle;rifleFireQuery.motion=scene::MotionRole::Idle;rifleFireQuery.direction=scene::Direction::Forward;
     failures+=!expect(!scene::findBestAnimation(combinedFire,rifleFireQuery),"idle fire does not substitute a combined walk-shoot clip");
-    rifleFireQuery.motion=scene::MotionRole::Walk;failures+=!expect(scene::findBestAnimation(combinedFire,rifleFireQuery).has_value(),"combined walk-shoot resolves during matching rifle locomotion");
+    rifleFireQuery.motion=scene::MotionRole::Walk;failures+=!expect(!scene::findBestAnimation(combinedFire,rifleFireQuery),"sustained shoot-walk is not restarted as a one-shot fire action");
+    rifleFireQuery.action=scene::ActionRole::None;failures+=!expect(scene::findBestAnimation(combinedFire,rifleFireQuery).has_value(),"shoot-walk resolves as sustained rifle locomotion");
     scene::CastScene locomotionCatalog;shuffle.tracks.push_back({});ballisticIdle.motion=scene::MotionRole::Walk;ballisticIdle.tracks.push_back({});locomotionCatalog.animations={ballisticIdle,shuffle};
     scene::AnimationQuery walkQuery;walkQuery.motion=scene::MotionRole::Walk;walkQuery.weapon=scene::WeaponClass::Rifle;walkQuery.stance=scene::Stance::Stand;walkQuery.direction=scene::Direction::Forward;
     const auto rifleWalk=scene::findBestAnimation(locomotionCatalog,walkQuery);failures+=!expect(rifleWalk&&*rifleWalk==1,"locomotion resolver cannot leak across weapon families");
@@ -820,5 +1040,77 @@ int main(){
         failures+=!expect(soft.meshes.size()==1&&soft.meshes[0].forceAlpha&&!soft.meshes[0].ignoreAlbedoAlpha,"CODM soft alpha follows exported metadata without material-name heuristics");
         failures+=!expect(solid.meshes.size()==1&&!solid.meshes[0].forceAlpha&&solid.meshes[0].ignoreAlbedoAlpha,"CODM opaque material retains auxiliary albedo alpha");
     }
+    {
+        const auto source=(std::filesystem::path(__FILE__).parent_path()/"fixtures/mw3/models/test.cast").string();
+        const auto cutout=scene::buildScene(cast::Document::parse(animatedTriangle("mc_test_cutout"),source));
+        const auto blended=scene::buildScene(cast::Document::parse(animatedTriangle("mc_test_blend"),source));
+        failures+=!expect(blended.meshes.size()==1&&blended.meshes[0].forceAlpha&&!blended.meshes[0].alphaTest,"blended technique retains opacity without cutout");
+        const auto solid=scene::buildScene(cast::Document::parse(animatedTriangle("mc_test_solid"),source));
+        failures+=!expect(cutout.meshes.size()==1&&cutout.meshes[0].alphaTest&&!cutout.meshes[0].forceAlpha,"exported alpha-test technique enables cutout without blending");
+        failures+=!expect(solid.meshes.size()==1&&!solid.meshes[0].alphaTest,"ordinary exported technique does not imply opacity alpha");
+    }
+    {
+        scene::CastScene hands;hands.skeleton.bones.resize(3);
+        for(std::size_t n=0;n<3;++n){auto& bone=hands.skeleton.bones[n];bone.name=n==0?"j_wrist_ri":n==1?"j_gun":"tag_weapon";bone.parent=n==1?0:-1;hands.skeleton.boneByName[bone.name]=n;hands.skeleton.boneByCanonicalName[bone.name]=n;}
+        const auto handTemplate=hands;
+        for(const auto game:{"iw_sp","mw","mw3","mwr","ghosts"}){
+        hands=handTemplate;
+        scene::appendRigModel(cast::Document::parse(animatedTriangle("test","j_gun"),std::string("fixture/")+game+"/models/weapon_without_view_marker.cast"),hands,"weapon_without_view_marker");
+        const auto gun=hands.skeleton.boneByCanonicalName.at("j_gun");
+        failures+=!expect(gun!=1&&hands.skeleton.bones[gun].parent==2,"IW exported weapon root must not merge into the hands wrist helper when filename has no view marker");
+        failures+=!expect(hands.skeleton.bones[1].parent==0,"IW ownership separation preserves wrist helper hierarchy");
+        }
+    }
+    {
+        const char b[2]={'b','\0'},f[2]={'f','\0'};
+        const auto makeFile=[](std::vector<Bytes> children){auto root=node(0x746F6F72,0,{},std::move(children));Bytes out;append(out,cast::Document::kMagic);append<std::uint32_t>(out,1);append<std::uint32_t>(out,1);append<std::uint32_t>(out,0);appendRaw(out,root.data(),root.size());return out;};
+        scene::CastScene rig;rig.skeleton.bones.resize(3);
+        for(std::size_t n=0;n<3;++n){auto& bone=rig.skeleton.bones[n];bone.name=n==0?"weapon":n==1?"child":"other";bone.parent=n==1?0:-1;bone.restLocal.position.x=10;rig.skeleton.boneByName[bone.name]=n;rig.skeleton.boneByCanonicalName[bone.name]=n;}
+        const auto curve=[&](const char* name){return node(0x76727563,10,{stringProperty("nn",name),stringProperty("kp","tx"),stringProperty("m","absolute"),numericProperty(b,"kb",1,std::vector<std::uint8_t>{0}),numericProperty(f,"kv",1,std::vector<float>{2})});};
+        const auto mode=node(0x564F4D43,11,{stringProperty("nn","weapon"),stringProperty("m","relative"),numericProperty(b,"ot",1,std::vector<std::uint8_t>{1})});
+        const auto animation=node(0x6D696E61,12,{stringProperty("n","vm_test_idle")},{curve("weapon"),curve("child"),curve("other"),mode});
+        scene::appendAnimations(cast::Document::parse(makeFile({animation}),"fixture/iw_sp/vm_test_idle.cast"),rig);
+        auto pose=rig.sampleLocalPose(0,0);
+        failures+=!expect(pose[0].position.x==2&&pose[1].position.x==12&&pose[2].position.x==2,"CAST reference-importer translation override covers descendants but not the named bone or siblings regardless of node order");
+        auto untouched=rig;untouched.animations.clear();
+        scene::appendAnimations(cast::Document::parse(makeFile({animation}),"fixture/cs2/animations/viewmodel/test.cast"),untouched);
+        failures+=!expect(untouched.sampleLocalPose(0,0)[0].position.x==2,"excluded Source2 animation pipeline remains unchanged");
+        const auto disabled=node(0x564F4D43,13,{stringProperty("nn","weapon"),stringProperty("m","relative")});
+        const auto defaults=node(0x6D696E61,14,{stringProperty("n","vm_test_idle")},{curve("weapon"),disabled});
+        scene::appendAnimations(cast::Document::parse(makeFile({defaults}),"fixture/iw_sp/defaults.cast"),rig);
+        failures+=!expect(rig.sampleLocalPose(1,0)[0].position.x==2,"omitted CAST override channel flags default off");
+    }
+    {
+        scene::CastScene s;s.viewHandsDriverGame="dirtybomb";scene::Bone bone;bone.name="hand";s.skeleton.bones.push_back(bone);
+        for(const auto& item:{std::pair{"AR_Idle.cast",10.f},std::pair{"AR_Zoom_Idle.cast",100.f},std::pair{"AR_Fire.cast",13.f},std::pair{"AR_Zoom_Fire.cast",104.f}}){
+            scene::Animation a;a.sourceName=item.first;scene::Track t;t.boneIndex=0;t.property=scene::TrackProperty::TranslationX;t.frames={0};t.scalarValues={item.second};a.tracks.push_back(t);s.animations.push_back(a);
+        }
+        weapon::Profile p;p.animations["idle"]="AR_Idle.cast";p.animations["ads_idle"]="AR_Zoom_Idle.cast";
+        scene::PoseLayer input{2,0,1,scene::LayerMode::Override,false};
+        const auto layer=cadence::imported_actions::adsFireLayer(s,p,scene::ActionRole::Fire,input);
+        scene::PoseSlot slot;slot.nodes.push_back(layer);const auto pose=s.samplePoseSlots(1,0,{slot});
+        failures+=!expect(layer.referenceAnimation==0&&std::abs(pose[0].v[12]-103.f)<.001f,"retained hip recoil uses explicit neutral, preserving first-frame recoil during ADS");
+        input.animation=3;const auto aimed=cadence::imported_actions::adsFireLayer(s,p,scene::ActionRole::Fire,input);
+        failures+=!expect(aimed.referenceAnimation==1,"ADS fire uses ADS neutral");
+        failures+=!expect(cadence::imported_actions::adsFireLayer(s,p,scene::ActionRole::Reload,input).mode==scene::LayerMode::Override,"reload remains full-pose");
+        input.mode=scene::LayerMode::Additive;failures+=!expect(cadence::imported_actions::adsFireLayer(s,p,scene::ActionRole::Fire,input).referenceAnimation==SIZE_MAX,"authored additive reference retained");input.mode=scene::LayerMode::Override;
+        auto missing=p;missing.animations.clear();failures+=!expect(cadence::imported_actions::adsFireLayer(s,missing,scene::ActionRole::Fire,input).mode==scene::LayerMode::Override,"missing neutral does not guess");
+        s.viewHandsDriverGame="cs2";failures+=!expect(cadence::imported_actions::adsFireLayer(s,p,scene::ActionRole::Fire,input).mode==scene::LayerMode::Override,"CS2 fire pipeline untouched");
+    }
+    {
+        scene::CastScene rig;rig.viewHandsDriverGame="cs2";
+        for(const auto name:{"wpn","weapon"}){scene::Bone b;b.name=name;b.parent=-1;b.restGlobal=scene::Mat4::identity();b.inverseBind=scene::Mat4::identity();rig.skeleton.boneByName[name]=rig.skeleton.bones.size();rig.skeleton.boneByCanonicalName[name]=rig.skeleton.bones.size();rig.skeleton.bones.push_back(b);}
+        rig.skeleton.bones[0].restLocal.position={17,0,0};rig.skeleton.bones[0].restGlobal=scene::translation({17,0,0});rig.skeleton.bones[0].inverseBind=scene::inverseAffine(rig.skeleton.bones[0].restGlobal);
+        const auto source=cast::Document::parse(animatedTriangle("test","weapon"),"fixture/cs2/models/test.cast");
+        scene::appendRigModel(source,rig,"test");
+        failures+=!expect(rig.skeleton.bones[1].parent==0,"CS2 disconnected weapon root attaches to wpn");
+        failures+=!expect(std::abs(rig.skeleton.bones[1].restGlobal.v[12]-17.f)<.001f,"CS2 attached bind follows socket");
+        const auto before=rig.meshes[0].vertices[0].position;
+        scene::appendRigModel(source,rig,"second");
+        failures+=!expect(scene::length(rig.meshes.back().vertices[0].position-before)<.001f,"CS2 attachment is idempotent");
+    }
+    failures+=!expect(scene::source2ContextualBody("agents/models/ctm_fbi/ctm_fbi.vmdl_c","pb_generic_stand_idle_death_clip1906694010663493925.cast"),"normalized low-violence death excluded by source identity");
+    failures+=!expect(!scene::source2ContextualBody("agents/models/ctm_fbi/ctm_fbi.vmdl_c","pb_generic_stand_idle_death_clip9605355687280257963.cast"),"normal chest death retained");
+    failures+=!expect(scene::source2ContextualBody("characters/hostage.vmdl_c","pb_death.cast"),"hostage source excluded despite generic name");
     if(!failures)std::cout<<"All Cast scene tests passed.\n";return failures?1:0;
 }

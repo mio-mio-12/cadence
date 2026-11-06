@@ -1,9 +1,14 @@
 #pragma once
 #include "scene/CastScene.h"
 #include "scene/PointBlankWorld.h"
+#include "scene/PointBlankActionIdentity.h"
 #include <limits>
 
 namespace scene::pointblank {
+inline bool hasAuthoredRigidRotation(const Bone& bone){
+ const auto q=normalize(bone.restLocal.rotation);
+ return std::abs(q.w)<.99999f;
+}
 inline bool animationPath(const cast::Document& d){for(auto& p:std::filesystem::path(d.sourceName()))if(p=="pointblank")return true;return false;}
 inline void classifyPlayer(Animation& a){
  auto n=std::filesystem::path(a.sourceName).stem().string();for(auto& c:n)c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -31,6 +36,7 @@ inline void classifyPlayer(Animation& a){
  else if(n.find("shotgun")!=std::string::npos)a.weapon=WeaponClass::Shotgun;
  else if(n.find("smg")!=std::string::npos||n.find("submachine")!=std::string::npos)a.weapon=WeaponClass::Automatic;
  else if(n.find("knife")!=std::string::npos||n.find("melee")!=std::string::npos||n.find("kukri")!=std::string::npos||n.find("knuckle")!=std::string::npos)a.weapon=WeaponClass::Knife;
+ if(a.domain==AnimationDomain::PlayerTorso&&!torsoWeaponFamily(a.sourceName).empty())a.weapon=WeaponClass::Knife;
  if(a.weapon==WeaponClass::Knife&&a.action==ActionRole::Fire)a.action=ActionRole::Melee;
 }
 inline bool exportedByPb2cast(const cast::Document& d){

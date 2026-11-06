@@ -18,6 +18,8 @@ add_library(cast_core
     src/cast/CastDocument.cpp
     src/cast/CastDocument.h
 )
+add_executable(bot_bind_audit EXCLUDE_FROM_ALL tools/BotBindAudit.cpp)
+target_link_libraries(bot_bind_audit PRIVATE cast_scene cast_assets)
 target_include_directories(cast_core PUBLIC src)
 target_compile_features(cast_core PUBLIC cxx_std_20)
 if(MSVC)
@@ -42,15 +44,50 @@ else()
 endif()
 
 add_executable(test_shoulder tools/TestShoulder.cpp)
+add_executable(practice_tools_tests tests/PracticeToolsTests.cpp)
+target_include_directories(practice_tools_tests PRIVATE src)
+add_test(NAME practice_tools_tests COMMAND practice_tools_tests)
 add_executable(pointblank_probe EXCLUDE_FROM_ALL tools/PointBlankProbe.cpp)
 add_executable(imported_game_audit EXCLUDE_FROM_ALL tools/ImportedGameAudit.cpp)
+add_executable(new_imports_audit EXCLUDE_FROM_ALL tools/NewImportsAudit.cpp)
+target_link_libraries(new_imports_audit PRIVATE cast_scene cast_assets cast_core)
+add_executable(new_import_policy_tests tests/NewImportPolicyTests.cpp)
+target_link_libraries(new_import_policy_tests PRIVATE cast_assets cast_scene)
+add_test(NAME new_import_policy_tests COMMAND new_import_policy_tests)
+add_executable(environment_source_tests tests/EnvironmentSourceTests.cpp)
+target_include_directories(environment_source_tests PRIVATE src)
+add_test(NAME environment_source_tests COMMAND environment_source_tests)
+add_executable(weapon_turn_tests tests/WeaponTurnTests.cpp)
+target_link_libraries(weapon_turn_tests PRIVATE cast_scene)
+add_test(NAME weapon_turn_tests COMMAND weapon_turn_tests)
+add_executable(heaven_smile_tests tests/HeavenSmileTests.cpp)
+target_link_libraries(heaven_smile_tests PRIVATE cast_scene)
+add_test(NAME heaven_smile_tests COMMAND heaven_smile_tests)
 target_link_libraries(imported_game_audit PRIVATE cast_scene cast_assets cast_core)
 add_executable(imported_body_tests tests/ImportedBodyTests.cpp)
 target_link_libraries(imported_body_tests PRIVATE cast_scene)
 add_test(NAME imported_body_tests COMMAND imported_body_tests)
 add_executable(imported_view_retarget_tests tests/ImportedViewRetargetTests.cpp)
+add_executable(pose_only_chain_tests tests/PoseOnlyChainTests.cpp)
+target_include_directories(pose_only_chain_tests PRIVATE src)
+add_test(NAME pose_only_chain_tests COMMAND pose_only_chain_tests)
+add_executable(pose_only_runtime_tests tests/PoseOnlyRuntimeTests.cpp)
+target_link_libraries(pose_only_runtime_tests PRIVATE cast_scene)
+add_test(NAME pose_only_runtime_tests COMMAND pose_only_runtime_tests)
 target_link_libraries(imported_view_retarget_tests PRIVATE cast_scene)
 add_test(NAME imported_view_retarget_tests COMMAND imported_view_retarget_tests)
+add_executable(bind_baked_body_delta_tests tests/BindBakedBodyDeltaTests.cpp)
+target_link_libraries(bind_baked_body_delta_tests PRIVATE cast_scene)
+add_test(NAME bind_baked_body_delta_tests COMMAND bind_baked_body_delta_tests)
+add_executable(character_collision_tests tests/CharacterCollisionTests.cpp)
+target_link_libraries(character_collision_tests PRIVATE cast_scene cast_glb_map)
+add_test(NAME character_collision_tests COMMAND character_collision_tests)
+add_executable(proximal_support_tests tests/ProximalSupportTests.cpp)
+target_link_libraries(proximal_support_tests PRIVATE cast_scene)
+add_test(NAME proximal_support_tests COMMAND proximal_support_tests)
+add_executable(proximal_continuation_tests tests/ProximalContinuationTests.cpp)
+target_link_libraries(proximal_continuation_tests PRIVATE cast_scene)
+add_test(NAME proximal_continuation_tests COMMAND proximal_continuation_tests)
 add_executable(imported_world_grip_tests tests/ImportedWorldGripTests.cpp)
 add_executable(imported_muzzle_audit EXCLUDE_FROM_ALL tools/ImportedMuzzleAudit.cpp)
 target_link_libraries(imported_muzzle_audit PRIVATE cast_scene)
@@ -136,6 +173,12 @@ if(CAST_BUILD_UI)
     )
     FetchContent_MakeAvailable(imgui)
 
+    FetchContent_Declare(box3d
+        GIT_REPOSITORY https://github.com/erincatto/box3d.git
+        GIT_TAG 336263320469e5e9febfe18697ab562488f7e97a
+    )
+    FetchContent_MakeAvailable(box3d)
+
     set(WEBP_BUILD_ANIM_UTILS OFF CACHE BOOL "" FORCE)
     set(WEBP_BUILD_CWEBP OFF CACHE BOOL "" FORCE)
     set(WEBP_BUILD_DWEBP OFF CACHE BOOL "" FORCE)
@@ -185,9 +228,18 @@ if(CAST_BUILD_UI)
         src/render/PreparedTexture.h
         src/render/StageRenderer.cpp
         src/render/StageRenderer.h
+        src/render/NativeReShade.cpp
     )
     target_include_directories(stage_renderer PUBLIC src PRIVATE external/libwebp/src)
     target_link_libraries(stage_renderer PUBLIC cast_scene glfw OpenGL::GL webpdecoder)
+    add_library(native_reshade INTERFACE)
+    add_executable(native_reshade_audit EXCLUDE_FROM_ALL tools/NativeReShadeAudit.cpp)
+    target_link_libraries(native_reshade_audit PRIVATE native_reshade)
+    target_include_directories(stage_renderer PRIVATE external/reshade-6.8.0)
+    target_link_libraries(native_reshade INTERFACE stage_renderer)
+    if(WIN32)
+        target_link_libraries(stage_renderer PUBLIC d3d11 dxgi)
+    endif()
     if(WIN32)
         target_link_libraries(stage_renderer PUBLIC windowscodecs ole32)
     endif()
@@ -531,6 +583,9 @@ if(CAST_BUILD_UI)
     target_link_libraries(dof_numeric_check PRIVATE stage_renderer cast_take cast_glb_map)
     add_executable(rain_visual_check EXCLUDE_FROM_ALL tools/RainVisualCheck.cpp)
     add_executable(weather_visual_check EXCLUDE_FROM_ALL tools/WeatherVisualCheck.cpp)
+    add_executable(bloom_safety_check tools/BloomSafetyCheck.cpp)
+    target_link_libraries(bloom_safety_check PRIVATE stage_renderer glfw OpenGL::GL)
+    add_test(NAME bloom_safety_check COMMAND bloom_safety_check)
     target_link_libraries(weather_visual_check PRIVATE stage_renderer cast_take cast_glb_map)
     add_executable(weather_tests tests/WeatherTests.cpp)
     target_include_directories(weather_tests PRIVATE src)
@@ -775,6 +830,9 @@ add_executable(Cadence_v181 EXCLUDE_FROM_ALL src/app/main.cpp)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v222> ${CMAKE_SOURCE_DIR}/Cadence_v222.exe)
     add_executable(v203_audit EXCLUDE_FROM_ALL tools/V203Audit.cpp)
     add_executable(movement_preset_check EXCLUDE_FROM_ALL tools/MovementPresetCheck.cpp)
+    add_executable(player_collision_preview_check EXCLUDE_FROM_ALL tools/PlayerCollisionPreviewCheck.cpp)
+    target_compile_options(player_collision_preview_check PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(player_collision_preview_check PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
     add_executable(reference_controller_check EXCLUDE_FROM_ALL tools/ReferenceControllerCheck.cpp)
     target_compile_options(reference_controller_check PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
     target_link_libraries(reference_controller_check PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
@@ -958,6 +1016,15 @@ add_executable(Cadence_v181 EXCLUDE_FROM_ALL src/app/main.cpp)
     add_executable(map_performance_audit EXCLUDE_FROM_ALL tools/MapPerformanceAudit.cpp)
     add_executable(full_scene_performance_audit EXCLUDE_FROM_ALL tools/FullScenePerformanceAudit.cpp)
     add_executable(cull_state_gl_audit EXCLUDE_FROM_ALL tools/CullStateGlAudit.cpp)
+    add_executable(shadow_cache_audit EXCLUDE_FROM_ALL tools/ShadowCacheAudit.cpp)
+    add_executable(weather_cost_audit EXCLUDE_FROM_ALL tools/WeatherCostAudit.cpp)
+    add_executable(map_loading_audit EXCLUDE_FROM_ALL tools/MapLoadingAudit.cpp)
+    target_link_libraries(map_loading_audit PRIVATE cast_glb_map stage_renderer cast_take glfw OpenGL::GL)
+    target_link_libraries(weather_cost_audit PRIVATE stage_renderer cast_take glfw OpenGL::GL)
+    add_executable(rust_weather_audit EXCLUDE_FROM_ALL tools/RustWeatherAudit.cpp)
+    target_compile_options(rust_weather_audit PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(rust_weather_audit PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    target_link_libraries(shadow_cache_audit PRIVATE stage_renderer cast_take glfw OpenGL::GL)
     target_link_libraries(cull_state_gl_audit PRIVATE stage_renderer cast_take glfw OpenGL::GL)
     add_executable(hbao_radius_audit EXCLUDE_FROM_ALL tools/HbaoRadiusAudit.cpp)
     target_link_libraries(hbao_radius_audit PRIVATE stage_renderer glfw OpenGL::GL)
@@ -973,7 +1040,1772 @@ add_executable(Cadence_v181 EXCLUDE_FROM_ALL src/app/main.cpp)
     target_compile_options(map_performance_audit PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
     target_link_libraries(map_performance_audit PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
     target_link_libraries(bot_pool_audit PRIVATE cast_core cast_scene)
-    add_executable(Cadence_v263 src/app/main.cpp)
+    add_executable(Cadence_v266 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v266 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v266 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v266 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v266>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v266>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v266>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v266>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v266>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v266> ${CMAKE_SOURCE_DIR}/Cadence_v266.exe)
+    add_executable(Cadence_v319 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v319 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v319 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v319 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v319>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v319>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v319>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v319>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v319>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v319> ${CMAKE_SOURCE_DIR}/Cadence_v319.exe)
+    add_executable(Cadence_v320 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v320 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v320 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v320 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v320>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v320>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v320>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v320>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v320>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v320> ${CMAKE_SOURCE_DIR}/Cadence_v320.exe)
+    add_executable(Cadence_v321 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v321 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v321 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v321 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v321>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v321>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v321>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v321>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v321>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v321> ${CMAKE_SOURCE_DIR}/Cadence_v321.exe)
+    add_executable(Cadence_v322 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v322 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v322 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v322 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v322>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v322>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v322>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v322>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v322>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v322> ${CMAKE_SOURCE_DIR}/Cadence_v322.exe)
+    add_executable(Cadence_v323 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v323 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v323 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v323 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v323>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v323>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v323>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v323>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v323>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v323> ${CMAKE_SOURCE_DIR}/Cadence_v323.exe)
+    add_executable(Cadence_v361 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v361 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v361 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_executable(Cadence_v362 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v362 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v362 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_executable(Cadence_v363 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v363 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v363 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_executable(Cadence_v367 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v367 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v367 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v367 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v367>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v367>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v367>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v367>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v367>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v367> ${CMAKE_SOURCE_DIR}/Cadence_v367.exe)
+    add_executable(Cadence_v368 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v368 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v368 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v368 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v368>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v368>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v368>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v368>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v368>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v368> ${CMAKE_SOURCE_DIR}/Cadence_v368.exe)
+    add_executable(Cadence_v369 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v369 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v369 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v369 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v369>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v369>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v369>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v369>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v369>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v369> ${CMAKE_SOURCE_DIR}/Cadence_v369.exe)
+    add_executable(Cadence_v370 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v370 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v370 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v370 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v370>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v370>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v370>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v370>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v370>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v370> ${CMAKE_SOURCE_DIR}/Cadence_v370.exe)
+    add_executable(Cadence_v371 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v371 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v371 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v371 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v371>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v371>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v371>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v371>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v371>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v371> ${CMAKE_SOURCE_DIR}/Cadence_v371.exe)
+    add_executable(Cadence_v373 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v373 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v373 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_executable(Cadence_v374 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v374 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v374 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_executable(Cadence_v375 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v375 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v375 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_executable(Cadence_v376 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v376 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v376 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_executable(Cadence_v377 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v377 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v377 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_executable(Cadence_v378 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v378 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v378 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_executable(Cadence_v388 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v388 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v388 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v388 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v388> ${CMAKE_SOURCE_DIR}/Cadence_v388.exe)
+    add_executable(Cadence_v389 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v389 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v389 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v389 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v389> ${CMAKE_SOURCE_DIR}/Cadence_v389.exe)
+    add_executable(Cadence_v390 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v390 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v390 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v390 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v390> ${CMAKE_SOURCE_DIR}/Cadence_v390.exe)
+    add_executable(Cadence_v391 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v391 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v391 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v391 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v391> ${CMAKE_SOURCE_DIR}/Cadence_v391.exe)
+    add_executable(Cadence_v392 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v392 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v392 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v392 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v392> ${CMAKE_SOURCE_DIR}/Cadence_v392.exe)
+    add_executable(Cadence_v393 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v393 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v393 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v393 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v393> ${CMAKE_SOURCE_DIR}/Cadence_v393.exe)
+    add_executable(Cadence_v394 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v394 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v394 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v394 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v394> ${CMAKE_SOURCE_DIR}/Cadence_v394.exe)
+    add_executable(Cadence_v395 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v395 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v395 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v395 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v395> ${CMAKE_SOURCE_DIR}/Cadence_v395.exe)
+    add_executable(Cadence_v396 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v396 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v396 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v396 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v396> ${CMAKE_SOURCE_DIR}/Cadence_v396.exe)
+    add_executable(Cadence_v397 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v397 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v397 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v397 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v397> ${CMAKE_SOURCE_DIR}/Cadence_v397.exe)
+    add_executable(Cadence_v398 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v398 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v398 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v398 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v398> ${CMAKE_SOURCE_DIR}/Cadence_v398.exe)
+    add_executable(Cadence_v399 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v399 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v399 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v399 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v399> ${CMAKE_SOURCE_DIR}/Cadence_v399.exe)
+    add_executable(Cadence_v400 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v400 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v400 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v400 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v400> ${CMAKE_SOURCE_DIR}/Cadence_v400.exe)
+    add_executable(Cadence_v401 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v401 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v401 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v401 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v401> ${CMAKE_SOURCE_DIR}/Cadence_v401.exe)
+    add_executable(Cadence_v402 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v402 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v402 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v402 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v402> ${CMAKE_SOURCE_DIR}/Cadence_v402.exe)
+    add_executable(Cadence_v403 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v403 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v403 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v403 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v403> ${CMAKE_SOURCE_DIR}/Cadence_v403.exe)
+    add_executable(Cadence_v404 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v404 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v404 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v404 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v404> ${CMAKE_SOURCE_DIR}/Cadence_v404.exe)
+    add_executable(Cadence_v405 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v405 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v405 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v405 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v405> ${CMAKE_SOURCE_DIR}/Cadence_v405.exe)
+    add_executable(Cadence_v406 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v406 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v406 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v406 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v406> ${CMAKE_SOURCE_DIR}/Cadence_v406.exe)
+    add_executable(Cadence_v407 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v407 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v407 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v407 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v407> ${CMAKE_SOURCE_DIR}/Cadence_v407.exe)
+    add_executable(Cadence_v408 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v408 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v408 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v408 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v408> ${CMAKE_SOURCE_DIR}/Cadence_v408.exe)
+    add_executable(Cadence_v409 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v409 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v409 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v409 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v409> ${CMAKE_SOURCE_DIR}/Cadence_v409.exe)
+    add_executable(Cadence_v410 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v410 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v410 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v410 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v410> ${CMAKE_SOURCE_DIR}/Cadence_v410.exe)
+    add_executable(Cadence_v411 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v411 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v411 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v411 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v411> ${CMAKE_SOURCE_DIR}/Cadence_v411.exe)
+    add_executable(Cadence_v412 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v412 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v412 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v412 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v412> ${CMAKE_SOURCE_DIR}/Cadence_v412.exe)
+    add_executable(Cadence_v413 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v413 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v413 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v413 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v413> ${CMAKE_SOURCE_DIR}/Cadence_v413.exe)
+    add_executable(Cadence_v414 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v414 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v414 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v414 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v414> ${CMAKE_SOURCE_DIR}/Cadence_v414.exe)
+    add_executable(Cadence_v415 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v415 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v415 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v415 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v415> ${CMAKE_SOURCE_DIR}/Cadence_v415.exe)
+    add_executable(Cadence_v416 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v416 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v416 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v416 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v416> ${CMAKE_SOURCE_DIR}/Cadence_v416.exe)
+    add_executable(Cadence_v417 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v417 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v417 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v417 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v417> ${CMAKE_SOURCE_DIR}/Cadence_v417.exe)
+    add_executable(Cadence_v418 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v418 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v418 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v418 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v418> ${CMAKE_SOURCE_DIR}/Cadence_v418.exe)
+    add_executable(Cadence_v419 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v419 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v419 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v419 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v419> ${CMAKE_SOURCE_DIR}/Cadence_v419.exe)
+    add_executable(Cadence_v420 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v420 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v420 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v420 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v420> ${CMAKE_SOURCE_DIR}/Cadence_v420.exe)
+    add_executable(Cadence_v421 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v421 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v421 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v421 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v421> ${CMAKE_SOURCE_DIR}/Cadence_v421.exe)
+    add_executable(Cadence_v422 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v422 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v422 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v422 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v422> ${CMAKE_SOURCE_DIR}/Cadence_v422.exe)
+    add_executable(Cadence_v423 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v423 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v423 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v423 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v423> ${CMAKE_SOURCE_DIR}/Cadence_v423.exe)
+    add_executable(Cadence_v424 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v424 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v424 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v424 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v424> ${CMAKE_SOURCE_DIR}/Cadence_v424.exe)
+    add_executable(Cadence_v425 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v425 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v425 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v425 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v425> ${CMAKE_SOURCE_DIR}/Cadence_v425.exe)
+    add_executable(Cadence_v426 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v426 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v426 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v426 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v426> ${CMAKE_SOURCE_DIR}/Cadence_v426.exe)
+    add_executable(Cadence_v427 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v427 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v427 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v427 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v427> ${CMAKE_SOURCE_DIR}/Cadence_v427.exe)
+    add_executable(Cadence_v428 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v428 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v428 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v428 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v428> ${CMAKE_SOURCE_DIR}/Cadence_v428.exe)
+    add_executable(Cadence_v429 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v429 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v429 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v429 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v429> ${CMAKE_SOURCE_DIR}/Cadence_v429.exe)
+    add_executable(Cadence_v430 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v430 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v430 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v430 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v430> ${CMAKE_SOURCE_DIR}/Cadence_v430.exe)
+    add_executable(Cadence_v431 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v431 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v431 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v431 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v431> ${CMAKE_SOURCE_DIR}/Cadence_v431.exe)
+    add_executable(Cadence_v432 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v432 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v432 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v432 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v432> ${CMAKE_SOURCE_DIR}/Cadence_v432.exe)
+    add_executable(Cadence_v433 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v433 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v433 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v433 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v433> ${CMAKE_SOURCE_DIR}/Cadence_v433.exe)
+    add_executable(Cadence_v434 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v434 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v434 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v434 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v434> ${CMAKE_SOURCE_DIR}/Cadence_v434.exe)
+    add_executable(Cadence_v435 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v435 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v435 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v435 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v435> ${CMAKE_SOURCE_DIR}/Cadence_v435.exe)
+    add_executable(Cadence_v436 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v436 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v436 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v436 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v436> ${CMAKE_SOURCE_DIR}/Cadence_v436.exe)
+    add_executable(Cadence_v437 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v437 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v437 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v437 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v437> ${CMAKE_SOURCE_DIR}/Cadence_v437.exe)
+    add_executable(Cadence_v438 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v438 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v438 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v438 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v438> ${CMAKE_SOURCE_DIR}/Cadence_v438.exe)
+    add_executable(Cadence_v439 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v439 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v439 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v439 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v439> ${CMAKE_SOURCE_DIR}/Cadence_v439.exe)
+    add_executable(Cadence_v440 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v440 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v440 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v440 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v440> ${CMAKE_SOURCE_DIR}/Cadence_v440.exe)
+    add_executable(Cadence_v441 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v441 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v441 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v441 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v441> ${CMAKE_SOURCE_DIR}/Cadence_v441.exe)
+    add_executable(Cadence_v442 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v442 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v442 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v442 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v442> ${CMAKE_SOURCE_DIR}/Cadence_v442.exe)
+    add_executable(Cadence_v443 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v443 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v443 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v443 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v443> ${CMAKE_SOURCE_DIR}/Cadence_v443.exe)
+    add_executable(Cadence_v446 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v446 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v446 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v446 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v446> ${CMAKE_SOURCE_DIR}/Cadence_v446.exe)
+    add_executable(Cadence_v447 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v447 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v447 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v447 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v447> ${CMAKE_SOURCE_DIR}/Cadence_v447.exe)
+    add_executable(Cadence_v448 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v448 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v448 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v448 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v448> ${CMAKE_SOURCE_DIR}/Cadence_v448.exe)
+    add_executable(Cadence_v449 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v449 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v449 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v449 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v449> ${CMAKE_SOURCE_DIR}/Cadence_v449.exe)
+    add_executable(Cadence_v450 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v450 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v450 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v450 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v450> ${CMAKE_SOURCE_DIR}/Cadence_v450.exe)
+    add_executable(Cadence_v451 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v451 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v451 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v451 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v451> ${CMAKE_SOURCE_DIR}/Cadence_v451.exe)
+    add_executable(Cadence_v452 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v452 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v452 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v452 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v452> ${CMAKE_SOURCE_DIR}/Cadence_v452.exe)
+    add_executable(Cadence_v453 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v453 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v453 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v453 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v453> ${CMAKE_SOURCE_DIR}/Cadence_v453.exe)
+    add_executable(Cadence_v454 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v454 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v454 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v454 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v454> ${CMAKE_SOURCE_DIR}/Cadence_v454.exe)
+    add_executable(Cadence_v455 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v455 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v455 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v455 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v455> ${CMAKE_SOURCE_DIR}/Cadence_v455.exe)
+    add_executable(Cadence_v456 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v456 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v456 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v456 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v456> ${CMAKE_SOURCE_DIR}/Cadence_v456.exe)
+    add_executable(Cadence_v457 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v457 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v457 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v457 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v457> ${CMAKE_SOURCE_DIR}/Cadence_v457.exe)
+    add_executable(Cadence_v458 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v458 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v458 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v458 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v458> ${CMAKE_SOURCE_DIR}/Cadence_v458.exe)
+    add_executable(melee_mount_probe EXCLUDE_FROM_ALL tools/MeleeMountProbe.cpp)
+    add_executable(mw3_material_probe EXCLUDE_FROM_ALL tools/Mw3MaterialProbe.cpp)
+    target_link_libraries(mw3_material_probe PRIVATE cast_scene stage_renderer cast_take glfw OpenGL::GL)
+    target_link_libraries(melee_mount_probe PRIVATE cast_scene cast_assets)
+    add_executable(Cadence_v465 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v465 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v465 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v465 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v465> ${CMAKE_SOURCE_DIR}/Cadence_v465.exe)
+    add_executable(Cadence_v466 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v466 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v466 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v466 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v466> ${CMAKE_SOURCE_DIR}/Cadence_v466.exe)
+    add_executable(Cadence_v467 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v467 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v467 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v467 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v467> ${CMAKE_SOURCE_DIR}/Cadence_v467.exe)
+    add_executable(Cadence_v468 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v468 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v468 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v468 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v468> ${CMAKE_SOURCE_DIR}/Cadence_v468.exe)
+    add_executable(Cadence_v469 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v469 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v469 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v469 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v469> ${CMAKE_SOURCE_DIR}/Cadence_v469.exe)
+    add_executable(Cadence_v470 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v470 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v470 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v470 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v470> ${CMAKE_SOURCE_DIR}/Cadence_v470.exe)
+    add_executable(Cadence_v471 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v471 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v471 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v471 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v471> ${CMAKE_SOURCE_DIR}/Cadence_v471.exe)
+    add_executable(Cadence_v472 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v472 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v472 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v472 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v472> ${CMAKE_SOURCE_DIR}/Cadence_v472.exe)
+    add_executable(Cadence_v473 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v473 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v473 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v473 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v473> ${CMAKE_SOURCE_DIR}/Cadence_v473.exe)
+    add_executable(Cadence_v474 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v474 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v474 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v474 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v474> ${CMAKE_SOURCE_DIR}/Cadence_v474.exe)
+    add_executable(map_spawn_audit EXCLUDE_FROM_ALL tools/MapSpawnAudit.cpp)
+    target_link_libraries(map_spawn_audit PRIVATE cast_glb_map)
+    add_executable(source_muzzle_audit EXCLUDE_FROM_ALL tools/SourceMuzzleAudit.cpp)
+    target_link_libraries(source_muzzle_audit PRIVATE cast_scene)
+    add_executable(shader_disassemble EXCLUDE_FROM_ALL tools/ShaderDisassemble.cpp)
+    target_link_libraries(shader_disassemble PRIVATE d3dcompiler)
+    add_executable(metal_shader_audit EXCLUDE_FROM_ALL tools/MetalShaderAudit.cpp)
+    target_link_libraries(metal_shader_audit PRIVATE stage_renderer cast_scene cast_take OpenGL::GL)
+    add_executable(score_preview_audit EXCLUDE_FROM_ALL tools/ScorePreviewAudit.cpp)
+    target_link_libraries(score_preview_audit PRIVATE stage_renderer cast_scene cast_take imgui_backend OpenGL::GL)
+    add_executable(foreign_bo_hands_audit EXCLUDE_FROM_ALL tools/ForeignBoHandsAudit.cpp)
+    target_compile_options(foreign_bo_hands_audit PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(foreign_bo_hands_audit PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_executable(Cadence_v500 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v500 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v500 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+
+    add_executable(Cadence_v501 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v501 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v501 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+
+    target_link_libraries(cast_glb_map PUBLIC box3d::box3d)
+    add_executable(Cadence_v502 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v502 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v502 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+
+    add_executable(Cadence_v503 src/app/main.cpp)
+    target_compile_options(Cadence_v503 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v503 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v503 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v503> ${CMAKE_SOURCE_DIR}/Cadence_v503.exe)
+    add_executable(Cadence_v499 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v499 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v499 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v499 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v499> ${CMAKE_SOURCE_DIR}/Cadence_v499.exe)
+    add_executable(Cadence_v498 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v498 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v498 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v498 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v498> ${CMAKE_SOURCE_DIR}/Cadence_v498.exe)
+    add_executable(Cadence_v497 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v497 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v497 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v497 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v497> ${CMAKE_SOURCE_DIR}/Cadence_v497.exe)
+    add_executable(Cadence_v496 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v496 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v496 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v496 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v496> ${CMAKE_SOURCE_DIR}/Cadence_v496.exe)
+    add_executable(Cadence_v495 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v495 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v495 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v495 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v495> ${CMAKE_SOURCE_DIR}/Cadence_v495.exe)
+    add_executable(Cadence_v494 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v494 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v494 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v494 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v494> ${CMAKE_SOURCE_DIR}/Cadence_v494.exe)
+    add_executable(Cadence_v493 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v493 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v493 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v493 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v493> ${CMAKE_SOURCE_DIR}/Cadence_v493.exe)
+    add_executable(Cadence_v492 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v492 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v492 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v492 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v492> ${CMAKE_SOURCE_DIR}/Cadence_v492.exe)
+    add_executable(Cadence_v491 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v491 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v491 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v491 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v491> ${CMAKE_SOURCE_DIR}/Cadence_v491.exe)
+    add_executable(Cadence_v490 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v490 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v490 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v490 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v490> ${CMAKE_SOURCE_DIR}/Cadence_v490.exe)
+    add_executable(Cadence_v489 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v489 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v489 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v489 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v489> ${CMAKE_SOURCE_DIR}/Cadence_v489.exe)
+    add_executable(Cadence_v488 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v488 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v488 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v488 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v488> ${CMAKE_SOURCE_DIR}/Cadence_v488.exe)
+    add_executable(weapon488_audit EXCLUDE_FROM_ALL tools/Weapon488Audit.cpp)
+    target_compile_options(weapon488_audit PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(weapon488_audit PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_executable(Cadence_v487 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v487 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v487 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v487 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v487> ${CMAKE_SOURCE_DIR}/Cadence_v487.exe)
+    add_executable(Cadence_v486 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v486 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v486 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v486 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v486> ${CMAKE_SOURCE_DIR}/Cadence_v486.exe)
+    add_executable(Cadence_v485 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v485 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v485 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v485 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v485> ${CMAKE_SOURCE_DIR}/Cadence_v485.exe)
+    add_executable(Cadence_v484 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v484 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v484 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v484 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v484> ${CMAKE_SOURCE_DIR}/Cadence_v484.exe)
+    add_executable(Cadence_v483 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v483 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v483 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v483 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v483> ${CMAKE_SOURCE_DIR}/Cadence_v483.exe)
+    add_executable(Cadence_v482 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v482 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v482 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v482 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v482> ${CMAKE_SOURCE_DIR}/Cadence_v482.exe)
+    add_executable(Cadence_v481 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v481 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v481 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v481 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v481> ${CMAKE_SOURCE_DIR}/Cadence_v481.exe)
+    add_executable(Cadence_v480 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v480 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v480 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v480 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v480> ${CMAKE_SOURCE_DIR}/Cadence_v480.exe)
+    add_executable(Cadence_v479 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v479 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v479 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v479 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v479> ${CMAKE_SOURCE_DIR}/Cadence_v479.exe)
+    add_executable(Cadence_v478 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v478 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v478 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v478 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v478> ${CMAKE_SOURCE_DIR}/Cadence_v478.exe)
+    add_executable(Cadence_v477 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v477 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v477 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v477 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v477> ${CMAKE_SOURCE_DIR}/Cadence_v477.exe)
+    add_executable(Cadence_v476 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v476 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v476 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v476 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v476> ${CMAKE_SOURCE_DIR}/Cadence_v476.exe)
+    add_executable(Cadence_v475 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v475 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v475 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon stage_renderer cast_glb_map imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v475 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v475> ${CMAKE_SOURCE_DIR}/Cadence_v475.exe)
+    add_executable(Cadence_v464 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v464 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v464 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v464 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v464> ${CMAKE_SOURCE_DIR}/Cadence_v464.exe)
+    add_executable(Cadence_v463 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v463 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v463 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v463 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v463> ${CMAKE_SOURCE_DIR}/Cadence_v463.exe)
+    add_executable(Cadence_v462 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v462 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v462 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v462 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v462> ${CMAKE_SOURCE_DIR}/Cadence_v462.exe)
+    add_executable(Cadence_v461 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v461 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v461 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v461 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v461> ${CMAKE_SOURCE_DIR}/Cadence_v461.exe)
+    add_executable(Cadence_v460 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v460 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v460 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v460 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v460> ${CMAKE_SOURCE_DIR}/Cadence_v460.exe)
+    add_executable(Cadence_v459 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v459 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v459 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v459 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v459> ${CMAKE_SOURCE_DIR}/Cadence_v459.exe)
+    add_executable(Cadence_v445 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v445 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v445 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v445 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v445> ${CMAKE_SOURCE_DIR}/Cadence_v445.exe)
+    add_executable(Cadence_v444 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v444 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v444 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v444 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v444> ${CMAKE_SOURCE_DIR}/Cadence_v444.exe)
+    add_executable(Cadence_v387 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v387 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v387 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v387 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v387> ${CMAKE_SOURCE_DIR}/Cadence_v387.exe)
+    add_executable(Cadence_v386 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v386 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v386 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v386 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v386> ${CMAKE_SOURCE_DIR}/Cadence_v386.exe)
+    add_executable(Cadence_v385 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v385 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v385 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v385 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v385> ${CMAKE_SOURCE_DIR}/Cadence_v385.exe)
+    add_executable(Cadence_v384 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v384 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v384 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v384 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v384> ${CMAKE_SOURCE_DIR}/Cadence_v384.exe)
+    add_executable(Cadence_v383 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v383 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v383 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v383 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v383> ${CMAKE_SOURCE_DIR}/Cadence_v383.exe)
+    add_executable(Cadence_v382 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v382 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v382 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v382 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v382> ${CMAKE_SOURCE_DIR}/Cadence_v382.exe)
+    add_executable(Cadence_v381 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v381 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v381 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v381 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v381> ${CMAKE_SOURCE_DIR}/Cadence_v381.exe)
+    add_executable(Cadence_v380 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v380 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v380 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v380 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v380>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v380>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v380>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v380>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v380>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v380> ${CMAKE_SOURCE_DIR}/Cadence_v380.exe)
+    add_executable(Cadence_v379 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v379 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v379 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v379 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v379>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v379>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v379>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v379>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v379>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v379> ${CMAKE_SOURCE_DIR}/Cadence_v379.exe)
+    add_executable(Cadence_v372 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v372 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v372 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v372 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v372>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v372>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v372>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v372>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v372>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v372> ${CMAKE_SOURCE_DIR}/Cadence_v372.exe)
+    add_executable(Cadence_v366 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v366 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v366 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v366 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v366>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v366>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v366>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v366>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v366>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v366> ${CMAKE_SOURCE_DIR}/Cadence_v366.exe)
+    add_executable(Cadence_v365 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v365 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v365 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v365 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v365>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v365>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v365>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v365>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v365>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v365> ${CMAKE_SOURCE_DIR}/Cadence_v365.exe)
+    add_executable(Cadence_v364 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v364 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v364 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v364 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v364>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v364>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v364>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v364>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v364>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v364> ${CMAKE_SOURCE_DIR}/Cadence_v364.exe)
+    add_custom_command(TARGET Cadence_v363 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v363>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v363>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v363>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v363>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v363>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v363> ${CMAKE_SOURCE_DIR}/Cadence_v363.exe)
+    add_custom_command(TARGET Cadence_v362 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v362>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v362>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v362>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v362>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v362>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v362> ${CMAKE_SOURCE_DIR}/Cadence_v362.exe)
+    add_custom_command(TARGET Cadence_v361 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v361>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v361>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v361>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v361>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v361>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v361> ${CMAKE_SOURCE_DIR}/Cadence_v361.exe)
+    add_executable(Cadence_v360 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v360 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v360 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v360 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v360>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v360>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v360>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v360>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v360>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v360> ${CMAKE_SOURCE_DIR}/Cadence_v360.exe)
+    add_executable(Cadence_v359 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v359 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v359 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v359 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v359>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v359>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v359>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v359>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v359>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v359> ${CMAKE_SOURCE_DIR}/Cadence_v359.exe)
+    add_executable(Cadence_v358 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v358 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v358 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v358 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v358>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v358>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v358>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v358>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v358>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v358> ${CMAKE_SOURCE_DIR}/Cadence_v358.exe)
+    add_executable(Cadence_v357 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v357 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v357 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v357 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v357>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v357>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v357>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v357>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v357>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v357> ${CMAKE_SOURCE_DIR}/Cadence_v357.exe)
+    add_executable(Cadence_v356 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v356 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v356 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v356 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v356>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v356>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v356>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v356>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v356>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v356> ${CMAKE_SOURCE_DIR}/Cadence_v356.exe)
+    add_executable(Cadence_v355 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v355 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v355 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v355 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v355>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v355>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v355>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v355>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v355>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v355> ${CMAKE_SOURCE_DIR}/Cadence_v355.exe)
+    add_executable(Cadence_v354 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v354 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v354 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v354 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v354>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v354>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v354>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v354>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v354>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v354> ${CMAKE_SOURCE_DIR}/Cadence_v354.exe)
+    add_executable(Cadence_v353 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v353 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v353 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v353 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v353>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v353>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v353>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v353>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v353>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v353> ${CMAKE_SOURCE_DIR}/Cadence_v353.exe)
+    add_executable(Cadence_v352 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v352 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v352 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v352 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v352>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v352>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v352>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v352>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v352>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v352> ${CMAKE_SOURCE_DIR}/Cadence_v352.exe)
+    add_executable(Cadence_v351 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v351 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v351 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v351 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v351>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v351>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v351>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v351>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v351>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v351> ${CMAKE_SOURCE_DIR}/Cadence_v351.exe)
+    add_executable(Cadence_v350 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v350 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v350 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v350 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v350>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v350>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v350>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v350>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v350>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v350> ${CMAKE_SOURCE_DIR}/Cadence_v350.exe)
+    add_executable(Cadence_v349 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v349 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v349 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v349 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v349>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v349>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v349>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v349>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v349>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v349> ${CMAKE_SOURCE_DIR}/Cadence_v349.exe)
+    add_executable(Cadence_v348 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v348 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v348 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v348 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v348>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v348>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v348>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v348>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v348>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v348> ${CMAKE_SOURCE_DIR}/Cadence_v348.exe)
+    add_executable(Cadence_v347 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v347 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v347 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v347 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v347>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v347>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v347>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v347>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v347>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v347> ${CMAKE_SOURCE_DIR}/Cadence_v347.exe)
+    add_executable(Cadence_v346 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v346 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v346 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v346 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v346>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v346>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v346>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v346>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v346>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v346> ${CMAKE_SOURCE_DIR}/Cadence_v346.exe)
+    add_executable(Cadence_v345 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v345 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v345 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v345 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v345>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v345>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v345>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v345>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v345>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v345> ${CMAKE_SOURCE_DIR}/Cadence_v345.exe)
+    add_executable(Cadence_v344 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v344 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v344 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v344 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v344>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v344>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v344>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v344>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v344>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v344> ${CMAKE_SOURCE_DIR}/Cadence_v344.exe)
+    add_executable(Cadence_v343 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v343 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v343 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v343 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v343>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v343>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v343>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v343>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v343>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v343> ${CMAKE_SOURCE_DIR}/Cadence_v343.exe)
+    add_executable(Cadence_v342 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v342 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v342 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v342 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v342>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v342>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v342>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v342>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v342>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v342> ${CMAKE_SOURCE_DIR}/Cadence_v342.exe)
+    add_executable(Cadence_v341 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v341 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v341 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v341 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v341>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v341>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v341>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v341>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v341>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v341> ${CMAKE_SOURCE_DIR}/Cadence_v341.exe)
+    add_executable(Cadence_v340 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v340 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v340 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v340 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v340>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v340>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v340>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v340>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v340>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v340> ${CMAKE_SOURCE_DIR}/Cadence_v340.exe)
+    add_executable(Cadence_v339 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v339 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v339 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v339 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v339>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v339>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v339>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v339>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v339>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v339> ${CMAKE_SOURCE_DIR}/Cadence_v339.exe)
+    add_executable(Cadence_v338 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v338 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v338 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v338 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v338>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v338>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v338>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v338>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v338>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v338> ${CMAKE_SOURCE_DIR}/Cadence_v338.exe)
+    add_executable(Cadence_v337 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v337 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v337 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v337 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v337>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v337>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v337>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v337>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v337>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v337> ${CMAKE_SOURCE_DIR}/Cadence_v337.exe)
+    add_executable(Cadence_v336 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v336 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v336 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v336 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v336>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v336>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v336>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v336>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v336>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v336> ${CMAKE_SOURCE_DIR}/Cadence_v336.exe)
+    add_executable(Cadence_v335 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v335 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v335 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v335 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v335>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v335>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v335>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v335>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v335>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v335> ${CMAKE_SOURCE_DIR}/Cadence_v335.exe)
+    add_executable(Cadence_v334 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v334 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v334 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v334 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v334>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v334>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v334>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v334>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v334>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v334> ${CMAKE_SOURCE_DIR}/Cadence_v334.exe)
+    add_executable(Cadence_v333 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v333 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v333 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v333 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v333>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v333>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v333>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v333>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v333>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v333> ${CMAKE_SOURCE_DIR}/Cadence_v333.exe)
+    add_executable(Cadence_v332 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v332 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v332 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v332 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v332>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v332>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v332>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v332>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v332>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v332> ${CMAKE_SOURCE_DIR}/Cadence_v332.exe)
+    add_executable(Cadence_v331 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v331 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v331 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v331 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v331>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v331>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v331>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v331>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v331>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v331> ${CMAKE_SOURCE_DIR}/Cadence_v331.exe)
+    add_executable(Cadence_v330 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v330 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v330 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v330 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v330>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v330>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v330>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v330>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v330>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v330> ${CMAKE_SOURCE_DIR}/Cadence_v330.exe)
+    add_executable(Cadence_v329 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v329 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v329 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v329 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v329>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v329>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v329>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v329>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v329>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v329> ${CMAKE_SOURCE_DIR}/Cadence_v329.exe)
+    add_executable(Cadence_v328 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v328 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v328 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v328 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v328>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v328>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v328>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v328>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v328>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v328> ${CMAKE_SOURCE_DIR}/Cadence_v328.exe)
+    add_executable(Cadence_v327 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v327 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v327 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v327 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v327>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v327>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v327>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v327>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v327>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v327> ${CMAKE_SOURCE_DIR}/Cadence_v327.exe)
+    add_executable(Cadence_v326 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v326 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v326 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v326 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v326>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v326>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v326>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v326>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v326>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v326> ${CMAKE_SOURCE_DIR}/Cadence_v326.exe)
+    add_executable(Cadence_v325 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v325 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v325 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v325 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v325>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v325>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v325>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v325>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v325>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v325> ${CMAKE_SOURCE_DIR}/Cadence_v325.exe)
+    add_executable(Cadence_v324 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v324 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v324 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v324 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v324>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v324>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v324>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v324>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v324>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v324> ${CMAKE_SOURCE_DIR}/Cadence_v324.exe)
+    add_executable(Cadence_v318 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v318 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v318 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v318 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v318>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v318>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v318>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v318>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v318>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v318> ${CMAKE_SOURCE_DIR}/Cadence_v318.exe)
+    add_executable(Cadence_v317 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v317 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v317 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v317 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v317>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v317>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v317>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v317>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v317>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v317> ${CMAKE_SOURCE_DIR}/Cadence_v317.exe)
+    add_executable(Cadence_v316 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v316 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v316 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v316 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v316>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v316>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v316>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v316>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v316>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v316> ${CMAKE_SOURCE_DIR}/Cadence_v316.exe)
+    add_executable(Cadence_v315 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v315 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v315 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v315 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v315>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v315>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v315>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v315>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v315>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v315> ${CMAKE_SOURCE_DIR}/Cadence_v315.exe)
+    add_executable(Cadence_v314 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v314 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v314 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v314 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v314>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v314>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v314>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v314>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v314>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v314> ${CMAKE_SOURCE_DIR}/Cadence_v314.exe)
+    add_executable(Cadence_v313 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v313 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v313 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v313 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v313>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v313>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v313>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v313>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v313>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v313> ${CMAKE_SOURCE_DIR}/Cadence_v313.exe)
+    add_executable(Cadence_v312 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v312 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v312 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v312 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v312>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v312>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v312>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v312>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v312>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v312> ${CMAKE_SOURCE_DIR}/Cadence_v312.exe)
+    add_executable(Cadence_v311 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v311 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v311 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v311 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v311>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v311>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v311>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v311>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v311>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v311> ${CMAKE_SOURCE_DIR}/Cadence_v311.exe)
+    add_executable(Cadence_v310 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v310 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v310 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v310 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v310>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v310>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v310>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v310>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v310>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v310> ${CMAKE_SOURCE_DIR}/Cadence_v310.exe)
+    add_executable(Cadence_v309 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v309 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v309 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v309 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v309>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v309>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v309>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v309>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v309>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v309> ${CMAKE_SOURCE_DIR}/Cadence_v309.exe)
+    add_executable(Cadence_v308 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v308 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v308 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v308 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v308>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v308>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v308>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v308>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v308>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v308> ${CMAKE_SOURCE_DIR}/Cadence_v308.exe)
+    add_executable(Cadence_v307 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v307 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v307 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v307 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v307>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v307>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v307>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v307>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v307>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v307> ${CMAKE_SOURCE_DIR}/Cadence_v307.exe)
+    add_executable(Cadence_v306 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v306 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v306 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v306 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v306>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v306>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v306>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v306>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v306>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v306> ${CMAKE_SOURCE_DIR}/Cadence_v306.exe)
+    add_executable(Cadence_v305 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v305 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v305 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v305 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v305>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v305>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v305>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v305>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v305>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v305> ${CMAKE_SOURCE_DIR}/Cadence_v305.exe)
+    add_executable(Cadence_v304 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v304 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v304 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v304 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v304>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v304>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v304>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v304>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v304>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v304> ${CMAKE_SOURCE_DIR}/Cadence_v304.exe)
+    add_executable(Cadence_v303 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v303 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v303 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v303 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v303>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v303>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v303>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v303>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v303>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v303> ${CMAKE_SOURCE_DIR}/Cadence_v303.exe)
+    add_executable(Cadence_v302 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v302 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v302 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v302 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v302>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v302>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v302>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v302>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v302>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v302> ${CMAKE_SOURCE_DIR}/Cadence_v302.exe)
+    add_executable(Cadence_v301 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v301 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v301 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v301 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v301>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v301>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v301>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v301>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v301>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v301> ${CMAKE_SOURCE_DIR}/Cadence_v301.exe)
+    add_executable(Cadence_v300 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v300 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v300 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v300 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v300>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v300>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v300>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v300>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v300>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v300> ${CMAKE_SOURCE_DIR}/Cadence_v300.exe)
+    add_executable(Cadence_v299 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v299 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v299 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v299 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v299>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v299>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v299>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v299>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v299>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v299> ${CMAKE_SOURCE_DIR}/Cadence_v299.exe)
+    add_executable(Cadence_v298 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v298 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v298 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v298 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v298>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v298>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v298>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v298>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v298>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v298> ${CMAKE_SOURCE_DIR}/Cadence_v298.exe)
+    add_executable(Cadence_v297 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v297 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v297 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v297 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v297>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v297>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v297>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v297>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v297>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v297> ${CMAKE_SOURCE_DIR}/Cadence_v297.exe)
+    add_executable(Cadence_v296 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v296 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v296 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v296 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v296>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v296>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v296>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v296>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v296>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v296> ${CMAKE_SOURCE_DIR}/Cadence_v296.exe)
+    add_executable(Cadence_v295 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v295 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v295 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v295 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v295>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v295>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v295>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v295>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v295>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v295> ${CMAKE_SOURCE_DIR}/Cadence_v295.exe)
+    add_executable(Cadence_v294 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v294 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v294 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v294 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v294>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v294>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v294>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v294>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v294>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v294> ${CMAKE_SOURCE_DIR}/Cadence_v294.exe)
+    add_executable(Cadence_v293 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v293 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v293 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v293 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v293>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v293>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v293>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v293>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v293>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v293> ${CMAKE_SOURCE_DIR}/Cadence_v293.exe)
+    add_executable(Cadence_v292 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v292 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v292 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v292 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v292>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v292>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v292>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v292>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v292>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v292> ${CMAKE_SOURCE_DIR}/Cadence_v292.exe)
+    add_executable(Cadence_v291 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v291 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v291 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v291 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v291>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v291>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v291>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v291>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v291>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v291> ${CMAKE_SOURCE_DIR}/Cadence_v291.exe)
+    add_executable(Cadence_v290 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v290 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v290 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v290 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v290>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v290>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v290>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v290>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v290>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v290> ${CMAKE_SOURCE_DIR}/Cadence_v290.exe)
+    add_executable(Cadence_v289 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v289 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v289 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v289 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v289>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v289>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v289>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v289>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v289>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v289> ${CMAKE_SOURCE_DIR}/Cadence_v289.exe)
+    add_executable(Cadence_v288 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v288 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v288 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v288 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v288>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v288>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v288>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v288>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v288>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v288> ${CMAKE_SOURCE_DIR}/Cadence_v288.exe)
+    add_executable(Cadence_v287 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v287 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v287 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v287 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v287>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v287>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v287>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v287>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v287>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v287> ${CMAKE_SOURCE_DIR}/Cadence_v287.exe)
+    add_executable(Cadence_v286 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v286 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v286 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v286 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v286>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v286>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v286>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v286>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v286>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v286> ${CMAKE_SOURCE_DIR}/Cadence_v286.exe)
+    add_executable(Cadence_v285 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v285 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v285 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v285 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v285>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v285>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v285>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v285>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v285>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v285> ${CMAKE_SOURCE_DIR}/Cadence_v285.exe)
+    add_executable(Cadence_v284 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v284 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v284 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v284 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v284>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v284>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v284>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v284>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v284>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v284> ${CMAKE_SOURCE_DIR}/Cadence_v284.exe)
+    add_executable(Cadence_v283 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v283 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v283 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v283 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v283>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v283>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v283>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v283>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v283>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v283> ${CMAKE_SOURCE_DIR}/Cadence_v283.exe)
+    add_executable(Cadence_v282 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v282 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v282 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v282 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v282>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v282>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v282>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v282>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v282>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v282> ${CMAKE_SOURCE_DIR}/Cadence_v282.exe)
+    add_executable(Cadence_v281 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v281 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v281 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v281 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v281>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v281>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v281>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v281>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v281>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v281> ${CMAKE_SOURCE_DIR}/Cadence_v281.exe)
+    add_executable(Cadence_v280 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v280 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v280 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v280 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v280>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v280>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v280>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v280>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v280>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v280> ${CMAKE_SOURCE_DIR}/Cadence_v280.exe)
+    add_executable(Cadence_v279 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v279 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v279 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v279 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v279>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v279>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v279>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v279>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v279>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v279> ${CMAKE_SOURCE_DIR}/Cadence_v279.exe)
+    add_executable(Cadence_v278 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v278 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v278 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v278 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v278>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v278>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v278>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v278>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v278>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v278> ${CMAKE_SOURCE_DIR}/Cadence_v278.exe)
+    add_executable(Cadence_v277 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v277 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v277 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v277 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v277>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v277>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v277> ${CMAKE_SOURCE_DIR}/Cadence_v277.exe)
+    add_executable(Cadence_v276 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v276 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v276 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v276 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v276>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v276>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v276>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v276>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v276>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v276> ${CMAKE_SOURCE_DIR}/Cadence_v276.exe)
+    add_executable(Cadence_v275 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v275 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v275 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v275 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v275>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v275>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v275>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v275>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v275>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v275> ${CMAKE_SOURCE_DIR}/Cadence_v275.exe)
+    add_executable(Cadence_v274 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v274 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v274 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v274 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v274>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v274>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v274>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v274>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v274>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v274> ${CMAKE_SOURCE_DIR}/Cadence_v274.exe)
+    add_executable(Cadence_v273 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v273 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v273 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v273 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v273>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v273>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v273>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v273>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v273>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v273> ${CMAKE_SOURCE_DIR}/Cadence_v273.exe)
+    add_executable(Cadence_v272 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v272 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v272 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v272 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v272>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v272>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v272>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v272>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v272>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v272> ${CMAKE_SOURCE_DIR}/Cadence_v272.exe)
+    add_executable(Cadence_v271 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v271 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v271 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v271 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v271>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v271>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v271>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v271>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v271>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v271> ${CMAKE_SOURCE_DIR}/Cadence_v271.exe)
+    add_executable(Cadence_v270 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v270 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v270 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v270 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v270>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v270>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v270>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v270>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v270>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v270> ${CMAKE_SOURCE_DIR}/Cadence_v270.exe)
+    add_executable(Cadence_v269 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v269 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v269 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v269 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v269>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v269>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v269>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v269>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v269>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v269> ${CMAKE_SOURCE_DIR}/Cadence_v269.exe)
+    add_executable(Cadence_v268 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v268 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v268 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v268 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v268>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v268>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v268>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v268>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v268>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v268> ${CMAKE_SOURCE_DIR}/Cadence_v268.exe)
+    add_executable(Cadence_v267 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v267 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v267 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v267 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v267>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v267>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v267>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v267>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v267>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v267> ${CMAKE_SOURCE_DIR}/Cadence_v267.exe)
+    add_executable(yy_v5_tests tests/YyV5Tests.cpp)
+    add_executable(workflow_v267_tests tests/WorkflowV267Tests.cpp)
+    target_compile_options(workflow_v267_tests PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(workflow_v267_tests PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_test(NAME workflow_v267_tests COMMAND workflow_v267_tests)
+    target_include_directories(yy_v5_tests PRIVATE src)
+    add_test(NAME yy_v5_tests COMMAND yy_v5_tests)
+    add_executable(Cadence_v265 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v265 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v265 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v265 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v265>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v265>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v265>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v265>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v265>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v265> ${CMAKE_SOURCE_DIR}/Cadence_v265.exe)
+    add_executable(Cadence_v264 EXCLUDE_FROM_ALL src/app/main.cpp)
+    target_compile_options(Cadence_v264 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(Cadence_v264 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_custom_command(TARGET Cadence_v264 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Cadence Assets" "$<TARGET_FILE_DIR:Cadence_v264>/Cadence Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/skyboxes" "$<TARGET_FILE_DIR:Cadence_v264>/skyboxes"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Cadence_v264>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ffmpeg.exe" "$<TARGET_FILE_DIR:Cadence_v264>/tools/ffmpeg.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/licenses" "$<TARGET_FILE_DIR:Cadence_v264>/tools/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v264> ${CMAKE_SOURCE_DIR}/Cadence_v264.exe)
+    add_executable(Cadence_v263 EXCLUDE_FROM_ALL src/app/main.cpp)
     target_compile_options(Cadence_v263 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
     target_link_libraries(Cadence_v263 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
     add_custom_command(TARGET Cadence_v263 POST_BUILD
@@ -1067,6 +2899,9 @@ add_executable(Cadence_v181 EXCLUDE_FROM_ALL src/app/main.cpp)
     target_link_libraries(map_package_isolation_audit PRIVATE cast_glb_map cast_scene cast_core cast_take)
     add_test(NAME map_package_isolation_tests COMMAND map_package_isolation_audit)
     add_executable(replay_preparation_audit EXCLUDE_FROM_ALL tools/ReplayPreparationAudit.cpp)
+    add_executable(replay_camera_audit EXCLUDE_FROM_ALL tools/ReplayCameraAudit.cpp)
+    target_compile_options(replay_camera_audit PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(replay_camera_audit PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
     add_executable(standalone_replay_return_audit EXCLUDE_FROM_ALL tools/StandaloneReplayReturnAudit.cpp)
     target_compile_options(standalone_replay_return_audit PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
     target_link_libraries(standalone_replay_return_audit PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
@@ -1241,6 +3076,16 @@ add_executable(Cadence_v181 EXCLUDE_FROM_ALL src/app/main.cpp)
     add_executable(viewhand_runtime_audit EXCLUDE_FROM_ALL tools/ViewHandRuntimeAudit.cpp)
     target_compile_options(viewhand_runtime_audit PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
     target_link_libraries(viewhand_runtime_audit PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_executable(cross_game_benchmark EXCLUDE_FROM_ALL tools/CrossGameBenchmark.cpp)
+    add_executable(cross_game_visual_v277 EXCLUDE_FROM_ALL tools/CrossGameBenchmark.cpp)
+    target_compile_options(cross_game_visual_v277 PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_compile_definitions(cross_game_visual_v277 PRIVATE CADENCE_CROSS_CURRENT_REVIEW=1)
+    target_link_libraries(cross_game_visual_v277 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    target_compile_options(cross_game_benchmark PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(cross_game_benchmark PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    add_executable(cross_game_failure_probe EXCLUDE_FROM_ALL tools/CrossGameFailureProbe.cpp)
+    target_compile_options(cross_game_failure_probe PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(cross_game_failure_probe PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
     add_executable(imported_body_visual_audit EXCLUDE_FROM_ALL tools/ImportedBodyVisualAudit.cpp)
     target_link_libraries(imported_body_visual_audit PRIVATE cast_core cast_scene cast_assets cast_take cast_glb_map stage_renderer imgui_backend OpenGL::GL)
     add_executable(imported_world_grip_audit EXCLUDE_FROM_ALL tools/ImportedWorldGripAudit.cpp)
@@ -1530,6 +3375,8 @@ add_executable(Cadence_v181 EXCLUDE_FROM_ALL src/app/main.cpp)
     target_link_libraries(Cadence_v73 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL)
     add_custom_command(TARGET Cadence_v73 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v73> ${CMAKE_SOURCE_DIR}/Cadence_v73.exe)
     add_executable(shot_trail_visual_check EXCLUDE_FROM_ALL tools/ShotTrailVisualCheck.cpp)
+    add_executable(heaven_smile_visual_check EXCLUDE_FROM_ALL tools/HeavenSmileVisualCheck.cpp)
+    target_link_libraries(heaven_smile_visual_check PRIVATE cast_core cast_scene cast_take stage_renderer glfw OpenGL::GL)
     target_link_libraries(shot_trail_visual_check PRIVATE cast_core cast_scene cast_take stage_renderer glfw OpenGL::GL)
     target_link_libraries(Cadence_v68 PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL)
     add_custom_command(TARGET Cadence_v68 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Cadence_v68> ${CMAKE_SOURCE_DIR}/Cadence_v68.exe)
@@ -1828,7 +3675,7 @@ if(CAST_BUILD_TESTS)
     add_test(NAME animation_file_index_tests COMMAND animation_file_index_tests)
     add_executable(bot_presentation_tests tests/BotPresentationTests.cpp)
     add_executable(bot_map_physics_tests tests/BotMapPhysicsTests.cpp)
-    target_link_libraries(bot_map_physics_tests PRIVATE cast_scene)
+    target_link_libraries(bot_map_physics_tests PRIVATE cast_scene cast_glb_map)
     add_test(NAME bot_map_physics_tests COMMAND bot_map_physics_tests)
     add_executable(bot_map_routing_tests tests/BotMapRoutingTests.cpp)
     target_link_libraries(bot_map_routing_tests PRIVATE cast_scene)
@@ -1871,6 +3718,9 @@ if(CAST_BUILD_TESTS)
     target_include_directories(benchmark_support_tests PRIVATE src)
     add_test(NAME benchmark_support_tests COMMAND benchmark_support_tests)
     add_executable(cast_parser_tests tests/CastParserTests.cpp)
+    add_executable(game_preload_tests tests/GamePreloadTests.cpp)
+    target_link_libraries(game_preload_tests PRIVATE cast_scene stage_renderer)
+    add_test(NAME game_preload_tests COMMAND game_preload_tests)
     target_link_libraries(cast_parser_tests PRIVATE cast_core)
     add_test(NAME cast_parser_tests COMMAND cast_parser_tests)
     add_executable(cast_scene_tests tests/CastSceneTests.cpp)
@@ -1913,6 +3763,9 @@ if(CAST_BUILD_TESTS)
     add_test(NAME iw_presentation_tests COMMAND iw_presentation_tests)
     add_executable(source_movement_tests tests/SourceMovementTests.cpp)
     add_executable(reference_movement_tests tests/ReferenceMovementTests.cpp)
+    add_executable(css_movement_tests tests/CssMovementTests.cpp)
+    target_link_libraries(css_movement_tests PRIVATE cast_scene cast_glb_map)
+    add_test(NAME css_movement_tests COMMAND css_movement_tests)
     target_link_libraries(reference_movement_tests PRIVATE cast_scene cast_glb_map)
     add_test(NAME reference_movement_tests COMMAND reference_movement_tests)
     target_link_libraries(source_movement_tests PRIVATE cast_scene cast_glb_map)
@@ -1921,6 +3774,19 @@ if(CAST_BUILD_TESTS)
     target_include_directories(action_cancel_policy_tests PRIVATE src)
     add_test(NAME action_cancel_policy_tests COMMAND action_cancel_policy_tests)
     add_executable(weapon_profile_tests tests/WeaponProfileTests.cpp)
+    add_executable(presentation487_tests tests/Presentation487Tests.cpp)
+    add_executable(score_preview_tests tests/ScorePreviewTests.cpp)
+    target_include_directories(score_preview_tests PRIVATE src)
+    add_test(NAME score_preview_tests COMMAND score_preview_tests)
+    target_link_libraries(presentation487_tests PRIVATE cast_scene)
+    add_test(NAME presentation487_tests COMMAND presentation487_tests)
+    add_executable(death_ragdoll_tests tests/DeathRagdollTests.cpp)
+    target_link_libraries(death_ragdoll_tests PRIVATE cast_scene cast_take)
+    if(TARGET box3d::box3d)
+        target_compile_definitions(death_ragdoll_tests PRIVATE CADENCE_TEST_WEAPON_DROP)
+        target_link_libraries(death_ragdoll_tests PRIVATE cast_glb_map)
+    endif()
+    add_test(NAME death_ragdoll_tests COMMAND death_ragdoll_tests)
     target_link_libraries(weapon_profile_tests PRIVATE cast_weapon)
     add_test(NAME weapon_profile_tests COMMAND weapon_profile_tests)
     add_executable(bot_actor_tests tests/BotActorTests.cpp)
@@ -1942,6 +3808,9 @@ if(CAST_BUILD_TESTS)
     add_test(NAME replay_visibility_tests COMMAND replay_visibility_tests)
     add_executable(replay_presentation_tests tests/ReplayPresentationTests.cpp)
     add_executable(replay_asset_relocation_tests tests/ReplayAssetRelocationTests.cpp)
+    add_executable(reference_viewhands_tests tests/ReferenceViewhandsTests.cpp)
+    target_include_directories(reference_viewhands_tests PRIVATE src)
+    add_test(NAME reference_viewhands_tests COMMAND reference_viewhands_tests)
     add_executable(export_identity_tests tests/ExportIdentityTests.cpp)
     target_include_directories(export_identity_tests PRIVATE src)
     target_link_libraries(export_identity_tests PRIVATE cast_scene)
@@ -2006,6 +3875,15 @@ if(CAST_BUILD_TESTS)
     target_link_libraries(frame_preparation_v132_tests PRIVATE cast_scene)
     add_test(NAME frame_preparation_v132_tests COMMAND frame_preparation_v132_tests)
     add_executable(v132_render_check EXCLUDE_FROM_ALL tools/V132RenderCheck.cpp)
+    add_executable(dds_upload_check EXCLUDE_FROM_ALL tools/DdsUploadCheck.cpp)
+    add_executable(albedo_pass_check EXCLUDE_FROM_ALL tools/AlbedoPassCheck.cpp)
+    add_executable(sky_environment_audit EXCLUDE_FROM_ALL tools/SkyEnvironmentAudit.cpp)
+    add_executable(player_body_presentation_audit EXCLUDE_FROM_ALL tools/PlayerBodyPresentationAudit.cpp)
+    target_compile_options(player_body_presentation_audit PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+    target_link_libraries(player_body_presentation_audit PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    target_link_libraries(sky_environment_audit PRIVATE cast_scene cast_take cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    target_link_libraries(albedo_pass_check PRIVATE cast_scene cast_take cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
+    target_link_libraries(dds_upload_check PRIVATE cast_scene cast_take cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
     target_link_libraries(v132_render_check PRIVATE cast_scene cast_take cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
     target_link_libraries(v131_integration PRIVATE cast_core cast_scene cast_take cast_assets cast_weapon cast_glb_map stage_renderer imgui_backend OpenGL::GL comdlg32 shell32 ole32)
     add_executable(low_risk_v131_tests tests/LowRiskV131Tests.cpp)
@@ -2049,7 +3927,14 @@ if(CAST_BUILD_TESTS)
     target_link_libraries(dds_loader_tests PRIVATE stage_renderer)
     add_test(NAME dds_loader_tests COMMAND dds_loader_tests)
     add_executable(create_a_class_tests tests/CreateAClassTests.cpp)
+    add_executable(gamepad_tests tests/GamepadTests.cpp)
+    target_include_directories(gamepad_tests PRIVATE src)
+    target_link_libraries(gamepad_tests PRIVATE glfw)
+    add_test(NAME gamepad_tests COMMAND gamepad_tests)
     add_executable(animation_set_tests tests/AnimationSetTests.cpp)
+    add_executable(trail_geometry_tests tests/TrailGeometryTests.cpp)
+    target_include_directories(trail_geometry_tests PRIVATE src)
+    add_test(NAME trail_geometry_tests COMMAND trail_geometry_tests)
     add_executable(workspace_mode_tests tests/WorkspaceModeTests.cpp)
     target_include_directories(workspace_mode_tests PRIVATE src)
     add_test(NAME workspace_mode_tests COMMAND workspace_mode_tests)
@@ -2066,4 +3951,10 @@ if(CAST_BUILD_TESTS)
     target_link_libraries(asset_catalog_report PRIVATE cast_assets)
     add_executable(take_inspect src/tools/TakeInspect.cpp)
     target_link_libraries(take_inspect PRIVATE cast_take cast_scene cast_core)
+    add_executable(source2_sleeve_audit EXCLUDE_FROM_ALL tools/Source2SleeveAudit.cpp)
+    target_link_libraries(source2_sleeve_audit PRIVATE cast_scene cast_take stage_renderer OpenGL::GL)
+    add_executable(source2_export_audit EXCLUDE_FROM_ALL tools/Source2ExportAudit.cpp)
+    target_link_libraries(source2_export_audit PRIVATE cast_assets cast_scene cast_core)
+    add_executable(source2_body_audit EXCLUDE_FROM_ALL src/tools/Source2BodyAudit.cpp)
+    target_link_libraries(source2_body_audit PRIVATE cast_scene cast_core)
 endif()

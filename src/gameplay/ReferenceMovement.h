@@ -22,6 +22,7 @@ struct Command {
     // Cadence input convenience: repeat a held press only once grounded. The
     // native release latch remains available for reference-equation checks.
     bool autoJump{true};
+    bool unlimitedBunnyhop{};
     int stance{}; // stand, crouch, prone
     float weaponScale{1};
 };
@@ -205,7 +206,7 @@ template<class Trace> void tick(State& state,const Command& cmd,int msec,Rules r
     if(cmd.jump&&(cmd.autoJump||!state.jumpHeld)&&state.grounded&&(rules==Rules::HalfLife||(cmd.stance==0&&state.clockMs-state.lastJumpMs>=500))){
         if(rules==Rules::HalfLife){
             const float speed=scene::length(state.velocity);
-            if(speed>320.f*1.7f)state.velocity=state.velocity*(320.f*1.7f*.65f/speed);
+            if(!cmd.unlimitedBunnyhop&&speed>320.f*1.7f)state.velocity=state.velocity*(320.f*1.7f*.65f/speed);
             state.velocity.z=std::sqrt(2.f*800*45)-400*dt;
         }else{
             state.velocity.z=std::sqrt(2.f*800*39/(state.landingMs>0?1.f+state.landingMs*1.5f/1700.f:1.f));

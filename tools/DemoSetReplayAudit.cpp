@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
 #undef main
@@ -52,7 +51,7 @@ int main(int argc, char **argv) {
       throw std::runtime_error(error);
     if (produce) {
       app.defaultSalukiDirectory =
-          cadence::local_assets::exportPath("");
+          "exported_files";
       for (const auto game : {"bo2", "csnz"})
         if (!assets::appendScan(app.defaultSalukiDirectory / game, game,
                                 app.assetCatalog, error))

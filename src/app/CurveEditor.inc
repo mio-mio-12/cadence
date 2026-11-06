@@ -1,5 +1,5 @@
 // General curve editor: endpoint time is fixed but endpoint values may be dragged.
-bool drawResponseCurve(const char* id,gameplay::view::ResponseCurve& curve){
+bool drawResponseCurve(const char* id,gameplay::view::ResponseCurve& curve,bool transition){
     ImGui::PushID(id);
     const ImVec2 origin=ImGui::GetCursorScreenPos(),size{std::max(160.f,ImGui::GetContentRegionAvail().x),150.f};
     ImGui::InvisibleButton("canvas",size,ImGuiButtonFlags_MouseButtonLeft);
@@ -21,8 +21,8 @@ bool drawResponseCurve(const char* id,gameplay::view::ResponseCurve& curve){
     const int active=storage->GetInt(key,-1);
     if(ImGui::IsItemActive()&&ImGui::IsMouseDown(0)&&active>=0&&active<curve.count){curve.points[active]={std::clamp((mouse.x-origin.x)/size.x,active==0?0.f:curve.points[active-1].x+.001f,active==curve.count-1?1.f:curve.points[active+1].x-.001f),std::clamp(3.f-(mouse.y-origin.y)*4.f/size.y,-1.f,3.f)};changed=true;}
     if(!ImGui::IsMouseDown(0))storage->SetInt(key,-1);
-    uiHelp("Click to add | drag to move | double-click to remove. Endpoint values are editable.");
-    curve.sanitize();ImGui::PopID();return changed;
+    uiHelp(transition?"Click to add | drag to move | double-click to remove. Endpoints are fixed at 0 and 1.":"Click to add | drag to move | double-click to remove. Endpoint values are editable.");
+    curve.sanitize();if(transition){curve.points[0].y=0;curve.points[curve.count-1].y=1;for(int i=1;i<curve.count-1;++i)curve.points[i].y=std::clamp(curve.points[i].y,0.f,1.f);}ImGui::PopID();return changed;
 }
 
 // Normalized response editor shared by camera recoil and procedural mantle.

@@ -1,4 +1,8 @@
 ﻿#include "render/DdsLoader.h"
+#include "render/DdsColorSpace.h"
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <iostream>
 #include <vector>
@@ -149,6 +153,22 @@ void testDdsTruncated() {
 }
 
 int main() {
+    using F = render::dds::Format;
+    struct ColorCase { F format; unsigned linear, srgb; };
+    for (const auto c : {ColorCase{F::BC1_RGBA,0x83F1,0x8C4D},
+        {F::BC2_RGBA,0x83F2,0x8C4E}, {F::BC3_RGBA,0x83F3,0x8C4F},
+        {F::BC7_RGBA,0x8E8C,0x8E8D}, {F::RGBA8,0x8058,0x8C43},
+        {F::BGRA8,0x8058,0x8C43}, {F::RGB8,0x8051,0x8C41},
+        {F::BGR8,0x8051,0x8C41}, {F::BC4_R_UNORM,0x8DBB,0x8DBB},
+        {F::BC4_R_SNORM,0x8DBC,0x8DBC}, {F::BC5_RG_UNORM,0x8DBD,0x8DBD},
+        {F::BC5_RG_SNORM,0x8DBE,0x8DBE}, {F::R8,0x8229,0x8229},
+        {F::RG8,0x822B,0x822B}, {F::Unknown,0,0}}) {
+        render::dds::Image image; image.format=c.format; image.glInternalFormat=c.linear;
+        image.data={23,45,67,89}; const auto before=image.data;
+        assert(render::ddsUploadInternalFormat(image,false)==c.linear);
+        assert(render::ddsUploadInternalFormat(image,true)==c.srgb);
+        assert(image.data==before && image.glInternalFormat==c.linear);
+    }
     testDdsParseBc1();
     testDdsParseBc3();
     testDdsParseBc5NormalMap();

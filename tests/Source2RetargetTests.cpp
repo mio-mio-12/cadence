@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #include "cast/CastDocument.h"
 #include "scene/CastScene.h"
 
@@ -80,7 +79,7 @@ struct Clip {const char* weapon;const char* file;};
 
 int main(int argc,char** argv){
     const std::filesystem::path root=argc>1?std::filesystem::u8path(argv[1]):
-        std::filesystem::path{cadence::local_assets::exportPath("")};
+        std::filesystem::path{R"(exported_files)"};
     try {
         for(const auto weapon:{"ak47","awp","deagle","knife_karambit","knife_butterfly"}){
             const auto materialScene=scene::buildScene(load(root/"cs2"/"models"/"weapons"/weapon/(std::string(weapon)+"_model.cast")));
@@ -94,9 +93,15 @@ int main(int argc,char** argv){
         const auto targetDocument=load(argc>2?std::filesystem::path(argv[2]):root/R"(bo2\models\viewhands\seal6\c_usa_mp_seal6_longsleeve_viewhands\c_usa_mp_seal6_longsleeve_viewhands_LOD0.cast)");
         const auto sourceDocument=load(root/R"(cs2\models\viewhands\viewhands_model.cast)");
         const auto targetBase=scene::buildScene(targetDocument),sourceBase=scene::buildScene(sourceDocument);
+        for(const char* name:{"armUpperShoulder_R","arm_upper_R","arm_lower_R"}){
+            const auto index=bone(sourceBase.skeleton,name);double weight{};
+            for(const auto& m:sourceBase.meshes)for(const auto& v:m.vertices)for(int k=0;k<4;++k)if(v.bones[k]==index)weight+=v.weights[k];
+            std::cout<<"SOURCE SUPPORT "<<name<<" skin weight "<<weight<<'\n';
+        }
         const auto targetOrigin=position(targetBase.skeleton.bones[bone(targetBase.skeleton,"tag_camera")].restGlobal);
         const float scale=armLength(targetBase.skeleton,false)/armLength(sourceBase.skeleton,true);
         const Clip clips[]={
+            {"knife_css","draw_css.cast"},{"knife_css","idle1_css.cast"},
             {"awp","idle_awp.cast"},{"awp","shoot1_awp.cast"},{"awp","reload_awp.cast"},
             {"knife_karambit","idle1_karambit.cast"},{"knife_karambit","draw_karambit.cast"},
             {"knife_karambit","lookat01_karambit.cast"},
@@ -182,6 +187,12 @@ int main(int argc,char** argv){
                     const auto tp=position(pose[bone(target.skeleton,"j_wrist_"+side.first)]);
                     const auto sp=position(sourcePose[bone(source.skeleton,"hand_"+side.second)])*scale+targetOrigin;
                     require(scene::length(tp-sp)<0.003f,label+": wrist trajectory mismatch at "+std::to_string(frame));
+                    const auto shoulder=bone(target.skeleton,"j_shoulder_"+side.first),elbow=bone(target.skeleton,"j_elbow_"+side.first);
+                    const auto upper=position(pose[elbow])-position(pose[shoulder]);
+                    const auto forearm=tp-position(pose[elbow]);
+                    const auto bindLength=scene::length(position(bind.bones[elbow].restGlobal)-position(bind.bones[shoulder].restGlobal));
+                    require(std::abs(scene::length(upper)-bindLength)<.003f,label+": sleeve length changed");
+                    require(scene::dot(scene::normalize(upper),scene::normalize(forearm))>.999f,label+": sleeve does not continue forearm");
                 }
                 require(quaternionError(rotation(pose[bone(target.skeleton,"tag_weapon")]),rotation(sourcePose[bone(source.skeleton,"wpn")]))<0.00001f,label+": weapon socket rotation mismatch at "+std::to_string(frame));
                 for(const auto& [t,s]:weaponBones){
@@ -202,7 +213,7 @@ int main(int argc,char** argv){
         }
         require(mechanismTracks>0,"No weapon mechanism rotation tracks were exercised");
         for(std::size_t i=0;i<fingerMoved.size();++i)require(fingerMoved[i],"Finger joint never animated across action clips: "+std::to_string(i));
-        std::cout<<"All Source 2 retarget tests passed: 10 clips, "<<samples<<" full-frame samples, "<<mechanismTracks<<" mechanism tracks, "<<weaponPoseChecks<<" weapon descendant poses.\n";
+        std::cout<<"All Source 2 retarget tests passed: "<<std::size(clips)<<" clips, "<<samples<<" full-frame samples, "<<mechanismTracks<<" mechanism tracks, "<<weaponPoseChecks<<" weapon descendant poses.\n";
         return 0;
     }catch(const std::exception& error){std::cerr<<"FAILED: "<<error.what()<<'\n';return 1;}
 }

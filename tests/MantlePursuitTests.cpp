@@ -40,6 +40,9 @@ int main(){
     cache.query({}, {100,0,100},probe);check(queries==2,"different floor reused");
     blocked=true;cache.setRevision(2);check(!cache.query({}, {100,0,0},probe),"stale collision cache");
     cache.query({}, {100,0,0},probe);check(queries==3,"blocked edge not reused");
+    cache.query({}, {100,0,0},probe,100.f);check(queries==4,"short actor reused other height");
+    cache.query({}, {100,0,0},probe,260.f);check(queries==5,"tall actor reused short clearance");
+    cache.query({}, {100,0,0},probe,100.f);check(queries==5,"same size failed to reuse clearance");
     quad(map,{-500,-500,0},{500,-500,0},{500,500,0},{-500,500,0});
     quad(map,{60,-200,100},{350,-200,100},{350,200,100},{60,200,100});
     quad(map,{60,200,0},{60,-200,0},{60,-200,100},{60,200,100});map.buildCollisionIndex();
@@ -93,6 +96,15 @@ int main(){
     auto tunnel=mantle::sweepRounded(map,{-200,0,0},{200,0,0},38.1f,182.88f);check(tunnel.fraction<1,"sweep tunneled through wall");
     quad(map,{60,-200,210},{60,200,210},{350,200,210},{350,-200,210});map.buildCollisionIndex();
     check(!mantle::findClimb(map,{20,0,0},{1,0,0},38.1f,182.88f,45.72f,144.78f,106.68f,60.96f),"low ceiling accepted");
+    const std::vector<scene::Vec3> spawnPool{{1000,0,0},{0,700,0},{1800,0,0}};
+    const auto occlusion=[](scene::Vec3 p)->std::optional<scene::Vec3>{return p.x>1500?std::nullopt:std::optional{p};};
+    const auto occupied=[](scene::Vec3){return false;};
+    const auto spacing=[](scene::Vec3 p){return p.y;};
+    const auto distantSpawn=bot::chooseCoveredSpawn(spawnPool,{},0.f,occlusion,occupied,spacing);
+    const auto scatteredSpawn=bot::chooseCoveredSpawn(spawnPool,{},1.f,occlusion,occupied,spacing);
+    if(!distantSpawn||distantSpawn->x!=1000||!scatteredSpawn||scatteredSpawn->y!=700)return 1;
+    if(bot::coveredSpawn({0,0,120},{200,0,0},150,{30,30},[](scene::Vec3 p){return p.z<140;}))return 1;
+    if(bot::chooseCoveredSpawn(spawnPool,{},1.f,[](scene::Vec3)->std::optional<scene::Vec3>{return {};},occupied,spacing))return 1;
     bot::SpawnHistory history;std::vector<scene::Vec3> spawns{{100,0,0},{600,0,0},{1200,0,0},{1500,0,0},{2000,0,0},{2000,0,0}};
     {
         const auto project=[](scene::Vec3 p)->std::optional<scene::Vec3>{if(p.x<0)return {};p.z=4;return p;};
@@ -106,5 +118,13 @@ int main(){
     for(int i=0;i<20;++i){auto previous=history.last;auto p=bot::chooseDistantSpawn(spawns,{},history,3);check(p&&p->x>=200,"fallback did not choose farthest set");closeFallback|=p->x<1000;check(!previous||scene::length(*p-*previous)>1,"fallback repeated spawn");}check(closeFallback,"fewer than three distant points did not use fallback");
     spawns={{100,0,0},{100,0,0}};check(bot::chooseDistantSpawn(spawns,{},history,5).has_value(),"single unique spawn unavailable");
     check(!bot::chooseDistantSpawn({}, {},history,5),"empty spawn pool produced invented spawn");
+    {
+        const auto project=[](scene::Vec3 p)->std::optional<scene::Vec3>{if(p.x<9900||p.x>10100)return {};p.z=-500;return p;};
+        const auto vacant=[](scene::Vec3){return false;};
+        const auto safe=bot::validatedSpawn({},{{100,0,-1e9f}},{{10000,0,-500}},project,vacant);
+        check(safe&&safe->z==-500&&safe->x>=9900,"offset map did not use validated fallback");
+        check(!bot::validatedSpawn({},{{100,0,-1e9f}},{{200,0,0}},project,vacant),"failed spawn validation returned an unsafe position");
+        check(!bot::validatedSpawn({10000,0,-500},{},{{10000,0,-500}},project,[](scene::Vec3){return true;}),"fallback spawned inside another bot");
+    }
     std::cout<<"Mantle continuous path/ceiling/facing and distant nonrepeating spawn tests PASS\n";
 }

@@ -1,6 +1,7 @@
 #pragma once
 #include "scene/CastScene.h"
 #include "scene/NativeBoneNames.h"
+#include "scene/ImportedSupportArm.h"
 
 namespace scene {
 // Immutable native animation and bind-frame mapping. No CAST rewriting,
@@ -23,7 +24,12 @@ struct ColdWarWorldPose {
     // Optional anatomical digit deltas for imported bodies only. Empty for
     // all existing adapters; translations and main wrist mapping are unchanged.
     std::vector<FingerBinding> fingerBindings;
+    imported::SupportArm supportArm;
     Quat actionBasis{};
+    // Imported locomotion travel belongs to the entire target rig, including
+    // detached deform roots. Pelvis fitting then retains only its local gait.
+    int locomotionSourceRoot{-1};
+    Vec3 locomotionReference{};
     // Immutable import-time data; fallback supports older manually built adapters.
     std::vector<unsigned char> boneFlags;
     std::vector<Mat4> translationMatrices,sourceActionInverse;
@@ -50,6 +56,12 @@ struct ColdWarWorldPose {
         for(std::size_t i=local.size();i<target.bones.size();++i)local.push_back(target.bones[i].restLocal);
         const auto sourceLocal=source->sampleLocalPose(animation,frame);
         const auto sourceGlobal=source->globalPose(sourceLocal);
+        if(locomotionSourceRoot>=0&&static_cast<std::size_t>(locomotionSourceRoot)<sourceGlobal.size()){
+            auto delta=transformPoint(sourceGlobal[locomotionSourceRoot],{})-locomotionReference;
+            delta.z=0;
+            delta=transformPoint(rotation(actionBasis),delta);
+            for(std::size_t i=0;i<local.size();++i)if(target.bones[i].parent<0)local[i].position+=delta;
+        }
         if(!sourceActionReference.empty()){
             std::vector<Mat4> globals(local.size());
             for(size_t i=0;i<local.size();++i){const auto parent=target.bones[i].parent;const auto pg=parent>=0?globals[parent]:Mat4::identity();const int s=i<sourceBones.size()?sourceBones[i]:-1;
@@ -78,7 +90,13 @@ struct ColdWarWorldPose {
                     local[i].rotation=normalize(multiply(conjugate(orientation(pg)),desired));
                 }
                 globals[i]=pg*trs(local[i].position,local[i].rotation,local[i].scale);
-            }return finish();
+            }
+            if(supportArm.anchor>=0&&supportArm.sourceWrist>=0&&supportArm.sourceAnchor>=0&&std::size_t(supportArm.anchor)<globals.size()&&std::size_t(supportArm.sourceWrist)<sourceGlobal.size()&&std::size_t(supportArm.sourceAnchor)<sourceGlobal.size()){
+                const auto nativeSpan=(transformPoint(sourceGlobal[supportArm.sourceWrist],{})-transformPoint(sourceGlobal[supportArm.sourceAnchor],{}))*supportArm.sourceUnits;
+                const auto desired=transformPoint(globals[supportArm.anchor],{})+transformPoint(rotation(actionBasis),nativeSpan);
+                imported::fitSupportArm(supportArm,target,local,globals,desired);
+            }
+            return finish();
         }
         std::vector<Mat4> globals(local.size());
         for(std::size_t i=0;i<local.size();++i){

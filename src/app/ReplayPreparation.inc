@@ -16,6 +16,38 @@ struct PreparedTakeOpen {
     std::optional<PreparedReplay> replay;
 };
 
+// Older CSS takes can contain a generated view-weapon substitute, or omit
+// the BO1 world weapon because no compatible hold was found. Only replace
+// the exact generated mount; edited or unrelated attachments stay recorded.
+void upgradeCssReplayWorldGrip(AppState& app,const take::ActorManifest& view,const take::ActorManifest& world,scene::CastScene& body){
+    if(gameFromExportPath(std::filesystem::path(world.baseModel))!="css"||view.rigModels.empty())return;
+    const auto path=resolveTakeModelPath(app,view.rigModels.front());
+    if(!path)return;
+    const auto found=std::find_if(app.assetCatalog.entries.begin(),app.assetCatalog.entries.end(),[&](const auto& asset){return asset.path==*path&&asset.role==assets::Role::ViewWeapon;});
+    if(found==app.assetCatalog.entries.end())return;
+    const auto game=lowerText(found->game);
+    const bool missingBo=game=="bo"&&world.attachedModels.empty()&&body.attachments.empty();
+    const bool fallback=(game=="css"||game=="blacksquad")&&world.attachedModels.size()==1&&body.attachments.size()==1&&
+        std::filesystem::path(world.attachedModels.front().path)==std::filesystem::path(view.rigModels.front());
+    if(!missingBo&&!fallback)return;
+    auto staged=body;
+    staged.attachments.clear();std::erase_if(staged.meshes,[](const auto& mesh){return mesh.attachmentIndex>=0;});
+    if(fallback){
+        scene::CastScene original;original.skeleton=body.skeleton;
+        if(!attachImportedViewFallback(app,*found,original)||original.attachments.empty())return;
+        const auto& candidate=original.attachments.front();const auto& recorded=body.attachments.front();
+        if(candidate.boneIndex!=recorded.boneIndex)return;
+        const auto a=candidate.localMatrix(),b=recorded.localMatrix();
+        for(std::size_t i=0;i<a.v.size();++i)if(std::abs(a.v[i]-b.v[i])>.002f)return;
+    }
+    const auto worldIndex=findWorldWeaponForViewWeapon(app,*found);
+    if(worldIndex>=app.assetCatalog.entries.size())return;
+    const auto document=cast::Document::load(app.assetCatalog.entries[worldIndex].path);
+    if(!document.valid())return;
+    if(attachImportedWorldWeaponAndParts(app,document,std::size_t(found-app.assetCatalog.entries.begin()),worldIndex,staged,"css")&&!staged.attachments.empty())
+        body=std::move(staged);
+}
+
 void refreshPreparedReplayProfiles(const AppState& source,PreparedReplay& replay){
     for(auto& rig:replay.rigs){
         if(!rig)continue;
@@ -32,7 +64,7 @@ void refreshPreparedReplayProfiles(const AppState& source,PreparedReplay& replay
 }
 
 bool prepareReplay(const AppState& source,const take::Take& incoming,const std::string& incomingPack,
-                   PreparedReplay& output,std::string& error){
+                   PreparedReplay& output,std::string& error,AppState* diagnostics=nullptr){
     cadence::content::ResolutionScope resolution(incomingPack);
     error.clear();
     if(incoming.samples.empty()){
@@ -54,6 +86,7 @@ bool prepareReplay(const AppState& source,const take::Take& incoming,const std::
     // Every sampled slot is still prepared, so seeking cannot defer a failure.
     auto workerOwner=std::make_unique<AppState>();
     auto& worker=*workerOwner;
+    ImportedWorldGripBatch worldGripBatch;
     worker.deferSceneUpload=true;
     worker.assetCatalog=source.assetCatalog;
     worker.defaultSalukiDirectory=source.defaultSalukiDirectory;
@@ -67,8 +100,15 @@ bool prepareReplay(const AppState& source,const take::Take& incoming,const std::
     // CAST file can safely be inferred for such a slot.
     for(std::size_t slot=0;slot<required.size();++slot){
         if(!required[slot])continue;
+        if(diagnostics)logLoading(*diagnostics,"Reconstructing weapon slot "+std::to_string(slot+1),.25f+.15f*slot);
         const auto& actor=incoming.actorSlots[slot].empty()?incoming.actor:incoming.actorSlots[slot];
-        const auto& world=incoming.worldActorSlots[slot].empty()?incoming.worldActor:incoming.worldActorSlots[slot];
+        auto world=incoming.worldActorSlots[slot].empty()?incoming.worldActor:incoming.worldActorSlots[slot];
+        // Older PB world proxies accidentally recorded the assembly's hand
+        // source instead of its weapon. Repair only an unambiguous same-slot
+        // PB weapon reference, in memory; never rewrite the original demo.
+        std::vector<std::string> pbWeapons;
+        for(const auto& p:actor.rigModels){const auto path=std::filesystem::u8path(p);if(gameFromExportPath(path)=="pointblank"&&assets::classifyModelPath(path,path.stem().string())==assets::Role::ViewWeapon)pbWeapons.push_back(p);}
+        if(pbWeapons.size()==1)for(auto& part:world.attachedModels){const auto path=std::filesystem::u8path(part.path);if(gameFromExportPath(path)=="pointblank"&&assets::classifyModelPath(path,path.stem().string())==assets::Role::ViewHands)part.path=pbWeapons.front();}
         CachedClassRig rig;
         worker.hiddenWorldActor.reset();
         if(actor.empty()){
@@ -117,18 +157,23 @@ bool prepareReplay(const AppState& source,const take::Take& incoming,const std::
         }
         const auto worldBones=incoming.bonesForWorldSlot(static_cast<std::uint8_t>(slot));
         if(worldBones>0){
+            if(diagnostics)logLoading(*diagnostics,"Reconstructing world actor slot "+std::to_string(slot+1),.35f+.15f*slot);
             if(world.empty()){error="Weapon slot "+std::to_string(slot+1)+" has no recorded world actor";return false;}
             if(!restoreTakeWorldActor(worker,world,worldBones,error)){
                 error="World actor slot "+std::to_string(slot+1)+": "+error;
                 return false;
             }
+            if(worker.hiddenWorldActor)upgradeCssReplayWorldGrip(worker,actor,world,*worker.hiddenWorldActor);
         }
         rig.worldActor=std::move(worker.hiddenWorldActor);
         prepared.rigs[slot]=std::move(rig);
     }
     if(incoming.botCount>0){
+        if(diagnostics)logLoading(*diagnostics,"Reconstructing bot actors",.75f);
         if(incoming.botActor.empty()||incoming.botBoneCount==0){error="Recording has no usable bot actor manifest";return false;}
         if(!restoreTakeBotActor(worker,incoming.botActor,incoming.botBoneCount,error))return false;
+        if(diagnostics&&worker.botActorScene)for(const auto& warning:worker.botActorScene->warnings)
+            if(warning.starts_with("Omitted unidentified legacy bot weapon:"))logLoading(*diagnostics,warning,.8f);
         prepared.botActor=std::move(worker.botActorScene);
     }
     output=std::move(prepared);

@@ -35,6 +35,9 @@ void StageRenderer::renderRain(const scene::Mat4& vp){
     const auto f=[&](const char*n,float x){glapi::Uniform1f(loc(n),x);};
     const auto i=[&](const char*n,int x){glapi::Uniform1i(loc(n),x);};
     const auto v=[&](const char*n,scene::Vec3 x){glapi::Uniform3f(loc(n),x.x,x.y,x.z);};
+    i("uRainFast",weatherFast_);
+    // Fractional density uses a different seed gate per card: keep both then.
+    i("uCombineMist",weatherFast_&&rain_.density>=1.f);
     glapi::UniformMatrix4fv(loc("uVP"),1,GL_FALSE,vp.data());glapi::Uniform2f(loc("uViewport"),float(width_),float(height_));glapi::Uniform2f(loc("uRange"),cameraNear_,cameraFar_);
     v("uCamera",cameraPosition_);v("uSlope",rain::slope(rain_));v("uTint",rain_.tint);v("uSun",scene::normalize(sunDirection_));
     v("uLight",sunEnabled_?ambientColor_*sunAmbient_+sunColor_*(sunIntensity_*.35f):scene::Vec3{1,1,1});

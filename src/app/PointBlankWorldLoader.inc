@@ -146,7 +146,7 @@ void configureLegacyWeaponOnPointBlank(AppState& app,scene::CastScene& actor,siz
 }
 bool appendPointBlankWorldAnimation(AppState& app,const cast::Document& document,scene::CastScene& target,const std::string& game,const std::string& targetGame={}){
     BodyPreparationStage stage("clip conversion inclusive",document.sourceName());
-    if(lowerText(game)!="cs2"&&lowerText(targetGame)!="cs2"&&appendImportedWorldAnimation(app,document,target,game,targetGame))return true;
+    if(appendImportedWorldAnimation(app,document,target,game,targetGame))return true;
     const bool native=lowerText(game)=="pointblank",pbTarget=scene::pointblank::body(target.skeleton)||scene::codm::worldBody(target.skeleton);
     const auto family=[](std::string value){value=lowerText(value);return value=="bo2_sp"||value=="bo2+bo2_sp"?std::string("bo2"):value;};
     // Matching names do not imply matching local bind frames. In particular,
@@ -225,13 +225,13 @@ void appendMissingWorldHolds(AppState& app,scene::CastScene& actor,const std::st
     if(key!="aw"&&key!="mwr"&&key!="mw3"&&key!="ghosts"&&key!="mw")return;
     for(auto motion:{scene::MotionRole::Idle,scene::MotionRole::Run,scene::MotionRole::Unknown})for(auto stance:{scene::Stance::Stand,scene::Stance::Crouch})for(auto weapon:{scene::WeaponClass::Rifle,scene::WeaponClass::Pistol,scene::WeaponClass::DualWield,scene::WeaponClass::Knife}){
         // Missing pistol locomotion must not fall through to a two-handed rifle carry.
-        if(motion==scene::MotionRole::Run&&(stance!=scene::Stance::Stand||weapon==scene::WeaponClass::Rifle))continue;
+        if(motion==scene::MotionRole::Run&&stance!=scene::Stance::Stand)continue;
         if(motion==scene::MotionRole::Unknown&&weapon==scene::WeaponClass::Knife)continue;
         scene::AnimationQuery query;query.domain=scene::AnimationDomain::PlayerBody;query.motion=motion;query.stance=stance;query.weapon=weapon;
         const bool reload=motion==scene::MotionRole::Unknown;
         if(reload){query.domain=scene::AnimationDomain::PlayerTorso;query.action=scene::ActionRole::Reload;}
-        if(const auto existing=scene::findBestAnimation(actor,query);existing&&actor.animations[*existing].weapon==weapon)continue;
-        std::string name=reload?std::string("pt_reload_")+(stance==scene::Stance::Crouch?"crouch":"stand")+(weapon==scene::WeaponClass::Pistol?"_pistol.cast":"_rifle.cast"):motion==scene::MotionRole::Run?"pb_pistol_run_fast.cast":std::string(stance==scene::Stance::Crouch?"pb_crouch_alert":"pb_stand_alert")+(weapon==scene::WeaponClass::Pistol?"_pistol.cast":".cast");
+        if(const auto existing=scene::findBestAnimation(actor,query);existing&&(actor.animations[*existing].weapon==weapon||(motion==scene::MotionRole::Run&&weapon==scene::WeaponClass::Rifle&&actor.animations[*existing].weapon==scene::WeaponClass::Any&&actor.animations[*existing].motion==scene::MotionRole::Run)))continue;
+        std::string name=reload?std::string("pt_reload_")+(stance==scene::Stance::Crouch?"crouch":"stand")+(weapon==scene::WeaponClass::Pistol?"_pistol.cast":"_rifle.cast"):motion==scene::MotionRole::Run?(weapon==scene::WeaponClass::Rifle?"pb_combatrun_forward_loop.cast":"pb_pistol_run_fast.cast"):std::string(stance==scene::Stance::Crouch?"pb_crouch_alert":"pb_stand_alert")+(weapon==scene::WeaponClass::Pistol?"_pistol.cast":".cast");
         if(weapon==scene::WeaponClass::DualWield)name=reload?(stance==scene::Stance::Crouch?"pt_crouch_dw_botharms_reload.cast":"pt_dw_botharms_reload.cast"):motion==scene::MotionRole::Run?"pb_dw_run_forward.cast":stance==scene::Stance::Crouch?"pb_crouch_dw_idle_v1.cast":"pb_dw_botharms_idle_v1.cast";
         if(weapon==scene::WeaponClass::Knife)name=motion==scene::MotionRole::Run?"pb_knife_run_forward.cast":stance==scene::Stance::Crouch?"pb_knife_crouch_idle.cast":"pb_knife_stand_idle.cast";
         const auto path=pointBlankReferenceClip(salukiExportRoot(app.defaultSalukiDirectory)/(reload?"bo2/animations/pt/reload":"bo2/animations/pb/stand"),name,true);
@@ -241,6 +241,21 @@ void appendMissingWorldHolds(AppState& app,scene::CastScene& actor,const std::st
         if(!appendPointBlankWorldAnimation(app,doc,actor,"bo2",targetGame))scene::appendAnimations(doc,actor);
         for(size_t i=first;i<actor.animations.size();++i)actor.animations[i].sourceGame="bo2";
         actor.warnings.push_back("Missing native hold/action supplemented with BO2: "+name);
+    }
+    // Some libraries export only pistol/shield crouch cycles. Those are not
+    // rifle carries. Supplement each missing direction, retaining any native
+    // compatible walk OR run rather than demanding an exact gait label.
+    for(const auto& [direction,suffix]:std::initializer_list<std::pair<scene::Direction,const char*>>{
+        {scene::Direction::Forward,"forward"},{scene::Direction::Backward,"back"},
+        {scene::Direction::Left,"left"},{scene::Direction::Right,"right"}}){
+        if(hasCrouchedLongGunLocomotion(actor,direction))continue;
+        const std::string name="pb_crouch_run_"+std::string(suffix)+".cast";
+        const auto path=pointBlankReferenceClip(salukiExportRoot(app.defaultSalukiDirectory)/"bo2/animations/pb",name,true);
+        if(path.empty()){actor.warnings.push_back("Missing ordinary crouch locomotion: "+name);continue;}
+        const auto first=actor.animations.size();const auto doc=pointBlankReferenceDocument(path);
+        if(!appendPointBlankWorldAnimation(app,doc,actor,"bo2",targetGame))scene::appendAnimations(doc,actor);
+        for(size_t i=first;i<actor.animations.size();++i)actor.animations[i].sourceGame="bo2";
+        actor.warnings.push_back((actor.animations.size()>first?"Missing native crouch locomotion supplemented with BO2: ":"Crouch fallback rejected: ")+name);
     }
     for(auto weapon:{scene::WeaponClass::DualWield,scene::WeaponClass::Knife})for(auto stance:{scene::Stance::Stand,scene::Stance::Crouch}){
         scene::AnimationQuery query;query.domain=scene::AnimationDomain::PlayerTorso;query.stance=stance;query.weapon=weapon;
@@ -283,8 +298,9 @@ std::optional<scene::Mat4> fitPointBlankWorldGrip(AppState& app,const scene::Cas
     return *fit*scene::pointBlankGripSurfaceCalibration(pistol)*sw;
 }
 scene::CastScene preparePointBlankWorldWeaponUncached(AppState& app,const cast::Document& weapon,const scene::Skeleton& target,std::size_t targetBone){
-    scene::CastScene assembled;std::string error;const auto hand=std::find_if(app.assetCatalog.entries.begin(),app.assetCatalog.entries.end(),[](const auto& a){return lowerText(a.game)=="pointblank"&&a.name=="viewmodel_SWAT_Male_hands";});
-    if(hand==app.assetCatalog.entries.end()||!scene::pointblank::assemble(weapon,pointBlankReferenceDocument(hand->path),assembled,error)){assembled.warnings.push_back("PB world proxy unavailable: native hand reference missing");return assembled;}
+    scene::CastScene assembled;std::string error;assets::Asset referenceHand;referenceHand.path=nativePointBlankHandsPath(app);referenceHand.game="pointblank";referenceHand.role=assets::Role::ViewHands;
+    const auto* hand=&referenceHand;
+    if(hand->path.empty()||!scene::pointblank::assemble(weapon,pointBlankReferenceDocument(hand->path),assembled,error)){assembled.warnings.push_back("PB world proxy unavailable: native hand reference missing");return assembled;}
     const auto stem=std::filesystem::path(weapon.sourceName()).stem().string();std::filesystem::path idle;
     const auto targetLeft=target.boneByCanonicalName.find("j_wrist_le");
     const bool left=targetBone<target.bones.size()&&((targetLeft!=target.boneByCanonicalName.end()&&targetLeft->second==targetBone)||target.bones[targetBone].name=="L Hand"||target.bones[targetBone].name=="b_LeftHand");
@@ -328,6 +344,7 @@ scene::CastScene preparePointBlankWorldWeaponUncached(AppState& app,const cast::
     for(auto& m:assembled.meshes){for(auto& v:m.vertices){scene::Vec3 p{},n{};for(size_t k=0;k<4;++k)if(v.weights[k]>0&&v.bones[k]<pose.size()){const auto& skin=skinMatrices[v.bones[k]];p+=scene::transformPoint(skin,v.position)*v.weights[k];auto rotated=skin;rotated.v[12]=rotated.v[13]=rotated.v[14]=0;n+=scene::transformPoint(rotated,v.normal)*v.weights[k];}v.position=p;v.normal=scene::normalize(n);}m.modelTransform=scene::Mat4::identity();m.viewmodelWeapon=false;}
     const auto barrel=dual?cadence::dual::muzzle(assembled,pose,left?1:0):scene::resolveMuzzlePosition(assembled,pose);
     assembled.skeleton={};assembled.animations.clear();
+    assembled.sourceModelPath=std::filesystem::path(weapon.sourceName());
     if(barrel){scene::Bone b;b.name="tag_flash";b.restLocal.position=scene::transformPoint(mount,*barrel);b.restGlobal=scene::translation(b.restLocal.position);b.inverseBind=scene::inverseAffine(b.restGlobal);assembled.skeleton.bones.push_back(b);assembled.skeleton.boneByName[b.name]=0;assembled.skeleton.boneByCanonicalName[b.name]=0;}
     assembled.warnings.push_back("Point Blank shared world weapon: native idle grip fitted to the actor wrist");return assembled;
 }

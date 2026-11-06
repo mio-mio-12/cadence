@@ -9,6 +9,7 @@ struct Request {
     bool forceOpaque{},compress{},srgb{};
     int maxDimension{1024},maxGpuDimension{16384};
     bool compressedUpload{true};
+    bool independentChannels{}; // Alpha is material data, not coverage.
 };
 struct Prepared {
     // false means use the original loader, including its error/fallback policy.
@@ -21,4 +22,6 @@ struct Prepared {
 // Known file/pixel buffers must fit 128 MiB; larger inputs stay synchronous.
 inline constexpr std::size_t preparationBufferBudget=128ull*1024*1024;
 Prepared prepare(const Request& request) noexcept;
+std::size_t preload(const Request& request);
+void releasePreload(const Request& request);
 }

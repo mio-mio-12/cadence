@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceApplicationMain
 #include "../src/app/main.cpp"
 #undef main
@@ -13,7 +12,7 @@ int main(int argc,char**argv){
  glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto*w=glfwCreateWindow(960,720,"Batch audit",nullptr,nullptr);if(!w)return 2;glfwMakeContextCurrent(w);
  ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;ImGui_ImplGlfw_InitForOpenGL(w,true);ImGui_ImplOpenGL3_Init("#version 330");
  auto state=std::make_unique<AppState>();auto& app=*state;app.window=w;std::string error;if(!app.renderer.initialize(error))return 3;
- app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
+ app.defaultSalukiDirectory="exported_files";
  const auto root=app.defaultSalukiDirectory;
  if(argc>=3&&(std::string(argv[2])=="mwr"||std::string(argv[2])=="mw-view")){
   const std::string game=std::string(argv[2])=="mwr"?"mwr":"mw";

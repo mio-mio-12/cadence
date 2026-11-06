@@ -1,7 +1,30 @@
-#include "assets/LocalAssetPaths.h"
+#define NOMINMAX
+#include <Windows.h>
+#include <GLFW/glfw3.h>
+#include <set>
+static std::set<int> movementKeys;
+static double movementCursorX{};
+static int movementKey(GLFWwindow*,int key){return movementKeys.contains(key)?GLFW_PRESS:GLFW_RELEASE;}
+static int movementMouse(GLFWwindow*,int){return GLFW_RELEASE;}
+static int movementWindow(GLFWwindow*,int){return GLFW_TRUE;}
+static int movementInput(GLFWwindow*,int){return GLFW_CURSOR_DISABLED;}
+static void movementCursor(GLFWwindow*,double* x,double* y){*x=movementCursorX;*y=0;}
+static SHORT movementAsync(int){return 0;}
+#define glfwGetKey movementKey
+#define glfwGetMouseButton movementMouse
+#define glfwGetWindowAttrib movementWindow
+#define glfwGetInputMode movementInput
+#define glfwGetCursorPos movementCursor
+#define GetAsyncKeyState movementAsync
 #define main cadenceApplicationMain
 #include "../src/app/main.cpp"
 #undef main
+#undef GetAsyncKeyState
+#undef glfwGetCursorPos
+#undef glfwGetInputMode
+#undef glfwGetWindowAttrib
+#undef glfwGetMouseButton
+#undef glfwGetKey
 #define CHECK(x) do{if(!(x)){std::cerr<<"FAIL "<<__LINE__<<" "<<#x<<'\n';return 1;}}while(false)
 void requestIw4(AppState& app,int thirdRequest,bool swap=false){
     bool wheelSwap=false,wantsShot=true;
@@ -12,9 +35,73 @@ void simulate(AppState& app,float deltaSeconds,float forward,bool jump){
     float side=0,landingSpeed=0;bool sprint=false,ads=false;
 #include "../src/app/ReferenceMovement.inc"
 }
+int liveBackhopChecks(){
+    scene::glb::Map map;
+    for(auto vertices:{std::array<scene::Vec3,3>{{{-50000,-50000,0},{50000,-50000,0},{50000,50000,0}}},
+                       std::array<scene::Vec3,3>{{{-50000,-50000,0},{50000,50000,0},{-50000,50000,0}}}}){
+        scene::glb::CollisionTriangle t;t.a=vertices[0];t.b=vertices[1];t.c=vertices[2];t.normal={0,0,1};
+        t.minimum={-50000,-50000,0};t.maximum={50000,50000,0};t.walkable=true;t.blocking=false;map.collision.push_back(t);
+    }
+    map.buildCollisionIndex();
+    const float unit=gameplay::iw::worldUnits(1);
+    const auto makeActor=[&](float yaw,float speed){
+        auto p=std::make_unique<AppState>();auto& a=*p;
+        a.window=reinterpret_cast<GLFWwindow*>(1);a.actorInputCaptured=a.actorCursorInitialized=true;
+        a.actorFollowCamera=false;a.movementAlgorithm=a.previousMovementAlgorithm=4;
+        a.loadedMap=map;a.actorPosition=a.actorPreviousPosition=a.actorRenderPosition={0,0,.01f};
+        a.actorGrounded=true;a.actorYaw=yaw;a.actorVelocity={speed*unit,0,0};
+        a.exoDoubleJumpEnabled=false;return p;
+    };
+    const auto step=[](AppState& a,float yaw,int side){
+        movementKeys={GLFW_KEY_SPACE};if(side)movementKeys.insert(side>0?GLFW_KEY_D:GLFW_KEY_A);
+        movementCursorX=a.actorLastCursorX-std::remainder(yaw-a.actorYaw,2*scene::kPi)/.0022;
+        a.gameplayClock+=.01;updateActorController(a,.01f);
+    };
+    // Same world-space commands, opposite camera direction and strafe key.
+    // This traverses real keyboard/mouse input, collision, landing and hopping,
+    // not just the scalar air-acceleration helper.
+    for(bool unlimited:{false,true})for(float startingYaw:{0.f,1.3f,-2.7f}){
+        auto f=makeActor(startingYaw,250),b=makeActor(startingYaw+scene::kPi,250);
+        f->sourceUnlimitedBunnyhop=b->sourceUnlimitedBunnyhop=unlimited;
+        f->actorVelocity=b->actorVelocity={250*unit*std::cos(startingYaw),250*unit*std::sin(startingYaw),0};
+        int jumps=0;float previousZ=0;
+        for(int i=0;i<500;++i){
+            const int side=(i/25)%2?1:-1;
+            const float velocityYaw=std::atan2(f->actorVelocity.y,f->actorVelocity.x);
+            const float yaw=velocityYaw+side*.025f;
+            step(*f,yaw,side);step(*b,yaw+scene::kPi,-side);
+            CHECK(scene::length(f->actorPosition-b->actorPosition)<.2f);
+            CHECK(scene::length(f->actorVelocity-b->actorVelocity)<.02f);
+            CHECK(!b->actorMantling);
+            if(previousZ<=0&&b->actorVelocity.z>0)++jumps;previousZ=b->actorVelocity.z;
+        }
+        CHECK(jumps>=7);
+        const float speed=std::hypot(b->actorVelocity.x,b->actorVelocity.y)/unit;
+        CHECK(speed>250);if(unlimited)CHECK(speed>544);
+        std::cout<<"Forward/backward paired live input (unlimited="<<unlimited<<"): "<<jumps<<" hops, "<<speed<<" native units/s\n";
+    }
+    // Rotating the camera alone must never rotate or erase existing momentum.
+    auto coast=makeActor(0,300);coast->actorPosition.z=2000;
+    movementKeys.clear();movementCursorX=-scene::kPi/.0022;
+    updateActorController(*coast,.02f);
+    CHECK(std::abs(coast->actorVelocity.x-300*unit)<.001f);
+    CHECK(std::abs(coast->actorVelocity.y)<.001f);
+    // The saved unlimited-speed switch must reach Source v3, in either facing.
+    for(bool unlimited:{false,true})for(float yaw:{0.f,scene::kPi}){
+        auto a=makeActor(yaw,600);a->sourceUnlimitedBunnyhop=unlimited;
+        step(*a,yaw,0);step(*a,yaw,0);
+        CHECK(a->cssMovement.clockMs>=15);
+        const float expected=unlimited?600.f:600.f/std::sqrt(600.f*600.f+36.f)*300.f;
+        std::cout<<"Live jump (unlimited="<<unlimited<<") at yaw "<<yaw<<": "<<a->actorVelocity.x/unit<<" native units/s\n";
+        CHECK(std::abs(a->actorVelocity.x/unit-expected)<.001f);
+    }
+    movementKeys.clear();return 0;
+}
 int main(){
+    ImGui::CreateContext();
+    if(const int failed=liveBackhopChecks())return failed;
     {
-        const auto root=std::filesystem::path(cadence::local_assets::exportPath("cs1.6"));
+        const auto root=std::filesystem::path("exported_files/cs1.6");
         auto shotApp=std::make_unique<AppState>();auto& shot=*shotApp;std::string error;
         CHECK(scene::imported::assemblePrepared(scene::buildScene(cast::Document::load(root/"models/viewmodel_rifle_v_ak47.cast"),false),scene::buildScene(cast::Document::load(root/"models/hands_shared.cast"),false),shot.scene,error));
         CHECK(scene::appendAnimations(cast::Document::load(root/"animations/viewmodel_rifle_v_ak47_fire.cast"),shot.scene));
@@ -49,16 +136,17 @@ int main(){
         const auto path=std::filesystem::path("diagnostics/v244")/(std::to_string(mode)+".cadencegame");
         CHECK(saveGameplayPreset(app,path));auto loaded=std::make_unique<AppState>();
         CHECK(loadGameplayPreset(*loaded,path));CHECK(loaded->movementAlgorithm==mode&&loaded->weaponSwitchAlgorithm==5);
-        app.sourceFixedAccumulator=0;app.referenceMovement={};app.actorVelocity={};
+        app.sourceFixedAccumulator=0;app.referenceMovement={};app.cssMovement={};app.actorVelocity={};
         simulate(app,.032f,1,false);CHECK(app.actorVelocity.x>0&&app.actorVelocity.z<0);
         CHECK(std::isfinite(app.actorRenderPosition.z));
         auto other=std::make_unique<AppState>();auto& b=*other;
         b.movementAlgorithm=mode;b.actorFollowCamera=false;
-        app.sourceFixedAccumulator=b.sourceFixedAccumulator=0;app.referenceMovement=b.referenceMovement={};
+        app.sourceFixedAccumulator=b.sourceFixedAccumulator=0;app.referenceMovement=b.referenceMovement={};app.cssMovement=b.cssMovement={};
         app.actorPosition=b.actorPosition={.135f,0,10000};app.actorVelocity=b.actorVelocity={};
         for(int i=0;i<25;++i)simulate(app,.032f,1,false);
         for(int i=0;i<100;++i)simulate(b,.008f,1,false);
         CHECK(app.referenceMovement.clockMs==b.referenceMovement.clockMs);
+        CHECK(app.cssMovement.clockMs==b.cssMovement.clockMs);
         CHECK(app.actorPosition.x==b.actorPosition.x&&app.actorPosition.z==b.actorPosition.z);
         // Production fixed-step adapter: held Space survives frame grouping,
         // lands, then jumps again without synthesizing a fresh key press.
@@ -72,7 +160,7 @@ int main(){
         addTriangle({-10000,-10000,0},{10000,-10000,0},{10000,10000,0});
         addTriangle({-10000,-10000,0},{10000,10000,0},{-10000,10000,0});
         app.loadedMap=b.loadedMap=*floorMap;
-        app.sourceFixedAccumulator=b.sourceFixedAccumulator=0;app.referenceMovement=b.referenceMovement={};
+        app.sourceFixedAccumulator=b.sourceFixedAccumulator=0;app.referenceMovement=b.referenceMovement={};app.cssMovement=b.cssMovement={};
         app.actorPosition=b.actorPosition={0,0,.01f};app.actorVelocity=b.actorVelocity={};
         for(int i=0;i<125;++i)simulate(app,.032f,0,true);
         int jumps=0;float previousVertical=0;
@@ -80,6 +168,7 @@ int main(){
         CHECK(jumps>=4);
         CHECK(app.actorPosition.z==b.actorPosition.z&&app.actorVelocity.z==b.actorVelocity.z);
         CHECK(app.referenceMovement.clockMs==b.referenceMovement.clockMs);
+        CHECK(app.cssMovement.clockMs==b.cssMovement.clockMs);
         app.loadedMap.reset();b.loadedMap.reset();
     }
     std::cout<<"PASS production adapters: YY drop/cancel/retarget/fire queue/rechamber/raise and new movement preset round trips\n";

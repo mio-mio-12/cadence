@@ -25,6 +25,7 @@ struct Vertex {
     std::array<std::uint32_t, 4> bones{};
     std::array<float, 4> weights{1, 0, 0, 0};
     Vec4 color{1, 1, 1, 1};
+    float armSkinning{}; // Derived foreign-arm eligibility; not serialized in takes.
 };
 
 struct Bounds {
@@ -77,6 +78,7 @@ struct Mesh {
     std::shared_ptr<const std::string> sourceMaterialMetadata;
     bool specularGlossiness{}; // Authored linear RGB F0 / alpha gloss, not metallic-roughness.
     bool dielectricByDefault{};
+    bool specularRedChannel{}; // Packed Black Squad strength; G/B are not reflection color.
     float metallicFactor{};
     float roughnessFactor{1.0f};
     float transmissionFactor{};
@@ -199,6 +201,7 @@ struct AnimationQuery {
     bool requireMappedTracks{true};
     std::string preferredGame{};
     bool forceT6Locomotion{false};
+    std::string preferredWeaponFamily{}; // Optional native action subtype; empty preserves legacy queries.
 };
 
 struct RuntimePoseSource {
@@ -206,6 +209,10 @@ struct RuntimePoseSource {
     Animation animation;
 };
 
+struct DetachedAttachment {
+    std::uint32_t index{};
+    Mat4 mount=Mat4::identity();
+};
 struct Attachment {
     std::optional<Vec3> muzzleLocal; // Imported model-space muzzle, retained when its skeleton is flattened.
     std::string name;
@@ -245,17 +252,48 @@ struct MuzzleAnchor {
     int side{};
 };
 
-struct CodmRigBinding { std::size_t source{}; Mat4 offset=Mat4::identity(); std::size_t rollSource{static_cast<std::size_t>(-1)}; Mat4 rollOffset=Mat4::identity(); float rollWeight{}; };
+struct CodmRigBinding { std::size_t source{}; Mat4 offset=Mat4::identity(); std::size_t rollSource{static_cast<std::size_t>(-1)}; Mat4 rollOffset=Mat4::identity(); float rollWeight{}; Vec3 rollAxis{}; };
+struct PosePositionLink {
+    std::size_t target{},anchor{},orientation{};
+    Vec3 offset{};
+    int directionFrom{-1},directionTo{-1},rollParent{-1};
+};
+struct SleeveClearanceSupport {
+    std::size_t shoulder{},elbow{};
+    float sideSign{1.f};
+    std::vector<Vec3> bindPoints;
+    std::vector<std::size_t> movedBones;
+};
+struct ForearmClearanceSupport {
+    std::size_t shoulder{},elbow{},wrist{};
+    float radius{};
+    std::vector<std::size_t> movedBones;
+};
+struct ViewhandSizeFit {
+    std::size_t pivot{};
+    float factor{1.f};
+    std::vector<std::size_t> bones;
+};
 struct CodmRigAdapter {
     std::string identity;
     std::size_t firstBone{};
     std::vector<CodmRigBinding> bindings;
     std::vector<std::string> helperRules;
+    // Ordered wrist-anchored donor offsets. Empty retains legacy behavior.
+    std::vector<PosePositionLink> positionLinks;
+    // First-person native driver fit; donor lengths and camera remain untouched.
+    float weaponFitScale{1.f};
+    std::size_t weaponFitAnchor{};
+    std::vector<std::size_t> weaponFitCameras;
+    std::vector<ViewhandSizeFit> viewhandSizeFits;
+    std::vector<SleeveClearanceSupport> sleeves;
+    std::vector<ForearmClearanceSupport> forearmClearance;
 };
 struct CastScene {
     std::filesystem::path sourceModelPath;
     bool dualWield{};
     std::vector<MuzzleAnchor> muzzleAnchors; // Load-time imported barrel anchors, no added animation bones.
+    std::optional<Mat4> importedWeaponMount; // Exported weapon-local mount correction, applied once during native assembly.
     std::array<std::size_t,2> dualFireClips{static_cast<std::size_t>(-1),static_cast<std::size_t>(-1)};
     // Original local bind at the moment a user starts editing a rig mount.
     std::unordered_map<std::size_t,Transform> rigMountReferences;
@@ -272,6 +310,9 @@ struct CastScene {
     std::vector<Animation> animations;
     std::vector<Attachment> attachments;
     std::vector<RigPart> rigParts;
+    // Variant-native bones driven by a shared animation skeleton, without
+    // replacing the variant's bind lengths, mesh or inverse bind matrices.
+    std::unordered_map<std::size_t,std::size_t> bodyVariantDrivers;
     std::unordered_set<std::size_t> hiddenBones;
     Bounds bounds;
     std::vector<std::string> warnings;
@@ -332,6 +373,8 @@ bool composeIwSprintOffset(CastScene& scene,std::size_t animation,std::size_t id
 void restoreT6MagazineAfterReload(const CastScene& scene,std::vector<Mat4>& pose,std::size_t targetAnimation,float targetFrame);
 void retargetAnimationRange(CastScene& scene,std::size_t firstAnimation,const Skeleton& sourceSkeleton);
 void retargetAnimationRange(CastScene& scene,std::size_t firstAnimation,const CastScene& sourceScene,std::size_t firstSourceAnimation,bool inverseIwCalibration=false);
+struct LegacyToIwCalibration { std::string legacyBone; Mat4 offset; };
+std::optional<LegacyToIwCalibration> legacyToIwCalibration(std::string_view iwBone);
 bool installRuntimePoseAdapter(CastScene& target,std::size_t targetAnimation,const CastScene& source,std::size_t sourceAnimation);
 bool retargetSource2AnimationRange(CastScene& target,std::size_t firstAnimation,const CastScene& source,std::size_t firstSourceAnimation);
 float source2RetargetScale(const Skeleton& target,const Skeleton& source);
@@ -343,7 +386,7 @@ std::size_t appendAttachment(const cast::Document& document, CastScene& scene,
 std::size_t appendPreparedAttachment(CastScene&& imported,CastScene& scene,std::size_t boneIndex,std::string name);
 // Exact geometry/bind identity, ignoring materials; useful for rejecting auto-mounted skin variants.
 bool sameRigGeometry(const CastScene& a,const CastScene& b);
-std::size_t appendRigModel(const cast::Document& document,CastScene& scene,std::string name,std::optional<Mat4> sourceMount=std::nullopt,float uniformScale=1.0f);
+std::size_t appendRigModel(const cast::Document& document,CastScene& scene,std::string name,std::optional<Mat4> sourceMount=std::nullopt,float uniformScale=1.0f,bool auxiliaryMelee=false);
 void classifyAnimationName(std::string_view name, Animation& animation);
 [[nodiscard]] std::optional<std::size_t> findBestAnimation(const CastScene& scene,const AnimationQuery& query);
 [[nodiscard]] const char* animationRoleName(AnimationRole role);

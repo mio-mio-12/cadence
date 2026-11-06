@@ -65,6 +65,7 @@ extern void (APIENTRY* RenderbufferStorage)(GLenum,GLenum,GLsizei,GLsizei);
 extern void (APIENTRY* RenderbufferStorageMultisample)(GLenum,GLsizei,GLenum,GLsizei,GLsizei);
 extern void (APIENTRY* FramebufferRenderbuffer)(GLenum,GLenum,GLenum,GLuint);
 extern void (APIENTRY* BlitFramebuffer)(GLint,GLint,GLint,GLint,GLint,GLint,GLint,GLint,GLbitfield,GLenum);
+extern void (APIENTRY* DrawBuffers)(GLsizei,const GLenum*);
 extern void (APIENTRY* GenerateMipmap)(GLenum);
 extern void (APIENTRY* BlendFuncSeparate)(GLenum,GLenum,GLenum,GLenum);
 

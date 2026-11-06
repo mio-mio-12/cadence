@@ -26,6 +26,7 @@ static SHORT auditAsync(int){return 0;}
 #undef glfwGetWindowAttrib
 #undef glfwGetMouseButton
 #undef glfwGetKey
+#include "gameplay/PlayerMapMovement.h"
 
 static void require(bool value,const char* message){if(!value)throw std::runtime_error(message);}
 static void auditNear(scene::Vec3 a,scene::Vec3 b,const char* message){if(scene::length(a-b)>.002f){std::cerr<<message<<" got "<<a.x<<','<<a.y<<','<<a.z<<" expected "<<b.x<<','<<b.y<<','<<b.z<<'\n';throw std::runtime_error(message);}}
@@ -54,6 +55,37 @@ static void baselineGround(const AppState& app,scene::Vec3& p,scene::Vec3& v){
 }
 int main(int argc,char** argv)try{
     ImGui::CreateContext();
+    if(argc>3&&std::string(argv[1])=="--rectangular-map"){
+        const auto output=std::filesystem::absolute(argv[3]);std::filesystem::create_directories(output);std::ofstream report(output/"map-routes.csv"),frames(output/"map-frames.csv");report<<"geometry,route,mode,x,y,z,heading,expected_step,progress,embedded_ticks,result\n";frames<<"geometry,route,mode,tick,x,y,z,grounded,startsolid\n";
+        for(bool visible:{false,true}){scene::glb::Map map;std::string error;scene::c2m::LoadOptions options;options.renderGeometryCollision=visible;require(scene::c2m::load(argv[2],map,error,1.f,nullptr,options),error.c_str());const auto label=visible?"visible":"authored_requested";std::cout<<"MAP "<<label<<" triangles="<<map.collision.size()<<" authored="<<map.authoredCollision.present<<'\n';
+            struct Route{scene::Vec3 start,direction;float step;};std::vector<Route> routes;const auto stride=std::max(std::size_t(1),map.collision.size()/24000);
+            for(std::size_t i=0;i<map.collision.size()&&routes.size()<12;i+=stride){const auto& triangle=map.collision[i];if(!triangle.walkable||triangle.normal.z<.98f)continue;const std::array<scene::Vec3,3> vertices{triangle.a,triangle.b,triangle.c};
+                for(int edge=0;edge<3&&routes.size()<12;++edge){const auto middle=(vertices[edge]+vertices[(edge+1)%3])*.5f,delta=vertices[(edge+1)%3]-vertices[edge];const auto length=std::hypot(delta.x,delta.y);if(length<8)continue;
+                    for(float sign:{-1.f,1.f}){const scene::Vec3 outward{sign*delta.y/length,-sign*delta.x/length,0};const float extent=std::abs(outward.x)*43+std::abs(outward.y)*37;auto start=middle+outward*(extent+2.f);const float floor=map.groundHeight(start.x,start.y,middle.z-45.f-.1f,-1e9f),rise=middle.z-floor;if(floor<-1e8f||rise<1||rise>scene::course::kStepHeight-1)continue;start.z=floor;if(gameplay::movement::sweep(map,start,start,scene::Vec2{43,37},164.9f).startSolid)continue;
+                        auto end=start-outward*6.f;end.z-=.1f;const auto stepped=map.constrainMove(start,end,scene::Vec2{43,37},164.9f,scene::course::kStepHeight);if(stepped.z<floor+.8f||scene::length(scene::Vec3{stepped.x-end.x,stepped.y-end.y,0})>.1f)continue;
+                        const float center=map.navigationGroundHeight(stepped.x,stepped.y,floor+scene::course::kStepHeight+4,-1e9f,scene::course::kPlayerRadius*.75f);if(center>=stepped.z-.5f)continue;bool duplicate=false;for(const auto& r:routes)duplicate|=scene::length(r.start-start)<60;if(duplicate)continue;routes.push_back({start,-outward,stepped.z});if(routes.size()>=12)break;
+                    }
+                }
+            }
+            std::cout<<"MAP "<<label<<" support-disagreement candidates="<<routes.size()<<'\n';
+            for(std::size_t route=0;route<routes.size();++route)for(int mode:{0,1}){const auto& r=routes[route];auto a=actor(map,r.start,true);a->movementAlgorithm=a->previousMovementAlgorithm=mode;a->playerClipWidthCm=86;a->playerClipDepthCm=74;a->playerClipHeightCm=164.9f;a->actorYaw=std::atan2(r.direction.y,r.direction.x);a->actorVelocity=r.direction*250;auditKeys={GLFW_KEY_W};int embedded=0;for(int tickIndex=0;tickIndex<24;++tickIndex){tick(*a);const auto p=a->actorPosition;const bool solid=gameplay::movement::sweep(map,p,p,scene::Vec2{43,37},164.9f).startSolid;embedded+=solid;frames<<label<<','<<route<<','<<mode<<','<<tickIndex<<','<<p.x<<','<<p.y<<','<<p.z<<','<<a->actorGrounded<<','<<solid<<'\n';}const float progress=scene::dot(a->actorPosition-r.start,r.direction);report<<label<<','<<route<<','<<mode<<','<<r.start.x<<','<<r.start.y<<','<<r.start.z<<','<<a->actorYaw<<','<<r.step<<','<<progress<<','<<embedded<<','<<(embedded?"EMBEDDED":progress<10?"BLOCKED_REVIEW":"PROGRESSED")<<'\n';std::cout<<"MAP "<<label<<" route="<<route<<" mode="<<mode<<" progress="<<progress<<" embedded="<<embedded<<'\n';}
+        }
+        std::ofstream(output/"completed.txt")<<"Bounded deterministic actual-map support-disagreement probes complete. Blocked routes may have legitimate obstructions; CSV is not visual certification. Zero candidates is no coverage, not a pass.\n";ImGui::DestroyContext();return 0;
+    }
+    if(argc>2&&std::string(argv[1])=="--rectangular"){
+        const auto output=std::filesystem::absolute(argv[2]);std::filesystem::create_directories(output);std::ofstream csv(output/"rectangular-controller.csv");csv<<"mode,fixture,tick,x,y,z,vx,vy,vz,grounded,startsolid,center_ground,full_support\n";bool passed=true;
+        for(int mode:{0,1})for(bool corner:{false,true}){
+            auto map=floorMap();const float lowY=corner?30.f:-100.f,highY=corner?50.f:100.f;
+            quad(map,{100,lowY,0},{100,lowY,10},{100,highY,10},{100,highY,0});quad(map,{100,lowY,10},{130,lowY,10},{130,highY,10},{100,highY,10});quad(map,{130,lowY,0},{130,highY,0},{130,highY,10},{130,lowY,10});map.buildCollisionIndex();
+            auto a=actor(map,{55,0,0},true);a->movementAlgorithm=a->previousMovementAlgorithm=mode;a->playerClipWidthCm=86;a->playerClipDepthCm=74;a->playerClipHeightCm=164.9f;a->actorVelocity={250,0,0};auditKeys={GLFW_KEY_W};bool edgeSupport=false;int embedded=0;
+            for(int frame=0;frame<100;++frame){tick(*a);const auto p=a->actorPosition;const auto solid=gameplay::movement::sweep(map,p,p,scene::Vec2{43,37},164.9f).startSolid;const auto support=gameplay::movement::playerSupport(map,p,scene::Vec2{43,37},164.9f,scene::course::kStepHeight);embedded+=solid;edgeSupport|=p.x<71&&p.x>57&&p.z>=9.9f;csv<<mode<<','<<(corner?"corner_prop":"full_curb")<<','<<frame<<','<<p.x<<','<<p.y<<','<<p.z<<','<<a->actorVelocity.x<<','<<a->actorVelocity.y<<','<<a->actorVelocity.z<<','<<a->actorGrounded<<','<<solid<<','<<actorGroundHeight(*a,p.x,p.y,p.z+scene::course::kStepHeight)<<','<<support.value_or(-9999)<<'\n';}
+            const bool ok=edgeSupport&&embedded==0&&a->actorPosition.x>180;passed&=ok;std::cout<<"RECT mode="<<mode<<" fixture="<<(corner?"corner_prop":"full_curb")<<" edge_support="<<edgeSupport<<" embedded_ticks="<<embedded<<" end_x="<<a->actorPosition.x<<" result="<<(ok?"PASS":"FAIL")<<'\n';
+            // Raising the full body over this step is forbidden by a low ceiling.
+            quad(map,{-500,-500,169.9f},{500,-500,169.9f},{500,500,169.9f},{-500,500,169.9f});map.buildCollisionIndex();auto low=actor(map,{55,0,0},true);low->movementAlgorithm=low->previousMovementAlgorithm=mode;low->playerClipWidthCm=86;low->playerClipDepthCm=74;low->playerClipHeightCm=164.9f;low->actorVelocity={250,0,0};for(int frame=0;frame<12;++frame){tick(*low);if(low->actorPosition.z>5.01f)passed=false;}
+            auto air=actor(floorMap(),{60,0,30},false);air->movementAlgorithm=air->previousMovementAlgorithm=mode;air->playerClipWidthCm=86;air->playerClipDepthCm=74;air->playerClipHeightCm=164.9f;air->actorVelocity={0,0,100};auditKeys.clear();tick(*air);const bool airborne=air->actorPosition.z>30&&!air->actorGrounded;passed&=airborne;std::cout<<"RECT mode="<<mode<<" ceiling_z="<<low->actorPosition.z<<" airborne_no_snap="<<airborne<<'\n';
+        }
+        csv.flush();std::ofstream(output/"result.txt")<<(passed?"PASS":"FAIL")<<" actual Default/Source Legacy controller 86x74x164.9 cm, low curb/corner, low ceiling and rising airborne checks\n";ImGui::DestroyContext();return passed?0:1;
+    }
     for(bool step:{false,true}){auto a=actor(floorMap(step),{},true);scene::Vec3 p{},v{};auditKeys={GLFW_KEY_W};
         for(int i=0;i<160;++i){tick(*a);baselineGround(*a,p,v);auditNear(a->actorPosition,p,"ground/step position changed");auditNear(a->actorVelocity,v,"ground/step velocity changed");require(a->actorGrounded,"grounded route lost support");}
         if(step)require(a->actorPosition.z>19.9f,"step route did not traverse curb");

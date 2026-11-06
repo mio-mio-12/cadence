@@ -9,6 +9,14 @@ namespace render {
 inline void nativeViewhandSkinning(const scene::CastScene& scene,
                                   const std::vector<scene::Mat4>& pose,
                                   std::vector<scene::Mat4>& skin) {
+    if(scene.codmRigAdapter)for(const auto& fit:scene.codmRigAdapter->viewhandSizeFits){
+        if(fit.pivot>=pose.size())continue;
+        const auto pivot=scene::transformPoint(pose[fit.pivot],{});
+        const float s=fit.factor;
+        const auto scaleAboutGrip=scene::translation(pivot*(1.f-s))*scene::scale({s,s,s});
+        for(const auto bone:fit.bones)if(bone<pose.size()&&bone<skin.size())
+            skin[bone]=scaleAboutGrip*pose[bone]*scene.skeleton.bones[bone].inverseBind;
+    }
     if(scene.importedViewGame!="eldewrito"||!scene.viewHandsDriverGame.empty())return;
     for(const auto* side:{"l_","r_"}){
         const auto hand=scene.skeleton.boneByName.find(std::string(side)+"hand");

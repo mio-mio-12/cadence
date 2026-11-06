@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #include <iostream>
 #include <filesystem>
 #include <vector>
@@ -141,7 +140,7 @@ void verifyWeaponRig(const std::string& game,
 }
 
 int main() {
-    std::filesystem::path root = cadence::local_assets::exportPath("");
+    std::filesystem::path root = "exported_files";
 
     // 1. BO2
     verifyWeaponRig("BO2",

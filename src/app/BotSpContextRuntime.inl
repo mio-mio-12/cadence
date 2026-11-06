@@ -102,7 +102,7 @@ bool beginSpCoverSeek(AppState& app,gameplay::bot::Actor& bot){
         const auto& boundary=activeBotNavigation(app).boundary;
         if(boundary.enabled&&(candidate.z<boundary.floorZ||candidate.z>boundary.ceilingZ||(!boundary.points.empty()&&!gameplay::bot::pointInPolygon({candidate.x,candidate.y},boundary.points))))continue;
         const auto height=spCoverHeightAt(app,candidate);if(!height)continue;
-        const auto constrained=app.loadedMap->constrainMove(candidate,candidate,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72),scene::course::kStepHeight/1.25f);
+        const auto constrained=gameplay::bot::constrainActorMove(*app.loadedMap,bot,candidate,candidate,scene::course::kStepHeight/1.25f);
         if(scene::length(constrained-candidate)>1.f)continue;
         request.coverHeightIw=*height;request.stance=*height<44.f?cadence::sp::ContextStance::Crouch:cadence::sp::ContextStance::Stand;
         const auto coverClip=cadence::sp::selectContextClip(app.botSpContextClips,request,bot.id,state.sequence);
@@ -127,7 +127,7 @@ void applySpCoverIntent(AppState& app,gameplay::bot::Actor& bot,float dt){
     if(state.coverStall>1.5f){stopSpCoverSeek(app,bot);return;}
     if(state.coverCheck<=0){
         state.coverCheck=.3f;
-        if(!spCoverHeightAt(app,state.coverGoal)||(distance<80.f&&!app.loadedMap->navigationSegmentClear(bot.position,state.coverGoal,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72),scene::course::kStepHeight))){stopSpCoverSeek(app,bot);return;}
+        if(!spCoverHeightAt(app,state.coverGoal)||(distance<80.f&&!gameplay::bot::navigationActorClear(*app.loadedMap,bot,bot.position,state.coverGoal,scene::course::kStepHeight))){stopSpCoverSeek(app,bot);return;}
     }
     if(distance<6.f&&std::abs(bot.position.z-state.coverGoal.z)<12.f){
         bot.input.forward=bot.input.right=0;bot.input.sprint=false;bot.spWantsMove=bot.spCombatMoving=false;

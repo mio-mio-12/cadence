@@ -780,6 +780,11 @@ static bool loadImpl(
                 localRemap.assign(meshDef.vertices.size(), UINT32_MAX);
             }
 
+            // Explicit export metadata wins over legacy filename guesses (e.g.
+            // opaque concrete blended with grass is still a solid floor).
+            const bool collisionNonSolid = targetMesh.materialPolicyExplicit
+                ? (targetMesh.alphaTest || targetMesh.forceAlpha || targetMesh.decal || targetMesh.decalMultiply || targetMesh.decalAdditive)
+                : isNonSolid;
             for (const auto& face : surf.faces) {
                 if (face[0] >= meshDef.vertices.size() || face[1] >= meshDef.vertices.size() || face[2] >= meshDef.vertices.size()) continue;
 
@@ -841,9 +846,9 @@ static bool loadImpl(
                         const float verticalSpan = tri.maximum.z - tri.minimum.z;
                         const float horizontalSpan = std::max(tri.maximum.x - tri.minimum.x, tri.maximum.y - tri.minimum.y);
                         // Walkable surfaces: floor/ramp/stairs (must NOT be non-solid foliage/decals/glass/water)
-                        tri.walkable = !isNonSolid && tri.normal.z >= 0.50f && (horizontalSpan >= 10.0f || verticalSpan >= 6.0f);
+                        tri.walkable = !collisionNonSolid && tri.normal.z >= 0.50f && (horizontalSpan >= 10.0f || verticalSpan >= 6.0f);
                         // Blocking walls: substantial vertical barriers (at least 35cm high, 20cm wide)
-                        tri.blocking = !isNonSolid && tri.normal.z < 0.35f && verticalSpan >= 35.0f && horizontalSpan >= 20.0f;
+                        tri.blocking = !collisionNonSolid && tri.normal.z < 0.35f && verticalSpan >= 35.0f && horizontalSpan >= 20.0f;
                         if (tri.walkable || tri.blocking) {
                             map.collision.push_back(tri);
                         }
@@ -877,7 +882,7 @@ static bool loadImpl(
                                            fromEulerRadians({pitchRad, yawRad, rollRad}),
                                            inst.scale);
 
-        const bool skipCollision = isDecorativePropModel(canonical(inst.name)) || isDecorativePropModel(canonical(meshDef.name));
+        const bool skipCollision = !extension.present && (isDecorativePropModel(canonical(inst.name)) || isDecorativePropModel(canonical(meshDef.name)));
         emitGeometry(meshDef, instanceTransform, false, inst.position * unitScale, skipCollision);
     }
 

@@ -1,8 +1,12 @@
 #pragma once
+#include "render/MetalShader.h"
+#include "render/HeavenSmile.h"
 #include "render/ActorBounds.h"
 #include "render/ActorOverlays.h"
+#include "render/ForegroundDepth.h"
 #include "render/FramePreparation.h"
 #include "render/CullState.h"
+#include "render/TextureResolutionPolicy.h"
 
 #include "gameplay/ResponseCurve.h"
 #include "scene/CastScene.h"
@@ -40,6 +44,12 @@ namespace render {
 namespace texture { struct Prepared; }
 
 using ProgressCallback = std::function<void(std::string_view msg, float progress)>;
+struct CollisionOverlayBox {
+    scene::Vec3 feet{};float radius{},height{};scene::Vec3 color{.2f,.8f,1.f};
+    // World-axis collision half extents. Zero preserves legacy radius on that
+    // axis; fields append after color to preserve existing aggregate callers.
+    float halfWidth{},halfDepth{};
+};
 
 class StageRenderer {
 public:
@@ -62,11 +72,20 @@ public:
     const GpuPassTimer::Result& gpuPassTimings()const{return gpuPassTimer_.result();}
     // Diagnostic A/B only; disabled by default pending rendered parity checks.
     void setShadowContributionElision(bool enabled){shadowContributionElision_=enabled;}
+    void setStaticShadowCache(bool enabled){if(staticShadowCache_!=enabled){staticShadowCache_=enabled;cachedNearValid_=cachedFarValid_=false;}}
+    bool staticShadowCache()const{return staticShadowCache_;}
+    void setPostTargetExchange(bool enabled){postTargetExchange_=enabled;}
+    void setWeatherFast(bool enabled){weatherFast_=enabled;}
+    // UI-only callback; must preserve GL state and never re-enter this renderer.
+    void setUploadHeartbeat(std::function<void()> callback){uploadHeartbeat_=std::move(callback);}
     void setDiscardedDecalLightingElision(bool enabled){discardedDecalLightingElision_=enabled;}
     void setWeaponLightingMultipliers(float sun,float ambient){weaponSunMultiplier_=std::isfinite(sun)?std::max(0.f,sun):1.f;weaponAmbientMultiplier_=std::isfinite(ambient)?std::max(0.f,ambient):1.f;}
     void setCubemapSurfaceMultipliers(float viewmodel,float world){viewmodelCubemapMultiplier_=std::isfinite(viewmodel)?std::clamp(viewmodel,0.f,4.f):1.f;worldCubemapMultiplier_=std::isfinite(world)?std::clamp(world,0.f,4.f):1.f;}
     void setActorOverlays(ActorOverlaySettings settings,double time,std::vector<ActorOverlayInput> actors={},ActorOverlayInput player={},bool replay=false){if(replay!=overlayReplay_||time<overlayTime_||time-overlayTime_>.5){overlayHistory_.actors.clear();overlayImpacts_.clear();}overlayReplay_=replay;settings.sanitize();actorOverlays_=settings;overlayTime_=time;overlayInputs_=std::move(actors);overlayPlayer_=player;}
     void clearImpactCubes(){overlayImpacts_.clear();}
+    void setDetachedAttachments(std::vector<std::vector<scene::DetachedAttachment>> values){detachedAttachments_=std::move(values);}
+    void setActorDissolves(std::vector<float> values){actorDissolves_=std::move(values);}
+    void setHeavenSmileBursts(std::vector<heaven_smile::Burst> bursts,std::vector<bool> hidden={},scene::Vec3 color={1,0,0},bool streams=false){heavenSmileBursts_=std::move(bursts);heavenSmileHidden_=std::move(hidden);heavenSmileColor_=color;heavenSmileStreams_=streams;}
     void addImpactCube(scene::Vec3 position,double time=-1){if(actorOverlays_.impactCubes){if(overlayImpacts_.size()>=256)overlayImpacts_.pop_front();overlayImpacts_.push_back({position,time<0?overlayTime_:time});}}
     StageRenderer() = default;
     ~StageRenderer();
@@ -102,7 +121,10 @@ public:
     [[nodiscard]] bool readColorRgba(std::vector<std::uint8_t>& pixels,std::string& error);
     [[nodiscard]] bool readDepthRgba(std::vector<std::uint8_t>& pixels,float projectionNear,float projectionFar,float rangeNear,float rangeFar,bool invert,std::string& error);
     [[nodiscard]] bool readDepthRawFloat(std::vector<float>& depths,float projectionNear,float projectionFar,float rangeNear,float rangeFar,bool invert,std::string& error);
+    [[nodiscard]] bool captureDepthSamples(std::vector<float>& depths,foreground_depth::ExportRange& range,std::string& error);
     void setViewmodelCapture(bool enabled,scene::Vec4 background) noexcept { viewmodelCapture_=enabled;captureBackground_=background; }
+    void setExportLayers(bool isolates,bool worldDepth) noexcept { exportIsolates_=isolates;exportWorldDepth_=worldDepth; }
+    bool readIsolateMask(std::vector<std::uint8_t>& pixels,std::string& error);
     [[nodiscard]] bool setCamoTexture(const std::filesystem::path& path,std::string& error);
     void clearCamoTexture();
     [[nodiscard]] bool setStickerTexture(const std::filesystem::path& path,std::string& error);
@@ -132,10 +154,12 @@ public:
         weaponMetalnessWhite_=std::isfinite(white)?std::clamp(white,0.f,1.f):1.f;
         weaponMetalnessGamma_=std::isfinite(gamma)?std::clamp(gamma,.05f,5.f):1.f;
     }
+    void setMetalShader(metal::Settings settings) noexcept {settings.sanitize();metalShader_=settings;}
     [[nodiscard]] float surfaceNormalReflectionInfluence() const noexcept { return surfaceNormalReflectionInfluence_; }
     void setCameraPosition(scene::Vec3 pos) noexcept { cameraPosition_=pos; }
     void setFirstPersonProjection(bool enabled) noexcept { firstPersonProjection_=enabled; }
     void setViewmodelProjection(float fovMultiplier,bool flip) noexcept { viewmodelFovMultiplier_=fovMultiplier;flipViewmodel_=flip; }
+    void setWeaponRigTransform(const scene::CastScene& scene,const std::vector<scene::Mat4>& pose,const scene::Mat4& transform);
     [[nodiscard]] scene::Vec3 cameraPosition() const noexcept { return cameraPosition_; }
     void setCampathAppearance(float thickness,scene::Vec3 splineColor,scene::Vec3 nodeColor,scene::Vec3 frustumColor,bool dashed=false,float dashLength=12.0f) noexcept { campathThickness_=thickness;campathSplineColor_=splineColor;campathNodeColor_=nodeColor;campathFrustumColor_=frustumColor;campathDashed_=dashed;campathDashLength_=dashLength; }
     void setMaterialParameters(float lensAlpha,scene::Vec3 lensTint,float lensCubemapIntensity,float specularIntensity,float specularSharpness,float specularIntensity2,float specularSharpness2,float lensSpecularIntensity,bool cubemapSpecular,float cubemapSpecularIntensity,float cubemapBlur,int shadingModel,bool iw3DualLobe,float awRoughnessScale,float awRoughnessBias,float awMetalness,float awSpecularLevel,float awDiffuseWrap,float awClearcoat,float awClearcoatRoughness,float awEnvironmentIntensity) noexcept { lensAlpha_=lensAlpha;lensTint_=lensTint;lensCubemapIntensity_=lensCubemapIntensity;specularIntensity_=specularIntensity;specularSharpness_=specularSharpness;specularIntensity2_=specularIntensity2;specularSharpness2_=specularSharpness2;lensSpecularIntensity_=lensSpecularIntensity;cubemapSpecular_=cubemapSpecular;cubemapSpecularIntensity_=cubemapSpecularIntensity;cubemapBlur_=cubemapBlur;shadingModel_=std::clamp(shadingModel,0,3);iw3DualLobe_=iw3DualLobe;awRoughnessScale_=awRoughnessScale;awRoughnessBias_=awRoughnessBias;awMetalness_=awMetalness;awSpecularLevel_=awSpecularLevel;awDiffuseWrap_=awDiffuseWrap;awClearcoat_=awClearcoat;awClearcoatRoughness_=awClearcoatRoughness;awEnvironmentIntensity_=awEnvironmentIntensity; }
@@ -174,6 +198,7 @@ public:
     void setDebugView(int mode) noexcept { collisionOverlayEnabled_=mode==10;debugView_=mode==10?1:mode; }
     void setEquipmentVisibility(const std::vector<std::uint8_t>& bots,bool player) { equipmentHiddenActors_=bots;equipmentHiddenPlayer_=player; }
     void setCollisionOverlay(const scene::glb::Map* map,float rangeMeters=30.f,bool throughWalls=false) noexcept { collisionOverlayMap_=map;collisionOverlayRange_=std::clamp(rangeMeters,1.f,200.f)*100;collisionOverlayThroughWalls_=throughWalls; }
+    void setDynamicCollisionOverlay(std::vector<CollisionOverlayBox> boxes){dynamicCollisionOverlay_=std::move(boxes);}
     void setDecalDepthBias(float value) noexcept { decalDepthBias_=value; }
     void setNormalMapIntensity(float intensity) noexcept { normalMapIntensity_=std::max(0.0f,intensity); }
     void setIgnoreTextureAlpha(bool viewmodels,bool maps) noexcept { ignoreViewmodelTextureAlpha_=viewmodels;ignoreMapTextureAlpha_=maps; }
@@ -202,10 +227,16 @@ public:
     void clearAttachmentCamoLumas() { attachmentCamoLumas_.clear(); }
 
     [[nodiscard]] std::uintptr_t colorTexture() const noexcept { return colorTexture_; }
+    [[nodiscard]] unsigned nativeDepthTexture()const noexcept{return depthBuffer_;}
+    [[nodiscard]] float nativeDepthNear()const noexcept{return cameraNear_;}
+    [[nodiscard]] float nativeDepthFar()const noexcept{return cameraFar_;}
+    [[nodiscard]] bool nativeDepthForeground()const noexcept{return foregroundDrawn_;}
+    [[nodiscard]] bool nativeDepthSeparate()const noexcept{return firstPersonProjection_;}
+    [[nodiscard]] bool nativePostEligible()const noexcept{return !viewmodelCapture_;}
 
     void renderMuzzleFlash3D(scene::Vec3 position, float size, float rotation, scene::Vec4 color, const scene::Mat4& viewProjection, scene::Vec3 cameraPos, bool firstPerson = true,scene::Vec3 direction={});
     void renderDebugLine3D(scene::Vec3 start, scene::Vec3 end, scene::Vec4 color, const scene::Mat4& viewProjection);
-    void updateAndRenderSmokeCurve(float deltaSeconds, scene::Vec3 muzzlePos, scene::Vec3 muzzleForward, bool isEmitting, const scene::Mat4& viewProjection, scene::Vec3 cameraPos, float lifetime, float startWidth, float endWidth, float taperingExp, float blastSpeed, float riseSpeed, float dispersion, scene::Vec4 color, scene::Vec3 wind = {}, int curveResolution = 3,int emitter=0);
+    void updateAndRenderSmokeCurve(float deltaSeconds, scene::Vec3 muzzlePos, scene::Vec3 muzzleForward, bool isEmitting, const scene::Mat4& viewProjection, scene::Vec3 cameraPos, float lifetime, float startWidth, float endWidth, float taperingExp, float blastSpeed, float riseSpeed, float dispersion, scene::Vec4 color, scene::Vec3 wind = {}, int curveResolution = 3,int emitter=0,bool firstPerson=false);
     void clearSmokeCurve();
     void renderReplaySmoke(scene::Vec3 origin,scene::Vec3 forward,float age,std::uint32_t seed,const ReplaySmokeSettings& settings,scene::Vec4 color,const scene::Mat4& viewProjection,scene::Vec3 cameraPos,int curveResolution);
     [[nodiscard]] bool setImpactSurfaceTexture(const std::filesystem::path& path, std::string& error);
@@ -283,15 +314,16 @@ public:
     void setInactiveDofPassElisionEnabled(bool enabled) noexcept {inactiveDofPassElisionEnabled_=enabled;}
     void setSortPreparationEnabled(bool enabled) noexcept {sortPreparationEnabled_=enabled;}
 
-    void setMapTextureResolution(int maxDim) noexcept { mapTextureResolution_ = std::clamp(maxDim, 256, 4096); }
+    void setMapTextureResolution(int maxDim) noexcept { mapTextureResolution_ = texture::mapResolutionSetting(maxDim); }
     [[nodiscard]] int mapTextureResolution() const noexcept { return mapTextureResolution_; }
     void setHardwareTextureCompression(bool enabled) noexcept { hardwareTextureCompression_ = enabled; }
     [[nodiscard]] bool hardwareTextureCompression() const noexcept { return hardwareTextureCompression_; }
 
     bool captureReShadeSwapchain(struct GLFWwindow* window, std::vector<std::uint8_t>& outPixels, std::string& error);
-    unsigned loadTexture(const std::filesystem::path& path,bool sceneTexture=true,bool forceOpaque=false,int maxDimension=1024,bool compress=false,bool srgb=false);
+    unsigned loadTexture(const std::filesystem::path& path,bool sceneTexture=true,bool forceOpaque=false,int maxDimension=1024,bool compress=false,bool srgb=false,bool independentChannels=false);
 
 private:
+    std::function<void()> uploadHeartbeat_;
     void renderWater(const scene::Mat4&,const scene::Mat4&,const scene::Mat4&);
     void renderRain(const scene::Mat4&);
     void prepareRainShelter(bool weatherMode=false);
@@ -300,6 +332,10 @@ private:
     weather::Settings weather_;
     double weatherTime_{};int weatherCameraMode_{};
     unsigned weatherProgram_{},weatherScreenProgram_{},weatherFramebuffer_{},weatherBackground_{};
+    unsigned weatherHazeFramebuffer_{},weatherHazeTexture_{},weatherHazeComposite_{};
+    unsigned weatherHazeMaskFramebuffer_{},weatherHazeStencil_{},weatherHazeMaskProgram_{};
+    int weatherHazeMaskWidth_{},weatherHazeMaskHeight_{};
+    int weatherHazeWidth_{},weatherHazeHeight_{};
     int weatherWidth_{},weatherHeight_{};
     unsigned lensSurface_[2]{};
     int lensWidth_{},lensHeight_{};
@@ -391,16 +427,20 @@ private:
     struct SmokeEmitter {std::vector<SmokePoint> points;float taper{};scene::Vec3 lastPosition{};bool hasLastPosition{};float timer{};};
     std::array<SmokeEmitter,2> smokeEmitters_;
 
-    struct GpuMesh { bool rainExcluded{}; unsigned vao{},vertexBuffer{},indexBuffer{},wireIndexBuffer{},texture{},normalTexture{},specularTexture{},metalnessTexture{},roughnessTexture{},emissiveTexture{}; int indexCount{},wireIndexCount{}; scene::Mat4 model; scene::Vec4 color; bool dielectricByDefault{};bool specularGlossiness{};bool skinned{},camoBlend{},camoUseAlpha{true},camoMaskUseful{},hideWhenCamo{},lens{},eyeOverlay{},emissive{},forceAlpha{},decal{},decalMultiply{},decalAdditive{},alphaTest{},ignoreAlbedoAlpha{},source2Material{},viewmodelWeapon{},gltfPbr{},materialPolicyExplicit{},doubleSided{},unlit{},useVertexColor{}; float alphaCutoff{.35f},materialDepthBias{};int renderQueue{-1},sourceBlend{-1},destinationBlend{-1}; float metallicFactor{},roughnessFactor{1.0f},transmissionFactor{},indexOfRefraction{1.5f};scene::Vec3 emissiveFactor{};std::int32_t attachmentIndex{-1},actorVariant{-1}; SurfaceSortKey sortKey; visibility::MeshBounds cullBounds; scene::Vec3 aabbMin{}, aabbMax{}; bool hasBounds{false}; };
+    struct GpuMesh { bool rainExcluded{}; unsigned vao{},vertexBuffer{},indexBuffer{},wireIndexBuffer{},texture{},normalTexture{},specularTexture{},metalnessTexture{},roughnessTexture{},emissiveTexture{}; int indexCount{},wireIndexCount{}; scene::Mat4 model; scene::Vec4 color; bool dielectricByDefault{};bool specularRedChannel{};bool specularGlossiness{};bool skinned{},camoBlend{},camoUseAlpha{true},camoMaskUseful{},hideWhenCamo{},lens{},eyeOverlay{},emissive{},forceAlpha{},decal{},decalMultiply{},decalAdditive{},alphaTest{},ignoreAlbedoAlpha{},source2Material{},viewmodelWeapon{},gltfPbr{},materialPolicyExplicit{},doubleSided{},unlit{},useVertexColor{}; float alphaCutoff{.35f},materialDepthBias{};int renderQueue{-1},sourceBlend{-1},destinationBlend{-1}; float metallicFactor{},roughnessFactor{1.0f},transmissionFactor{},indexOfRefraction{1.5f};scene::Vec3 emissiveFactor{};std::int32_t attachmentIndex{-1},actorVariant{-1}; SurfaceSortKey sortKey; visibility::MeshBounds cullBounds; scene::Vec3 aabbMin{}, aabbMax{}; bool hasBounds{false}; };
     void setShadowMaterial(const GpuMesh& mesh);
     struct MeshUniformLocations {
+        int actorDissolve{-1};
         int explicitMaterial{-1},unlit{-1},vertexColor{-1},alphaCutoff{-1},hasEmissionMap{-1};
         int dielectricByDefault{-1},model{-1},color{-1},ignoreAlpha{-1},viewmodelSurface{-1},specularGlossiness{-1},gltfPbr{-1},gltfMetallic{-1},gltfRoughness{-1},gltfTransmission{-1},gltfIor{-1},gltfEmissive{-1},skinned{-1},hasAlbedo{-1},camoLumaMask{-1},camoLumaLow{-1},camoLumaHigh{-1},camoLumaGamma{-1},camoLumaContrast{-1},camoInvert{-1},hasNormalMap{-1},normalIntensity{-1},hasSpecularMap{-1},hasMetalnessMap{-1},source2Material{-1},hasRoughnessMap{-1},lens{-1},eyeOverlay{-1},emissive{-1},forceAlpha{-1},decal{-1},decalMultiply{-1},decalAdditive{-1},alphaTest{-1},hasSpecularImperfections{-1},camoBlend{-1},camoUseAlpha{-1},camoMaskUseful{-1},viewmodelLightViewProjection{-1},weaponSurface{-1},weaponSpecularMultiplier{-1},weaponSpecularLow{-1},weaponSpecularHigh{-1},weaponCubemapMultiplier{-1},specularIntensity{-1},specularSharpness{-1},specularIntensity2{-1},specularSharpness2{-1},lensAlpha{-1},lensTint{-1},lensTintIntensity{-1},lensSpecularIntensity{-1},lensCubemapIntensity{-1},eeveeMetallic{-1},eeveeRoughness{-1},eeveeIor{-1},eeveeSpecular{-1},eeveeSpecularTint{-1},eeveeClearcoat{-1},eeveeClearcoatRoughness{-1},brdfModel{-1},shadowSpecularMultiplier{-1};
     } meshUniforms_{};
     std::unordered_map<int, AttachmentCamoLuma> attachmentCamoLumas_;
     struct ShadowUniformLocations {
+        int actorDissolve{-1};
         int lightViewProjection{-1},bones{-1},boneVisibility{-1},model{-1},skinned{-1};
     } shadowUniforms_{};
+    std::vector<float> actorDissolves_;
+    std::vector<std::vector<scene::DetachedAttachment>> detachedAttachments_;
     bool resizeTarget(int width,int height);
     bool resizeMsaaTarget(int width,int height);
     void releaseMsaaTarget();
@@ -450,12 +490,19 @@ private:
     scene::Vec3 environmentForward_{1,0,0},environmentUp_{0,0,1};
     float environmentFov_{80.0f},environmentAspect_{16.0f/9.0f};
     unsigned shadowFramebuffer_{},shadowTexture_{};
+    bool staticShadowCache_{},cachedNearValid_{},cachedFarValid_{};
+    bool postTargetExchange_{true};
+    bool weatherFast_{true};
+    unsigned cachedShadowFramebuffer_{},cachedShadowTexture_{};
+    int cachedShadowResolution_{},cachedFarResolution_{};
+    scene::Mat4 cachedNearMatrix_{},cachedFarMatrix_{};
     int shadowResolution_{},requestedShadowResolution_{2048};
     unsigned viewmodelShadowFramebuffer_{},viewmodelShadowTexture_{};int viewmodelShadowResolution_{},requestedViewmodelShadowResolution_{1024};bool viewmodelSelfShadows_{true};
     unsigned farShadowFramebuffer_{},farShadowTexture_{};
     int farShadowResolution_{},requestedFarShadowResolution_{1024};
     float camoStrength_{0.77f},camoScale_{1.0f},camoAlphaLow_{0.031f},camoAlphaHigh_{1.0f},camoRotation_{},camoLumaLow_{},camoLumaHigh_{1},camoLumaGamma_{1},camoLumaContrast_{1};scene::Vec3 camoOffset_{};
     bool weaponMetalnessFromDiffuse_{};float weaponMetalnessBlack_{},weaponMetalnessWhite_{1.f},weaponMetalnessGamma_{1.f};
+    metal::Settings metalShader_;
     float weaponSpecularMultiplier_{1.0f},weaponCubemapMultiplier_{1.0f},weaponCubemapBlur_{0.08f},weaponMetalnessOverride_{-1.f};scene::Vec3 weaponSpecularLow_{},weaponSpecularHigh_{1,1,1};
     bool camoInvert_{true},universalCamo_{},camoLumaMask_{},camoLumaNativeT6_{};
     float lensAlpha_{0.60f},lensCubemapIntensity_{1.0f},specularIntensity_{1.0f},specularSharpness_{256.0f},specularIntensity2_{0.18f},specularSharpness2_{32.0f},lensSpecularIntensity_{4.0f},cubemapSpecularIntensity_{0.35f},cubemapBlur_{0.08f},lensTintIntensity_{1.0f};scene::Vec3 lensTint_{1,1,1},emissiveTint_{1,1,1};float worldLensAlpha_{.6f},worldLensTintIntensity_{1},worldLensSpecularIntensity_{4},worldLensCubemapIntensity_{1};scene::Vec3 worldLensTint_{1,1,1};
@@ -475,6 +522,7 @@ private:
     const scene::glb::Map* collisionOverlayMap_{};
     bool collisionOverlayEnabled_{},collisionOverlayThroughWalls_{};
     float collisionOverlayRange_{3000};
+    std::vector<CollisionOverlayBox> dynamicCollisionOverlay_;
     int shadingModel_{1};
     int brdfModel_{0};
     bool filmEnabled_{};float filmBrightness_{},filmContrast_{1.0f},filmDesaturation_{};scene::Vec3 filmDarkTint_{1,1,1},filmMidTint_{1,1,1},filmLightTint_{1,1,1};bool filmMidTintEnabled_{},filmInvert_{};
@@ -491,6 +539,13 @@ private:
     float viewmodelFovMultiplier_{1.f};
     bool flipViewmodel_{};
     bool viewmodelCapture_{};scene::Vec4 captureBackground_{0,1,0,1};
+    bool exportIsolates_{},exportWorldDepth_{},isolateReady_{};
+    unsigned isolateTexture_{},isolateMsaa_{};
+    float isolateDistortion_{};
+    unsigned int exportDepthFramebuffer_{},exportDepthBuffer_{};
+    bool exportDepthReady_{};
+    std::vector<float> exportWorldDepthPixels_; // Fallback if a depth-only target is unavailable.
+    void readDepthSamples(std::vector<float>& depths);
     float normalMapIntensity_{1.0f};
     float surfaceNormalReflectionInfluence_{1.0f};
     scene::Vec3 cameraPosition_{};
@@ -512,6 +567,10 @@ private:
     ActorOverlayInput overlayPlayer_{};
     struct OverlayImpact{scene::Vec3 position;double time;};
     std::deque<OverlayImpact> overlayImpacts_;
+    std::vector<heaven_smile::Burst> heavenSmileBursts_;
+    std::vector<bool> heavenSmileHidden_;
+    scene::Vec3 heavenSmileColor_{1,0,0};
+    bool heavenSmileStreams_{};
     scene::Vec3 navigationLinkColor_{.15f,.72f,1},navigationNodeColor_{.1f,.9f,1},navigationPriorityColor_{1,.82f,.12f},wallhackVisibleColor_{.15f,1,.25f},wallhackOccludedColor_{1,.1f,.15f},hitboxColor_{1,.75f,.1f};float navigationLineThickness_{2},navigationInterpolation_{},navigationHandleHeight_{20},navigationCircleScale_{1},navigationCrossLength_{8},wallhackThickness_{2},hitboxThickness_{1.5f};int navigationCircleSides_{20};bool wallhack_{},hitboxes_{};
     scene::Vec3 campathSplineColor_{0.18f,0.85f,1.0f},campathNodeColor_{1.0f,0.78f,0.15f},campathFrustumColor_{0.25f,0.95f,0.65f};
     float campathThickness_{2.5f},campathDashLength_{12.0f};

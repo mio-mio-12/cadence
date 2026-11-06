@@ -16,6 +16,9 @@ inline bool fitPreparedHands(CastScene& native,const CastScene& reference,CastSc
     if(reference.skeleton.bones.empty()){error="Normalized native reference required";return false;}
     if(legacy.meshes.empty()){error="Legacy hands have no mesh";return false;}
     const auto& src=reference.skeleton;const auto& dst=legacy.skeleton;
+    // Both native families use normalized centimetres here. Transfer pose,
+    // not the reference hand's palm width or individual segment lengths.
+    const bool poseOnly=true;
     auto adapter=std::make_shared<CodmRigAdapter>();adapter->firstBone=native.skeleton.bones.size();adapter->identity=std::string(native.pointBlankNativeCentimetres?"Point Blank anatomical fit v2 / ":"CODM anatomical fit v1 / ")+std::filesystem::path(sourceName).filename().string();
     // Identity tracks calibration inputs, not filenames alone. This is an
     // in-memory diagnostic fingerprint, not a cryptographic asset digest.
@@ -24,6 +27,7 @@ inline bool fitPreparedHands(CastScene& native,const CastScene& reference,CastSc
     for(const auto* skeleton:{&src,&dst})for(const auto& b:skeleton->bones){hash(b.name.data(),b.name.size());hash(&b.parent,sizeof(b.parent));hash(b.restGlobal.v.data(),sizeof(float)*16);}
     for(const auto& m:legacy.meshes){for(const auto& v:m.vertices){hash(&v.position,sizeof(v.position));hash(v.bones.data(),sizeof(v.bones));hash(v.weights.data(),sizeof(v.weights));}hash(m.indices.data(),m.indices.size()*sizeof(uint32_t));hash(m.modelTransform.v.data(),sizeof(float)*16);}
     adapter->identity+=" / bind+skin="+std::to_string(fingerprint);
+    if(poseOnly)adapter->identity+=" / donor-proportions-v1";
     std::vector<Mat4> deformation(dst.bones.size(),Mat4::identity()),fitted(dst.bones.size(),Mat4::identity());
     std::vector<int> source(dst.bones.size(),-1);std::vector<bool> mapped(dst.bones.size());
     const bool oneBased=!dst.boneByName.contains("j_pinky_le_0")&&!dst.boneByName.contains("j_pinky_ri_0")&&dst.boneByName.contains("j_metaindex_le_1")&&dst.boneByName.contains("j_metaindex_ri_1");
@@ -42,13 +46,13 @@ inline bool fitPreparedHands(CastScene& native,const CastScene& reference,CastSc
             const auto dp=index(dst,"j_pinky_"+dside+"_0"),sp=index(src,"b_"+sside+"Pinky1");
             const auto dn=normalize(cross(pos(dst,di)-pos(dst,dw),pos(dst,dp)-pos(dst,dw))),sn=normalize(cross(pos(src,si)-pos(src,sw),pos(src,sp)-pos(src,sw)));
             const float width=length(pos(src,si)-pos(src,sp))/length(pos(dst,di)-pos(dst,dp));
-            if(!std::isfinite(width)||width<.3f||width>3.f)throw std::runtime_error("Implausible CODM palm fit scale");
+            if(!poseOnly&&(!std::isfinite(width)||width<.3f||width>3.f))throw std::runtime_error("Implausible CODM palm fit scale");
             const auto map=[&](std::string dnme,std::string snme,std::string dnext,std::string snext,Vec3 dnormal=Vec3{},Vec3 snormal=Vec3{}){
                 const auto d=index(dst,dnme),s=index(src,snme),dc=index(dst,dnext),sc=index(src,snext);const auto d0=pos(dst,d),s0=pos(src,s);
                 if(!descendant(dst,dc,d)||!descendant(src,sc,s))throw std::runtime_error("Anatomical chain relationship mismatch: "+dnme);
                 const float axial=length(pos(src,sc)-s0)/length(pos(dst,dc)-d0);
-                if(!std::isfinite(axial)||axial<.25f||axial>4.f)throw std::runtime_error("Implausible CODM segment fit: "+dnme);
-                deformation[d]=anatomicalFrame(s0,pos(src,sc),length(snormal)>.5f?snormal:sn)*scale({axial,width,width})*inverseAffine(anatomicalFrame(d0,pos(dst,dc),length(dnormal)>.5f?dnormal:dn));source[d]=static_cast<int>(s);mapped[d]=true;
+                if(!poseOnly&&(!std::isfinite(axial)||axial<.25f||axial>4.f))throw std::runtime_error("Implausible CODM segment fit: "+dnme);
+                deformation[d]=anatomicalFrame(s0,pos(src,sc),length(snormal)>.5f?snormal:sn)*(poseOnly?Mat4::identity():scale({axial,width,width}))*inverseAffine(anatomicalFrame(d0,pos(dst,dc),length(dnormal)>.5f?dnormal:dn));source[d]=static_cast<int>(s);mapped[d]=true;
             };
             map("j_shoulder_"+dside,"b_"+sside+"Arm","j_elbow_"+dside,"b_"+sside+"ForeArm");
             map("j_elbow_"+dside,"b_"+sside+"ForeArm","j_wrist_"+dside,"b_"+sside+"Hand");
@@ -76,9 +80,9 @@ inline bool fitPreparedHands(CastScene& native,const CastScene& reference,CastSc
                     const auto skinAxis=[](const CastScene& model,size_t bone,Vec3 origin,Vec3 fallback){Vec3 center{};float total=0;for(auto&m:model.meshes)for(auto&v:m.vertices){float w=0;for(int k=0;k<4;++k)if(v.bones[k]==bone)w+=v.weights[k];if(w<.75f)continue;center+=transformPoint(m.modelTransform,v.position)*w;total+=w;}if(total>0){auto axis=center/total-origin;if(length(axis)>.2f&&length(axis)<8.f)return axis;}return fallback;};
                     da=skinAxis(legacy,d,pos(dst,d),da);sa=skinAxis(reference,s,pos(src,s),sa);
                     const float axial=length(sa)/length(da);
-                    if(!std::isfinite(axial)||axial<.25f||axial>4.f)throw std::runtime_error("Implausible Point Blank distal finger fit");
+                    if(!poseOnly&&(!std::isfinite(axial)||axial<.25f||axial>4.f))throw std::runtime_error("Implausible Point Blank distal finger fit");
                     dnormal=transport(dnormal,previousD,da);snormal=transport(snormal,previousS,sa);
-                    deformation[d]=anatomicalFrame(pos(src,s),pos(src,s)+sa,snormal)*scale({axial,width,width})*inverseAffine(anatomicalFrame(pos(dst,d),pos(dst,d)+da,dnormal));
+                    deformation[d]=anatomicalFrame(pos(src,s),pos(src,s)+sa,snormal)*(poseOnly?Mat4::identity():scale({axial,width,width}))*inverseAffine(anatomicalFrame(pos(dst,d),pos(dst,d)+da,dnormal));
                 }
             }
         }
@@ -103,10 +107,37 @@ inline bool fitPreparedHands(CastScene& native,const CastScene& reference,CastSc
         // arm-weighted triangles in this first-person copy; never fit a body.
         std::vector<bool> armBone(dst.bones.size());for(size_t d=0;d<dst.bones.size();++d){int p=static_cast<int>(d);while(p>=0){if(dst.bones[p].name=="j_shoulder_le"||dst.bones[p].name=="j_shoulder_ri"){armBone[d]=true;break;}p=dst.bones[p].parent;}}
         std::vector<volume_fit::Bone> volumeFits;
-        if(native.pointBlankNativeCentimetres){volumeFits.reserve(deformation.size());for(size_t d=0;d<deformation.size();++d)volumeFits.push_back(volume_fit::prepare(deformation[d],pos(dst,d)));}
+        if(native.pointBlankNativeCentimetres&&!poseOnly){volumeFits.reserve(deformation.size());for(size_t d=0;d<deformation.size();++d)volumeFits.push_back(volume_fit::prepare(deformation[d],pos(dst,d)));}
+        if(poseOnly){
+            std::vector<bool> linked(dst.bones.size());
+            const auto link=[&](size_t target,size_t anchor,size_t orientation){
+                const auto inv=inverseAffine(dst.bones[orientation].restGlobal);
+                const auto delta=pos(dst,target)-pos(dst,anchor);
+                const Vec3 offset{inv.v[0]*delta.x+inv.v[4]*delta.y+inv.v[8]*delta.z,inv.v[1]*delta.x+inv.v[5]*delta.y+inv.v[9]*delta.z,inv.v[2]*delta.x+inv.v[6]*delta.y+inv.v[10]*delta.z};
+                adapter->positionLinks.push_back({adapter->firstBone+target,adapter->firstBone+anchor,adapter->firstBone+orientation,offset});linked[target]=true;
+            };
+            for(const std::string side:{"le","ri"}){
+                const auto wrist=index(dst,"j_wrist_"+side),elbow=index(dst,"j_elbow_"+side),shoulder=index(dst,"j_shoulder_"+side);
+                const auto palm=index(dst,"j_mid_"+side+"_0");
+                const auto palmOffset=transformPoint(inverseAffine(dst.bones[wrist].restGlobal),pos(dst,palm));
+                adapter->positionLinks.push_back({adapter->firstBone+wrist,adapter->bindings[palm].source,adapter->firstBone+wrist,palmOffset*-1.f});linked[wrist]=true;
+                link(elbow,wrist,elbow);link(shoulder,elbow,shoulder);
+                for(const std::string finger:{"thumb","index","mid","ring","pinky"}){
+                    auto parent=wrist;
+                    for(int j=0;j<3;++j){const auto joint=index(dst,"j_"+finger+"_"+side+"_"+std::to_string(j));link(joint,parent,parent);parent=joint;}
+                }
+            }
+            // Helpers retain their donor offsets from the already solved arm.
+            for(size_t pass=0;pass<dst.bones.size();++pass){bool changed=false;
+                for(size_t d=0;d<dst.bones.size();++d)if(!linked[d]&&dst.bones[d].parent>=0&&linked[dst.bones[d].parent]){link(d,dst.bones[d].parent,dst.bones[d].parent);changed=true;}
+                if(!changed)break;
+            }
+            // Rendering uses the original donor bind and vertex geometry.
+            for(size_t d=0;d<dst.bones.size();++d)fitted[d]=dst.bones[d].restGlobal;
+        }
         size_t removedTriangles=0;
         for(auto& mesh:legacy.meshes){std::vector<bool> armVertex(mesh.vertices.size());for(size_t v=0;v<mesh.vertices.size();++v){float w=0;for(int k=0;k<4;++k)if(mesh.vertices[v].bones[k]<armBone.size()&&armBone[mesh.vertices[v].bones[k]])w+=mesh.vertices[v].weights[k];armVertex[v]=w>.999f;}std::vector<uint32_t> indices;for(size_t i=0;i+2<mesh.indices.size();i+=3){if(mesh.indices[i]>=armVertex.size()||mesh.indices[i+1]>=armVertex.size()||mesh.indices[i+2]>=armVertex.size())throw std::runtime_error("Invalid legacy triangle index");if(armVertex[mesh.indices[i]]&&armVertex[mesh.indices[i+1]]&&armVertex[mesh.indices[i+2]])indices.insert(indices.end(),mesh.indices.begin()+i,mesh.indices.begin()+i+3);else ++removedTriangles;}mesh.indices=std::move(indices);
-            for(auto& v:mesh.vertices){const auto p=transformPoint(mesh.modelTransform,v.position);Vec3 fittedPosition{},normal{};float weight=0;for(int k=0;k<4;++k)if(v.weights[k]>0){const auto b=v.bones[k];if(b>=deformation.size())throw std::runtime_error("Invalid legacy mesh weight");fittedPosition+=transformPoint(deformation[b],p)*v.weights[k];const auto nmat=inverseAffine(deformation[b]*mesh.modelTransform);normal+=Vec3{nmat.v[0]*v.normal.x+nmat.v[1]*v.normal.y+nmat.v[2]*v.normal.z,nmat.v[4]*v.normal.x+nmat.v[5]*v.normal.y+nmat.v[6]*v.normal.z,nmat.v[8]*v.normal.x+nmat.v[9]*v.normal.y+nmat.v[10]*v.normal.z}*v.weights[k];weight+=v.weights[k];}
+            for(auto& v:mesh.vertices){if(poseOnly){v.position=transformPoint(mesh.modelTransform,v.position);const auto n=inverseAffine(mesh.modelTransform);v.normal=normalize(Vec3{n.v[0]*v.normal.x+n.v[1]*v.normal.y+n.v[2]*v.normal.z,n.v[4]*v.normal.x+n.v[5]*v.normal.y+n.v[6]*v.normal.z,n.v[8]*v.normal.x+n.v[9]*v.normal.y+n.v[10]*v.normal.z});for(auto& b:v.bones)b+=static_cast<uint32_t>(adapter->firstBone);continue;}const auto p=transformPoint(mesh.modelTransform,v.position);Vec3 fittedPosition{},normal{};float weight=0;for(int k=0;k<4;++k)if(v.weights[k]>0){const auto b=v.bones[k];if(b>=deformation.size())throw std::runtime_error("Invalid legacy mesh weight");fittedPosition+=transformPoint(deformation[b],p)*v.weights[k];const auto nmat=inverseAffine(deformation[b]*mesh.modelTransform);normal+=Vec3{nmat.v[0]*v.normal.x+nmat.v[1]*v.normal.y+nmat.v[2]*v.normal.z,nmat.v[4]*v.normal.x+nmat.v[5]*v.normal.y+nmat.v[6]*v.normal.z,nmat.v[8]*v.normal.x+nmat.v[9]*v.normal.y+nmat.v[10]*v.normal.z}*v.weights[k];weight+=v.weights[k];}
                 if(weight<.99f||weight>1.01f)throw std::runtime_error("Non-normalized legacy skin weights");if(volumeFits.empty())v.position=fittedPosition;else{Mat4 differential;v.position=volume_fit::position(volumeFits,p,v.bones,v.weights,&differential);normal=volume_fit::vector(volume_fit::transpose3(inverseAffine(differential*mesh.modelTransform)),v.normal);}v.normal=normalize(normal);for(auto& b:v.bones)b+=static_cast<uint32_t>(adapter->firstBone);
             }mesh.modelTransform=Mat4::identity();mesh.viewmodelWeapon=false;}
         legacy.meshes.erase(std::remove_if(legacy.meshes.begin(),legacy.meshes.end(),[](const auto& m){return m.indices.empty();}),legacy.meshes.end());if(legacy.meshes.empty())throw std::runtime_error("No arm-weighted legacy triangles");

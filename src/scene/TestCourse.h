@@ -30,6 +30,19 @@ inline float groundHeight(float x,float y){
     return height;
 }
 
+inline Vec3 constrainMove(Vec3 oldPosition,Vec3 proposed,Vec2 halfExtents,float height){
+    const float rx=std::max(0.f,halfExtents.x),ry=std::max(0.f,halfExtents.y);
+    const float limitX=std::max(0.f,kHalfExtent-rx),limitY=std::max(0.f,kHalfExtent-ry);
+    proposed.x=std::clamp(proposed.x,-limitX,limitX);proposed.y=std::clamp(proposed.y,-limitY,limitY);
+    const float oldGround=groundHeight(oldPosition.x,oldPosition.y);
+    const auto blocked=[&](float x,float y){constexpr float epsilon=scaled(.001f);for(const auto& box:kBoxes){
+        const bool penetrates=x>box.minX-rx+epsilon&&x<box.maxX+rx-epsilon&&y>box.minY-ry+epsilon&&y<box.maxY+ry-epsilon;
+        if(penetrates&&proposed.z<box.height&&proposed.z+height>0&&box.height-oldGround>kStepHeight)return true;
+    }const float nextGround=groundHeight(x,y);return proposed.z<nextGround&&nextGround-oldGround>kStepHeight;};
+    if(blocked(proposed.x,oldPosition.y))proposed.x=oldPosition.x;
+    if(blocked(proposed.x,proposed.y))proposed.y=oldPosition.y;
+    return proposed;
+}
 inline Vec3 constrainMove(Vec3 oldPosition,Vec3 proposed){
     proposed.x=std::clamp(proposed.x,-kHalfExtent+kPlayerRadius,kHalfExtent-kPlayerRadius);
     proposed.y=std::clamp(proposed.y,-kHalfExtent+kPlayerRadius,kHalfExtent-kPlayerRadius);

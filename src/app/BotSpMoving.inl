@@ -59,8 +59,8 @@ void prepareSpMovingScenario(AppState& app,gameplay::bot::Actor& bot,float delta
                     const auto next=bot.position+scene::Vec3{c*d.x-s*d.y,s*d.x+c*d.y,0};
                     const float missing=-1e8f;
                     const float ground=app.loadedMap->groundHeight(next.x,next.y,bot.position.z+scene::course::kStepHeight,missing);
-                    const auto constrained=app.loadedMap->constrainMove(previous,next,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72),scene::course::kStepHeight);
-                    if(ground==missing||std::abs(ground-bot.position.z)>scene::course::kStepHeight||horizontalDistance(constrained,next)>1.f||!app.loadedMap->navigationSegmentClear(previous,next,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72),scene::course::kStepHeight)){clear=false;break;}
+                    const auto constrained=constrainCollisionMap(app,*app.loadedMap,previous,next,scene::course::kPlayerRadius,gameplay::bot::collisionHeight(bot),scene::course::kStepHeight);
+                    if(ground==missing||std::abs(ground-bot.position.z)>scene::course::kStepHeight||horizontalDistance(constrained,next)>1.f||!collisionNavigationClear(app,*app.loadedMap,previous,next,scene::course::kPlayerRadius,gameplay::bot::collisionHeight(bot),scene::course::kStepHeight)){clear=false;break;}
                     previous=next;
                 }
             }

@@ -17,7 +17,7 @@ if(iw4Yy){
     if(app.experimentalThirdWeapon&&swap&&!app.previousSwap&&app.weaponSwitchStage==1)target=app.activeClassSlot;
     if(target>=0)app.iw4PendingSlot=target;
     else target=app.iw4PendingSlot;
-    const bool allowed=admits(busy,busy==Busy::Fire&&(firing||(app.scene.dualWield&&app.gameplayClock<app.nextFireTime)));
+    const bool allowed=admitsCadence(busy,busy==Busy::Fire&&(firing||(app.scene.dualWield&&app.gameplayClock<app.nextFireTime)));
     if(target>=0&&target<3&&app.classSlotRigs[target]){
         const auto decision=request(app.activeClassSlot,target,app.weaponSwitchStage,allowed);
         if(decision==Action::None&&allowed&&target==app.activeClassSlot)app.iw4PendingSlot=-1;
@@ -27,7 +27,9 @@ if(iw4Yy){
             if(decision==Action::RetargetDrop)app.weaponSwitchTarget=target;
             else {
                 // The animation keeps advancing during the outgoing crossfade.
-                beginYyV4LiveBlend(app,std::max(.001f,app.actionBlendTime),false);
+                if(app.weaponTiming.iw4YySmoothingTime>0)
+                    beginYyV4LiveBlend(app,app.weaponTiming.iw4YySmoothingTime,false);
+                else {app.interruptPoseDuration=0;app.yyLiveAnimation=SIZE_MAX;app.yyLiveReference.clear();}
                 app.yyReturning=app.yyTowardPutaway=app.yyReverse=false;app.yyCancelDuration=0;
                 app.yyPutawayAnimation=SIZE_MAX;app.yyPutawayFrameLimit=0;
                 app.pendingWeaponRechamber=false;app.gameplayRechamber=false;app.burstShotsRemaining=0;

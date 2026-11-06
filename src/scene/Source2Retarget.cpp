@@ -35,7 +35,8 @@ Mat4 frame(Vec3 along,Vec3 across) {
     result.v[4]=y.x;result.v[5]=y.y;result.v[6]=y.z;
     result.v[8]=z.x;result.v[9]=z.y;result.v[10]=z.z;return result;
 }
-struct Mapping {std::size_t target,source;Mat4 correction;bool position{};bool fixedCamera{};};
+struct Mapping {std::size_t target,source;Mat4 correction;bool position{};bool fixedCamera{};
+    std::optional<std::size_t> sleeveElbow,sleeveWrist;Vec3 sleeveAxis{};float sleeveLength{};};
 }
 
 float source2RetargetScale(const Skeleton& target,const Skeleton& source) {
@@ -61,7 +62,9 @@ bool retargetSource2AnimationRange(CastScene& target,std::size_t firstAnimation,
     for(const auto side:{std::string{"le"},std::string{"ri"}}){
         const std::string suffix=side=="le"?"L":"R";
         const auto ts=targetBone(target.skeleton,"j_shoulder_"+side),te=targetBone(target.skeleton,"j_elbow_"+side),th=targetBone(target.skeleton,"j_wrist_"+side);
-        const auto ss=actualBone(source.skeleton,"armUpperShoulder_"+suffix),se=actualBone(source.skeleton,"arm_lower_"+suffix),sh=actualBone(source.skeleton,"hand_"+suffix);
+        auto ss=actualBone(source.skeleton,"armUpperShoulder_"+suffix);
+        if(!ss)ss=actualBone(source.skeleton,"arm_upper_"+suffix);
+        const auto se=actualBone(source.skeleton,"arm_lower_"+suffix),sh=actualBone(source.skeleton,"hand_"+suffix);
         if(!ts||!te||!th||!ss||!se||!sh)return false;
         const auto ti=targetBone(target.skeleton,"j_index_"+side+"_0"),tp=targetBone(target.skeleton,"j_pinky_"+side+"_0");
         const auto si=actualBone(source.skeleton,"finger_index_0_"+suffix),sp=actualBone(source.skeleton,"finger_pinky_0_"+suffix);
@@ -82,6 +85,12 @@ bool retargetSource2AnimationRange(CastScene& target,std::size_t firstAnimation,
                 position(source.skeleton.bones[*se].restGlobal)-position(source.skeleton.bones[*ss].restGlobal),true);
         add(ts,sourceUpper,position(target.skeleton.bones[*te].restGlobal)-position(target.skeleton.bones[*ts].restGlobal),
             position(source.skeleton.bones[*se].restGlobal)-position(source.skeleton.bones[*ss].restGlobal),true);
+        if(sourceUpper&&!mappings.empty()&&mappings.back().target==*ts){
+            auto& sleeve=mappings.back();sleeve.sleeveElbow=se;sleeve.sleeveWrist=sh;
+            const auto axis=position(target.skeleton.bones[*te].restGlobal)-position(target.skeleton.bones[*ts].restGlobal);
+            sleeve.sleeveLength=length(axis);
+            sleeve.sleeveAxis=transformPoint(inverseAffine(orientation(target.skeleton.bones[*ts].restGlobal)),axis);
+        }
         add(te,se,position(target.skeleton.bones[*th].restGlobal)-position(target.skeleton.bones[*te].restGlobal),
             position(source.skeleton.bones[*sh].restGlobal)-position(source.skeleton.bones[*se].restGlobal),true);
         add(th,sh,(position(target.skeleton.bones[*ti].restGlobal)+position(target.skeleton.bones[*tp].restGlobal))*.5f-position(target.skeleton.bones[*th].restGlobal),
@@ -151,7 +160,21 @@ bool retargetSource2AnimationRange(CastScene& target,std::size_t firstAnimation,
                 if(nextMapping>=mappings.size()||mappings[nextMapping].target!=b)continue;
                 const auto m=nextMapping++;const auto& map=mappings[m];
                 auto desired=map.fixedCamera?Mat4::identity():orientation(sourcePose[map.source])*map.correction;
-                const auto p=map.fixedCamera?targetOrigin:map.position?position(sourcePose[map.source])*unitScale+targetOrigin:position(globals[map.target]);
+                auto p=map.fixedCamera?targetOrigin:map.position?position(sourcePose[map.source])*unitScale+targetOrigin:position(globals[map.target]);
+                if(map.sleeveElbow&&map.sleeveWrist){
+                    // Source's proximal arm places a bulky COD sleeve beside
+                    // the camera. Continue the forearm behind the elbow using
+                    // the target's original upper-arm length; never scale its
+                    // mesh, bind, hand or grip. Distal mappings remain absolute.
+                    const auto direction=normalize(position(sourcePose[*map.sleeveWrist])-position(sourcePose[*map.sleeveElbow]));
+                    const auto previous=normalize(transformPoint(desired,map.sleeveAxis));
+                    if(length(direction)>.5f&&length(previous)>.5f){
+                        const auto axis=cross(previous,direction);const auto cosine=std::clamp(dot(previous,direction),-1.f,1.f);
+                        const auto swing=cosine<-.9999f?fromAxisAngle(normalize(cross(previous,std::abs(previous.z)<.9f?Vec3{0,0,1}:Vec3{0,1,0})),kPi):normalize(Quat{axis.x,axis.y,axis.z,1+cosine});
+                        desired=rotation(swing)*desired;
+                        p=position(sourcePose[*map.sleeveElbow])*unitScale+targetOrigin-direction*map.sleeveLength;
+                    }
+                }
                 desired.v[12]=p.x;desired.v[13]=p.y;desired.v[14]=p.z;
                 const auto local=bone.parent>=0?inverseAffine(globals[static_cast<std::size_t>(bone.parent)])*desired:desired;
                 Vec3 pos,scale;Quat rot;decomposeAffine(local,pos,rot,scale);

@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceApplicationMain
 #include "../src/app/main.cpp"
 #undef main
@@ -11,7 +10,7 @@ int main(int argc,char**argv){
  ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;ImGui_ImplGlfw_InitForOpenGL(w,true);ImGui_ImplOpenGL3_Init("#version 330");
  auto state=std::make_unique<AppState>();auto& app=*state;app.window=w;std::string error;
  if(!app.renderer.initialize(error))return 3;
- app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
+ app.defaultSalukiDirectory="exported_files";
  if(!assets::appendScan(app.defaultSalukiDirectory/"bo2","bo2",app.assetCatalog,error))return 4;
  for(size_t i=0;i<app.assetCatalog.entries.size();++i){const auto&a=app.assetCatalog.entries[i];
   if(a.name=="t6_wpn_sniper_dsr50_view_LOD0")app.classPrimaryAsset=i;

@@ -1,5 +1,6 @@
 #pragma once
 #include "AnimationSet.h"
+#include "UiHistory.h"
 #include <array>
 #include <string>
 #include <limits>
@@ -7,6 +8,7 @@
 namespace cadence {
 struct AnimationEditorState {
     AnimationSet draft, saved;
+    ui::History<AnimationSet> history;
     bool initialized{}, dirty{}, loop{}, matchSource{true}, pendingLoad{}, showContents{};
     bool useOnBots{}, pendingBots{}, confirmDiscard{}, confirmDelete{}, saveAs{}, confirmOverwrite{};
     bool rootMotion{};

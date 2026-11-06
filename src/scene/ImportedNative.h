@@ -1,8 +1,12 @@
 #pragma once
 #include "scene/CastScene.h"
+#include "scene/ImportedDirtyBomb.h"
+#include "scene/BlackSquadActions.h"
+#include "scene/ImportRevision.h"
 #include "assets/ImportedGamePolicy.h"
 #include "content/AssetPaths.h"
 #include <algorithm>
+#include <sstream>
 
 namespace scene::imported {
 inline bool explicitHandMesh(const std::string& name){const auto n=assets::imported::lower(name);return n.starts_with("hands/")||n.starts_with("rhand/")||n.starts_with("lhand/");}
@@ -57,10 +61,29 @@ inline void addViewCamera(const cast::Document& doc,CastScene& s){
     if(assets::imported::sourceFamily(game))retainExplicitHandMeshes(s);
     for(const char* name:{"tag_view","tag_camera"})if(!s.skeleton.boneByName.contains(name)){
         Bone b;b.name=name;
+        if(game=="gitsfa"){
+            if(const auto camera=s.skeleton.boneByName.find("Camera_dummy");camera!=s.skeleton.boneByName.end())b.restLocal.position=transformPoint(s.skeleton.bones[camera->second].restGlobal,{});
+            b.restLocal.rotation=fromEulerRadians({0,0,-kPi*.5f});
+        }
+        if(game=="dirtybomb")b.restLocal.rotation=fromEulerRadians({0,0,-kPi*.5f});
         // Exported first-person poses are normalized to +X forward, +Z up.
         // Using the game's pre-export basis here rotates the viewer twice.
         b.restGlobal=trs(b.restLocal.position,b.restLocal.rotation,b.restLocal.scale);b.inverseBind=inverseAffine(b.restGlobal);
         s.skeleton.boneByName[name]=s.skeleton.bones.size();s.skeleton.boneByCanonicalName[name]=s.skeleton.bones.size();s.skeleton.bones.push_back(b);
+    }
+}
+inline void parentSyntheticViewCamera(CastScene& s,const std::string& game){
+    // Some GITS first-person rigs omit Camera_dummy but retain animated
+    // character-space placement on their root. The generated camera must
+    // follow that placement too, otherwise reloads move the whole gun away.
+    if(game!="gitsfa"||s.skeleton.boneByName.contains("Camera_dummy"))return;
+    const auto root=s.skeleton.boneByName.find("CharacterWorldSpaceTM");
+    if(root==s.skeleton.boneByName.end())return;
+    for(const char* name:{"tag_camera","tag_view"})if(const auto it=s.skeleton.boneByName.find(name);it!=s.skeleton.boneByName.end()){
+        auto& b=s.skeleton.bones[it->second];
+        const auto local=inverseAffine(s.skeleton.bones[root->second].restGlobal)*b.restGlobal;
+        decomposeAffine(local,b.restLocal.position,b.restLocal.rotation,b.restLocal.scale);
+        b.parent=static_cast<int>(root->second);
     }
 }
 inline bool dewExport(const cast::Document& doc){
@@ -69,6 +92,70 @@ inline bool dewExport(const cast::Document& doc){
         if(cast::nodeTypeName(n.identifier)=="Metadata")if(const auto* p=n.findProperty("s");p&&p->stringValue&&*p->stringValue=="dew2cast")return true;
     }
     return false;
+}
+inline bool blackSquadMetres(const cast::Document& doc){
+    for(const auto& root:doc.roots())for(const auto& n:root.children)if(const auto* p=n.findProperty("bs.units");p&&p->stringValue&&*p->stringValue=="meters")return true;
+    return false;
+}
+inline void readDirtyBombMount(const cast::Document& doc,CastScene& s){
+    if(gameForPath(std::filesystem::path(doc.sourceName()))!="dirtybomb")return;
+    for(const auto& root:doc.roots())for(const auto& node:root.children){
+        const auto* origin=node.findProperty("db.mesh_origin.native_cm");const auto* rot=node.findProperty("db.rotation_origin.native_rotator");
+        if(!origin||!rot||!origin->stringValue||!rot->stringValue)continue;
+        const auto vec=[](std::string text,Vec3& v){std::replace(text.begin(),text.end(),',',' ');std::istringstream in(text);return bool(in>>v.x>>v.y>>v.z);};
+        Vec3 p,r;if(!vec(*origin->stringValue,p)||!vec(*rot->stringValue,r))continue;
+        p.y=-p.y;constexpr float toRadians=2*kPi/65536.f;
+        s.importedWeaponMount=rotation(fromEulerRadians({-r.z*toRadians,r.x*toRadians,-r.y*toRadians}))*translation(p);
+    }
+}
+inline void appendDirtyBombParts(CastScene& s,const cast::Document& doc){
+    const std::filesystem::path path(doc.sourceName());
+    if(gameForPath(path)!="dirtybomb")return;
+    if(dbProperty(doc,"db.attachment.part.0.child_source").empty()){
+        if(assets::imported::role("dirtybomb",path.stem().string())==assets::Role::WorldWeapon){
+            const auto key=assets::imported::additionalWeaponKey("dirtybomb",path.stem().string());std::error_code ec;
+            for(const auto& entry:std::filesystem::directory_iterator(path.parent_path(),ec))if(entry.path().extension()==".cast"&&entry.path().filename().string().starts_with("viewmodel_")&&assets::imported::additionalWeaponKey("dirtybomb",entry.path().stem().string())==key){appendDirtyBombParts(s,cast::Document::load(entry.path()));break;}
+        }return;
+    }
+    std::map<std::string,std::vector<unsigned>> slots;
+    for(unsigned i=0;i<128;++i){const auto p="db.attachment.part."+std::to_string(i)+".";if(dbProperty(doc,p+"child_source").empty())break;slots[dbProperty(doc,p+"bone")].push_back(i);}
+    std::map<std::string,std::filesystem::path> sources;std::error_code ec;
+    for(const auto& entry:std::filesystem::directory_iterator(path.parent_path(),ec))if(entry.path().extension()==".cast"&&entry.path().filename().string().starts_with("part_")){
+        const auto part=cast::Document::load(entry.path());const auto source=dbProperty(part,"db.source");if(!source.empty())sources.emplace(source,entry.path());
+    }
+    const auto vector=[](std::string text,Vec3 fallback){std::replace(text.begin(),text.end(),',',' ');std::istringstream in(text);Vec3 result;if(in>>result.x>>result.y>>result.z)return result;return fallback;};
+    for(const auto& [bone,indices]:slots){
+        if(indices.size()!=1){s.warnings.push_back("Dirty Bomb attachment needs selection: "+bone);continue;}
+        const auto socket=s.skeleton.boneByName.find(bone);if(socket==s.skeleton.boneByName.end())continue;
+        const auto p="db.attachment.part."+std::to_string(indices.front())+".";
+        const auto found=sources.find(dbProperty(doc,p+"child_source"));if(found==sources.end())continue;
+        const auto childDoc=cast::Document::load(found->second);auto part=buildScene(childDoc,false);
+        auto location=vector(dbProperty(doc,p+"relative_location_cm"),{})*s.importedTranslationScale;location.y=-location.y;
+        const auto r=vector(dbProperty(doc,p+"relative_rotator_ue3"),{});constexpr float rad=2*kPi/65536.f;
+        auto correction=Mat4::identity();if(dbProperty(doc,p+"correction_baked")!="1"){auto text=dbProperty(doc,p+"child_mount_correction_4x4");std::replace(text.begin(),text.end(),',',' ');std::istringstream in(text);for(auto& v:correction.v)if(!(in>>v)){correction=Mat4::identity();break;}}
+        for(int k:{12,13,14})correction.v[k]*=s.importedTranslationScale;
+        const auto origin=dbProperty(doc,p+"child_origin_baked")=="1"?Mat4::identity():part.importedWeaponMount.value_or(Mat4::identity());
+        const auto mount=s.skeleton.bones[socket->second].restGlobal*trs(location,fromEulerRadians({-r.z*rad,r.x*rad,-r.y*rad}),vector(dbProperty(doc,p+"relative_scale"),{1,1,1}))*correction*origin;
+        for(auto& mesh:part.meshes){const auto basis=mount*mesh.modelTransform;for(auto& v:mesh.vertices){v.position=transformPoint(basis,v.position);v.normal=normalize(transformPoint(basis,v.normal)-transformPoint(basis,{}));v.bones={static_cast<uint32_t>(socket->second),0,0,0};v.weights={1,0,0,0};}mesh.modelTransform=Mat4::identity();mesh.skinned=true;mesh.viewmodelWeapon=true;s.meshes.push_back(std::move(mesh));}
+    }
+}
+inline void normalizeBlackSquad(CastScene& s){
+    if(s.importedTranslationScale!=1.f)return;
+    // bs.basis=UE_X_Z_Y: native forward Z, left X, up Y -> Cadence X,Y,Z.
+    // Export metre conversion retains the legacy half-height character scale:
+    // PM02 body joints are exactly 0.5 of their matching CoD reference joints.
+    const Quat q{.5f,.5f,.5f,.5f};const auto basis=rotation(q),inv=inverseAffine(basis);const float scale=activeImportRevision?200.f:100.f;
+    for(auto& mesh:s.meshes){for(auto& v:mesh.vertices){v.position=transformPoint(basis,v.position*scale);v.normal=transformPoint(basis,v.normal);}for(int k=12;k<=14;++k)mesh.modelTransform.v[k]*=scale;mesh.modelTransform=basis*mesh.modelTransform*inv;}
+    for(auto& b:s.skeleton.bones){b.restLocal.position=b.restLocal.position*scale;b.absoluteTranslationOffset=b.absoluteTranslationOffset*scale;for(int k=12;k<=14;++k)b.restGlobal.v[k]*=scale;b.restGlobal=basis*b.restGlobal;b.inverseBind=inverseAffine(b.restGlobal);if(b.parent<0){b.restLocal.position=transformPoint(basis,b.restLocal.position);b.restLocal.rotation=multiply(q,b.restLocal.rotation);b.absoluteTranslationOffset=transformPoint(basis,b.absoluteTranslationOffset);}}
+    s.importedTranslationScale=scale;
+}
+inline void normalizeDirtyBomb(CastScene& s){
+    if(s.importedTranslationScale!=1.f||!activeImportRevision)return;
+    constexpr float factor=2.f; // Exported UE3 human body head is approximately 80 source units.
+    for(auto& mesh:s.meshes){for(auto& v:mesh.vertices)v.position=v.position*factor;for(int k:{12,13,14})mesh.modelTransform.v[k]*=factor;}
+    for(auto& b:s.skeleton.bones){b.restLocal.position=b.restLocal.position*factor;b.absoluteTranslationOffset=b.absoluteTranslationOffset*factor;for(int k:{12,13,14})b.restGlobal.v[k]*=factor;b.inverseBind=inverseAffine(b.restGlobal);}
+    if(s.importedWeaponMount)for(int k:{12,13,14})s.importedWeaponMount->v[k]*=factor;
+    s.importedTranslationScale=factor;
 }
 // Blam source world units: 10 feet = 304.8 cm. Keep models, inverse binds
 // and all native translation curves in one coordinate system, including sockets.
@@ -121,6 +208,49 @@ inline std::vector<int> goldSrcHandCorrespondence(const CastScene& skin,const Ca
 }
 inline bool assemblePrepared(CastScene gun,CastScene skin,CastScene& out,std::string& error){
     if(gun.meshes.empty()||skin.meshes.empty()){error="Missing native weapon or hand geometry";return false;}
+    if(skin.codmRigAdapter&&!skin.codmRigAdapter->positionLinks.empty()){
+        // Replacement hands already retain this weapon's native driver plus
+        // a separate donor palette. Mount its geometry without rebuilding or
+        // remapping that palette through native hand correspondence again.
+        std::vector<std::size_t> map(gun.skeleton.bones.size());
+        for(std::size_t i=0;i<map.size();++i){
+            const auto found=skin.skeleton.boneByName.find(gun.skeleton.bones[i].name);
+            if(found==skin.skeleton.boneByName.end()||found->second>=skin.codmRigAdapter->firstBone){error="Prepared weapon driver missing joint: "+gun.skeleton.bones[i].name;return false;}
+            map[i]=found->second;
+        }
+        for(auto& mesh:gun.meshes){mesh.viewmodelWeapon=true;
+            for(auto& v:mesh.vertices){Vec3 p{},n{};float total{};
+                for(int k=0;k<4;++k)if(v.weights[k]>0){const auto old=v.bones[k];if(old>=map.size()){error="Invalid prepared weapon skin index";return false;}
+                    const auto correction=skin.skeleton.bones[map[old]].restGlobal*gun.skeleton.bones[old].inverseBind;
+                    p+=transformPoint(correction,v.position)*v.weights[k];n+=(transformPoint(correction,v.normal)-transformPoint(correction,{}))*v.weights[k];total+=v.weights[k];v.bones[k]=static_cast<uint32_t>(map[old]);}
+                if(total>0){v.position=p/total;v.normal=normalize(n);}
+            }
+        }
+        skin.meshes.insert(skin.meshes.begin(),std::make_move_iterator(gun.meshes.begin()),std::make_move_iterator(gun.meshes.end()));
+        out=std::move(skin);error.clear();return true;
+    }
+    if(skin.importedViewGame=="dirtybomb"){
+        const auto socket=skin.skeleton.boneByName.find("Socket_RightHand");
+        if(socket==skin.skeleton.boneByName.end()){error="Dirty Bomb reference lacks RightHand mount";return false;}
+        // Weapon actions are exported in weapon-local space, separately from
+        // hand actions. Preserve that hierarchy; never bind a gun at origin.
+        constexpr const char* mountName="cadence_db_weapon_mount";
+        if(!skin.skeleton.boneByName.contains(mountName)){
+            Bone mount;mount.name=mountName;mount.parent=static_cast<int>(socket->second);
+            if(!gun.importedWeaponMount){error="Dirty Bomb weapon lacks exported mount transform";return false;}
+            decomposeAffine(*gun.importedWeaponMount,mount.restLocal.position,mount.restLocal.rotation,mount.restLocal.scale);
+            mount.restGlobal=skin.skeleton.bones[socket->second].restGlobal**gun.importedWeaponMount;mount.inverseBind=inverseAffine(mount.restGlobal);
+            skin.skeleton.boneByName[mountName]=skin.skeleton.bones.size();skin.skeleton.boneByCanonicalName[mountName]=skin.skeleton.bones.size();skin.skeleton.bones.push_back(mount);
+        }
+        const auto mount=skin.skeleton.boneByName.at(mountName);std::vector<std::size_t> indices(gun.skeleton.bones.size());
+        for(std::size_t i=0;i<gun.skeleton.bones.size();++i){const auto& b=gun.skeleton.bones[i];if(const auto existing=skin.skeleton.boneByName.find(b.name);existing!=skin.skeleton.boneByName.end()){indices[i]=existing->second;continue;}
+            auto copy=b;copy.parent=b.parent<0?static_cast<int>(mount):static_cast<int>(indices[b.parent]);copy.restGlobal=skin.skeleton.bones[copy.parent].restGlobal*trs(copy.restLocal.position,copy.restLocal.rotation,copy.restLocal.scale);copy.inverseBind=inverseAffine(copy.restGlobal);
+            indices[i]=skin.skeleton.bones.size();skin.skeleton.boneByName[b.name]=indices[i];skin.skeleton.boneByCanonicalName[canonicalName(b.name)]=indices[i];skin.skeleton.bones.push_back(copy);
+        }
+        for(auto& mesh:gun.meshes){mesh.viewmodelWeapon=true;for(auto& v:mesh.vertices){Vec3 position{},normal{};float total{};for(int k=0;k<4;++k)if(v.weights[k]>0&&v.bones[k]<indices.size()){const auto old=v.bones[k];const auto transform=skin.skeleton.bones[indices[old]].restGlobal*gun.skeleton.bones[old].inverseBind;position=position+transformPoint(transform,v.position)*v.weights[k];normal=normal+(transformPoint(transform,v.normal)-transformPoint(transform,{}))*v.weights[k];total+=v.weights[k];v.bones[k]=static_cast<uint32_t>(indices[old]);}if(total>0){v.position=position/total;v.normal=normalize(normal);}}}
+        for(auto anchor:gun.muzzleAnchors){if(anchor.bone<indices.size()){anchor.bone=indices[anchor.bone];skin.muzzleAnchors.push_back(anchor);}}
+        skin.meshes.insert(skin.meshes.begin(),std::make_move_iterator(gun.meshes.begin()),std::make_move_iterator(gun.meshes.end()));out=std::move(skin);return true;
+    }
     // Split exports may put rigid gun furniture in the companion hand file.
     // Recover only the selected gun's explicitly identical mesh family, never
     // furniture belonging to alternate native or foreign hand donors.
@@ -177,4 +307,36 @@ inline bool assemblePrepared(CastScene gun,CastScene skin,CastScene& out,std::st
     out=std::move(gun);return true;
 }
 inline bool assemble(const cast::Document& weapon,const cast::Document& hands,CastScene& out,std::string& error){return assemblePrepared(buildScene(weapon,false),buildScene(hands,false),out,error);}
+inline void recoverCollapsedViewBind(CastScene& s,const std::filesystem::path& path){
+    const auto game=gameForPath(path);
+    if(game!="blacksquad"||assets::imported::role(game,path.stem().string())!=assets::Role::ViewWeapon)return;
+    std::array<std::size_t,6> joints{};int n{};
+    for(const auto* name:{"J_Shoulder_RI","J_Elbow_RI","J_Wrist_RI","J_Shoulder_LE","J_Elbow_LE","J_Wrist_LE"}){const auto found=s.skeleton.boneByName.find(name);if(found==s.skeleton.boneByName.end())return;joints[n++]=found->second;}
+    const auto valid=[&](const auto& pose){for(int side:{0,3})for(int k:{0,1})if(length(transformPoint(pose[joints[side+k]],{})-transformPoint(pose[joints[side+k+1]],{}))<.01f)return false;return true;};
+    std::vector<Mat4> bind;for(const auto& b:s.skeleton.bones)bind.push_back(b.restGlobal);if(valid(bind))return;
+    std::vector<std::filesystem::path> candidates;std::error_code ec;
+    for(const auto& entry:std::filesystem::directory_iterator(path.parent_path().parent_path()/"animations",ec))if(entry.path().extension()==".cast"&&assets::imported::matchesAnimation(game,path.stem().string(),entry.path().filename().string())&&assets::imported::additionalAction(game,entry.path().filename().string())=="idle"&&assets::imported::lower(entry.path().filename().string()).find("add_")==std::string::npos)candidates.push_back(entry.path());
+    std::sort(candidates.begin(),candidates.end());
+    for(const auto& clip:candidates){const auto before=s.animations.size();appendAnimations(cast::Document::load(clip),s);if(s.animations.size()==before)continue;auto pose=s.samplePose(before,0);s.animations.resize(before);
+        if(!valid(pose)||std::any_of(pose.begin(),pose.end(),[](const auto& m){return std::any_of(m.v.begin(),m.v.end(),[](float v){return !std::isfinite(v);});}))continue;
+        // Some exports store zero-length arm bind segments but a complete
+        // absolute idle. Rebase all geometry and inverse binds together, once;
+        // never inject guessed lengths or weapon-specific offsets.
+        for(auto& mesh:s.meshes)if(mesh.skinned)for(auto& v:mesh.vertices){Vec3 p{},normal{};float total{};for(int k=0;k<4;++k)if(v.weights[k]>0&&v.bones[k]<pose.size()){const auto m=pose[v.bones[k]]*s.skeleton.bones[v.bones[k]].inverseBind;p=p+transformPoint(m,v.position)*v.weights[k];normal=normal+(transformPoint(m,v.normal)-transformPoint(m,{}))*v.weights[k];total+=v.weights[k];}if(total>0){v.position=p/total;v.normal=normalize(normal);}}
+        for(std::size_t i=0;i<pose.size();++i){auto& b=s.skeleton.bones[i];const auto local=b.parent>=0?inverseAffine(pose[b.parent])*pose[i]:pose[i];decomposeAffine(local,b.restLocal.position,b.restLocal.rotation,b.restLocal.scale);b.restGlobal=pose[i];b.inverseBind=inverseAffine(pose[i]);}
+        s.warnings.push_back("Recovered collapsed view bind from authored idle: "+clip.filename().string());return;
+    }
+}
+inline void appendGitsParts(CastScene& s,const std::filesystem::path& path){
+    const auto n=assets::imported::lower(path.stem().string());const auto role=assets::imported::role("gitsfa",n);
+    if(gameForPath(path)!="gitsfa"||(role!=assets::Role::ViewWeapon&&role!=assets::Role::WorldWeapon))return;
+    const auto hash=n.find("__");if(hash==std::string::npos||hash+10>n.size())return;
+    const auto prefix="gitsfa__"+assets::imported::additionalWeaponKey("gitsfa",n)+(role==assets::Role::ViewWeapon?"__1p__":"__3p__")+n.substr(hash+2,8)+"__att__";
+    std::map<std::string,std::vector<std::filesystem::path>> slots;std::error_code ec;
+    for(std::filesystem::directory_iterator it(path.parent_path(),ec),end;!ec&&it!=end;it.increment(ec)){const auto file=assets::imported::lower(it->path().filename().string());if(it->path().extension()!=".cast"||!file.starts_with(prefix))continue;const auto endSlot=file.find("__",prefix.size());if(endSlot!=std::string::npos)slots[file.substr(prefix.size(),endSlot-prefix.size())].push_back(it->path());}
+    for(const auto& [slot,files]:slots){if(files.size()!=1){s.warnings.push_back("Ambiguous GITS attachment slot: "+slot);continue;}const auto socketPrefix="gitsfa_socket__"+slot+"__";std::size_t socket=s.skeleton.bones.size();for(std::size_t b=0;b<s.skeleton.bones.size();++b)if(s.skeleton.bones[b].name.starts_with(socketPrefix)){socket=b;break;}if(socket==s.skeleton.bones.size())continue;
+        const auto doc=cast::Document::load(files.front());if(!doc.valid())continue;auto part=buildScene(doc,false);
+        for(auto& mesh:part.meshes){const auto basis=s.skeleton.bones[socket].restGlobal*mesh.modelTransform;for(auto& v:mesh.vertices){v.position=transformPoint(basis,v.position);v.normal=normalize(transformPoint(basis,v.normal)-transformPoint(basis,{}));v.bones={static_cast<uint32_t>(socket),0,0,0};v.weights={1,0,0,0};}mesh.modelTransform=Mat4::identity();mesh.skinned=true;mesh.viewmodelWeapon=true;s.meshes.push_back(std::move(mesh));}
+    }
+}
 }

@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceApplicationMain
 #include "../src/app/main.cpp"
 #undef main
@@ -13,7 +12,7 @@ int main(int argc,char** argv){
     ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;ImGui::GetIO().LogFilename=nullptr;ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(window,false);ImGui_ImplOpenGL3_Init("#version 330");
     auto state=std::make_unique<AppState>();auto& app=*state;app.window=window;gAppState=&app;app.workspaceMode=3;
-    app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
+    app.defaultSalukiDirectory="exported_files";
     std::string error;int failed{};std::ofstream report(output/"audit.txt");
     const auto check=[&](bool value,const char* label){report<<label<<"="<<value<<'\n';if(!value)++failed;};
     for(const auto* game:{"bo2","cso2"})check(assets::appendScan(app.defaultSalukiDirectory/game,game,app.assetCatalog,error),game);
@@ -54,7 +53,7 @@ int main(int argc,char** argv){
                 const auto pose=animationui::previewPose(app);report<<source<<"_on_"<<target<<" fraction="<<fraction;
                 for(const auto bone:{layout.pelvis,layout.head,layout.foot[0],layout.foot[1]})if(bone>=0&&std::size_t(bone)<pose.size())report<<" bone"<<bone<<"="<<pose[bone].v[12]<<","<<pose[bone].v[13]<<","<<pose[bone].v[14];report<<'\n';
             }
-            for(std::size_t i=0;i<app.actionPreviewScene.animations.size();++i){const auto& clip=app.actionPreviewScene.animations[i];if(clip.action==scene::ActionRole::None&&clip.motion==scene::MotionRole::Idle&&clip.domain==scene::AnimationDomain::PlayerBody&&!clip.tracks.empty()){editor.action=static_cast<int>(clip.action);app.actionPreviewClip=i;app.actionPreviewFrame=0;animationui::framePose(app);screenshot(source+"_on_"+target+"_idle",1280,800);break;}}
+            for(std::size_t i=0;i<app.actionPreviewScene.animations.size();++i){const auto& clip=app.actionPreviewScene.animations[i];if(clip.action==scene::ActionRole::None&&clip.motion==scene::MotionRole::Idle&&clip.domain==scene::AnimationDomain::PlayerBody&&!clip.tracks.empty()){editor.action=static_cast<int>(clip.action);animationui::select(app,i);animationui::framePose(app);screenshot(source+"_on_"+target+"_idle",1280,800);screenshot(source+"_on_"+target+"_idle_narrow",960,640);break;}}
             editor.action=static_cast<int>(scene::ActionRole::Death);app.actionPreviewClip=deathClip;app.actionPreviewFrame=0;editor.pan={};editor.zoom=1;
         }
         for(std::size_t i=0;i<app.actionPreviewScene.animations.size();++i){const auto& clip=app.actionPreviewScene.animations[i];if(clip.action!=scene::ActionRole::Death||animationui::available(clip))continue;
@@ -106,11 +105,11 @@ int main(int argc,char** argv){
         applyBotAnimationSet(*isolated,actor,"bo2");
         check(isolated->animationSetMissing.empty(),"bot_application_no_missing_clips");
         std::set<std::pair<std::string,std::string>> enabled;
-        for(std::size_t i=0;i<actor.animations.size();++i){const auto& clip=actor.animations[i];if(clip.action!=scene::ActionRole::Death||clip.tracks.empty())continue;enabled.insert({clip.sourceGame,cadence::AnimationSet::file(clip.sourceName)});for(const auto& m:actor.samplePose(i,clip.durationFrames*.5f))for(float f:m.v)if(!std::isfinite(f))++failed;}
+        for(const auto& choice:isolated->botSetRuntime.deaths(actor,isolated->animationSet,true)){const auto i=choice.animation;const auto& clip=actor.animations[i];enabled.insert({clip.sourceGame,cadence::AnimationSet::file(clip.sourceName)});for(const auto& m:actor.samplePose(i,clip.durationFrames*.5f))for(float f:m.v)if(!std::isfinite(f))++failed;}
         const std::set<std::pair<std::string,std::string>> expected={{"bo2",cadence::AnimationSet::file(selectedBo2Death)},{"cso2",cadence::AnimationSet::file(selectedCso2Death)}};
         check(!selectedBo2Death.empty()&&!selectedCso2Death.empty()&&enabled==expected,"bot_application_exact_mixed_game_deaths");
         bool indices=actor.animations.size()>=oldNames.size();for(std::size_t i=0;i<oldNames.size();++i)indices=indices&&actor.animations[i].sourceName==oldNames[i];check(indices,"bot_application_preserves_clip_indices");
-        const auto choices=cadence::prepareBotDeaths(actor);bool eligible=true;for(const auto& choice:choices){const auto& clip=actor.animations[choice.animation];eligible=eligible&&!clip.tracks.empty()&&expected.contains({clip.sourceGame,cadence::AnimationSet::file(clip.sourceName)});}check(eligible&&choices.size()==2,"bot_application_disabled_clips_ineligible");
+        const auto choices=isolated->botSetRuntime.deaths(actor,isolated->animationSet,true);bool eligible=true;for(const auto& choice:choices){const auto& clip=actor.animations[choice.animation];eligible=eligible&&!clip.tracks.empty()&&expected.contains({clip.sourceGame,cadence::AnimationSet::file(clip.sourceName)});}check(eligible&&choices.size()==2,"bot_application_disabled_clips_ineligible");
         bool adapters=true;for(const auto& [index,adapter]:actor.runtimePoseAdapters)adapters=adapters&&index<actor.animations.size()&&!actor.animations[index].tracks.empty();
         std::size_t appliedIndex=SIZE_MAX,previewIndex=SIZE_MAX;
         for(std::size_t i=0;i<actor.animations.size();++i)if(actor.animations[i].sourceGame=="cso2"&&cadence::AnimationSet::file(actor.animations[i].sourceName)==cadence::AnimationSet::file(selectedCso2Death))appliedIndex=i;
@@ -126,6 +125,28 @@ int main(int argc,char** argv){
             for(std::size_t b=0;b<std::min(actual.size(),reference.size());++b)for(int k=0;k<16;++k){maximumDifference=std::max(maximumDifference,std::abs(actual[b].v[k]-reference[b].v[k]));if(b<initialPose.size())motion=std::max(motion,std::abs(actual[b].v[k]-initialPose[b].v[k]));}
         }
         check(equivalent&&maximumDifference<=1e-4f&&motion>.01f,"bot_application_matches_prepared_cross_pose");report<<"bot_application_max_pose_difference="<<maximumDifference<<" motion="<<motion<<'\n';
+        isolated->botActorScene=std::move(actor);isolated->botSetRuntime.owner=&*isolated->botActorScene;isolated->botModelAsset=bo2Reference;
+        auto& live=*isolated->botActorScene;isolated->bots.resize(4);for(std::size_t i=0;i<4;++i)isolated->bots[i].position={float(i*10),22,33};
+        const auto* meshes=live.meshes.data();const auto* bones=live.skeleton.bones.data();const auto count=live.animations.size();
+        const auto corpse=live.samplePose(appliedIndex,live.animations[appliedIndex].durationFrames*.5f);
+        applyAnimationSetToLiveBots(*isolated);check(live.animations.size()==count,"hot_reapply_reuses_bound_clips");
+        bool foundMovement=false;
+        for(const auto& clip:app.actionPreviewScene.animations)if(clip.action==scene::ActionRole::None&&clip.motion==scene::MotionRole::Run&&animationui::available(clip)&&!clip.contextual){
+            const cadence::AnimationSet::Slot slot{0,int(scene::MotionRole::Run),int(scene::Stance::Stand),int(scene::Direction::Forward),0,-1};
+            isolated->animationSet.overrides[slot]={"cso2",0,cadence::AnimationSet::file(clip.sourceName)};
+            applyAnimationSetToLiveBots(*isolated);scene::AnimationQuery q;q.motion=scene::MotionRole::Run;q.direction=scene::Direction::Forward;
+            const auto assigned=isolated->botSetRuntime.find(q);check(assigned&&live.animations[*assigned].sourceGame=="cso2","partial_foreign_run_binds");
+            q.direction=scene::Direction::Backward;check(!isolated->botSetRuntime.find(q),"partial_run_does_not_replace_backward");
+            const auto original=scene::findBestAnimation(isolated->botSetRuntime.selection,q);isolated->animationSet.overrides.clear();applyAnimationSetToLiveBots(*isolated);
+            check(!isolated->botSetRuntime.find(q)&&scene::findBestAnimation(isolated->botSetRuntime.selection,q)==original,"clearing_assignment_preserves_base_fallback");foundMovement=true;break;
+        }
+        check(foundMovement,"partial_movement_fixture_available");
+        isolated->animationSetForBots=false;applyAnimationSetToLiveBots(*isolated);
+        check(isolated->botDeathChoices.size()>2,"disabling_set_restores_base_deaths");
+        bool sameCorpse=true;const auto after=live.samplePose(appliedIndex,live.animations[appliedIndex].durationFrames*.5f);for(std::size_t i=0;i<corpse.size();++i)for(int k=0;k<16;++k)sameCorpse=sameCorpse&&std::abs(corpse[i].v[k]-after[i].v[k])<1e-5f;
+        check(sameCorpse,"hot_apply_preserves_active_corpse_pose");
+        bool positions=isolated->bots.size()==4;for(std::size_t i=0;i<4&&positions;++i)positions=isolated->bots[i].position.x==float(i*10)&&isolated->bots[i].position.y==22&&isolated->bots[i].position.z==33;
+        check(positions&&live.meshes.data()==meshes&&live.skeleton.bones.data()==bones,"hot_apply_preserves_all_bots_and_rig_storage");
         }
     }
     check(app.animationSet==liveSet&&cadence::content::constructionDocuments()==dependencies,"isolated_bot_application_preserves_live_state");

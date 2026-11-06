@@ -1,9 +1,19 @@
 #pragma once
 #include "take/Take.h"
+#include "scene/CastScene.h"
 #include "weapon/WeaponProfile.h"
 #include <cmath>
 
 namespace cadence::replay {
+// Some native view rigs have a camera-space root but no dedicated camera
+// joint. Their recorded root already contains the gameplay camera transform.
+// Undo its authored bind basis; do not fall back to the unrelated orbit camera.
+inline std::optional<scene::Mat4> poseCamera(const scene::Skeleton& skeleton,const std::vector<scene::Mat4>& pose){
+    if(const auto it=skeleton.boneByCanonicalName.find("tag_camera");it!=skeleton.boneByCanonicalName.end()&&it->second<pose.size())return pose[it->second];
+    if(const auto it=skeleton.boneByName.find("root_motion");it!=skeleton.boneByName.end()&&it->second<pose.size()&&it->second<skeleton.bones.size()&&skeleton.bones[it->second].parent<0)
+        return pose[it->second]*scene::inverseAffine(skeleton.bones[it->second].restGlobal);
+    return std::nullopt;
+}
 // Session-only reference: takes already contain the original mount in their
 // poses. A loaded take starts unchanged even if its historical profile is gone.
 struct MountReference {

@@ -102,7 +102,9 @@ struct Map {
     }
     [[nodiscard]] bool lineOfSight(Vec3 from,Vec3 to) const;
     [[nodiscard]] bool navigationSegmentClear(Vec3 from,Vec3 to,float radius,float height,float stepHeight) const;
+    [[nodiscard]] bool navigationSegmentClear(Vec3 from,Vec3 to,Vec2 halfExtents,float height,float stepHeight) const;
     [[nodiscard]] Vec3 constrainMove(Vec3 oldPosition,Vec3 proposed,float radius,float height,float stepHeight,Vec3* outContactNormal=nullptr) const;
+    [[nodiscard]] Vec3 constrainMove(Vec3 oldPosition,Vec3 proposed,Vec2 halfExtents,float height,float stepHeight,Vec3* outContactNormal=nullptr) const;
     struct SurfContact {
         Vec3 normal{0.0f, 0.0f, 1.0f};
         float distance{0.0f};

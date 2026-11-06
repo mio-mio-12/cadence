@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceApplicationMain
 #include "../src/app/main.cpp"
 #undef main
@@ -16,7 +15,7 @@ int main(int argc,char** argv){
     auto state=std::make_unique<AppState>();auto& app=*state;app.window=window;std::string error;
     if(!app.viewportAspectLocked||std::abs(app.viewportAspect-1.77f)>.0001f)return 57;
     if(!app.renderer.initialize(error))return 3;
-    app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
+    app.defaultSalukiDirectory="exported_files";
     if(!assets::appendScan(app.defaultSalukiDirectory/"bo2","bo2",app.assetCatalog,error))return 4;
     for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto& a=app.assetCatalog.entries[i];
         if(a.name=="t6_wpn_ar_an94_view_LOD0")app.classPrimaryAsset=i;
@@ -61,6 +60,7 @@ int main(int argc,char** argv){
     if(app.recordedTake.samples.size()!=61||app.takePreview)return 6;
     if(!app.hiddenWorldActor||app.recordedTake.samples[0].worldActor.pose.empty())return 18;
     if(!take::save(app.recordedTake,output/"fresh.c_dm",error))return 7;
+    app.takeFilePath=output/"fresh.c_dm";app.takeDirty=false;
     app.actorPosition=app.actorRenderPosition={10000,-5000,2000};
     app.actorViewCamera=scene::translation(app.actorPosition);app.actorViewCameraValid=true;
     const auto draw=[&](bool f2=false,bool fullUi=false){
@@ -84,12 +84,15 @@ int main(int argc,char** argv){
         const auto liveClipCount=app.scene.animations.size();
         const auto liveWeapon=app.selectedWeaponAsset;
         if(saved){
+            std::cerr<<"REPLAY_CHECK saved open begins\n";
             // Exercise the same restore/prewarm path as the actual Load button.
             app.actorCaptureRequested=true;app.freeCameraActive=true;
             app.pendingModelKind=1;
             if(openRecordedTake(app,output/"fresh.c_dm")||app.scene.animations.size()!=liveClipCount)return 61;
             app.pendingModelKind=0;
+            std::cerr<<"REPLAY_CHECK busy guard passed; opening saved take\n";
             if(!openRecordedTake(app,output/"fresh.c_dm"))return 8;
+            std::cerr<<"REPLAY_CHECK saved take opened\n";
             draw();if(!app.takePreview||!app.takeFirstPersonView||!checkCamera()||app.actorCaptureRequested)return 52;
             draw(true);draw(false);draw(true);draw(false);
             if(!app.takeFirstPersonView||!checkCamera())return 53;
@@ -328,5 +331,8 @@ int main(int argc,char** argv){
             if(!app.renderer.savePixelsPng(output/"class-controls.png",960,720,image,error))return 59;}
     }
     report<<"PASS Class control hover without ID conflicts; default aspect lock 1.77; reload/empty/rechamber timings separated\n";report.flush();
+    returnToLiveGameplay(app);app.actorMode=true;app.actorThirdPerson=false;
+    draw(false,true);if(app.actorThirdPerson)return 70;
+    report<<"PASS normal first-person perspective preserved after replay exit\n";report.flush();
     app.renderer.shutdown();ImGui_ImplOpenGL3_Shutdown();ImGui_ImplGlfw_Shutdown();ImGui::DestroyContext();glfwDestroyWindow(window);glfwTerminate();return 0;
 }

@@ -7,6 +7,37 @@
 #include <numeric>
 
 namespace scene {
+// Legacy arm clips have no independent IW torso deformation. Preserve sleeve
+// support using the calibrated clavicles, without changing body/weapon meshes,
+// vertex positions, triangles, or the source files. Repeated calls are inert.
+inline void supportIwLegacySleeves(CastScene& target){
+    const auto& names=target.skeleton.boneByName;
+    if(!names.contains("j_spineupper")||!names.contains("j_clavicle_le")||!names.contains("j_clavicle_ri"))return;
+    const auto spine=names.at("j_spineupper"),left=names.at("j_clavicle_le"),right=names.at("j_clavicle_ri");
+    const auto lp=transformPoint(target.skeleton.bones[left].restGlobal,{}),rp=transformPoint(target.skeleton.bones[right].restGlobal,{});
+    for(auto& mesh:target.meshes){
+        if(mesh.viewmodelWeapon)continue;
+        bool shoulder=false,body=false,hasSpine=false;
+        for(const auto& v:mesh.vertices)for(int k=0;k<4;++k)if(v.weights[k]>0&&v.bones[k]<target.skeleton.bones.size()){
+            const auto& name=target.skeleton.bones[v.bones[k]].name;
+            shoulder=shoulder||name.starts_with("j_shouldertwist");
+            body=body||name.starts_with("j_hip")||name.starts_with("j_knee")||name.starts_with("j_neck")||name.starts_with("j_head");
+            hasSpine=hasSpine||v.bones[k]==spine;
+        }
+        if(!shoulder||body||!hasSpine)continue;
+        for(auto& v:mesh.vertices){
+            const auto side=length(v.position-lp)<length(v.position-rp)?left:right;
+            for(int k=0;k<4;++k)if(v.weights[k]>0&&v.bones[k]==spine)v.bones[k]=side;
+        }
+    }
+}
+inline bool coldWarLegacyTarget(const Skeleton& skeleton){
+    for(const char* name:{"tag_view","j_shoulder_le","j_shoulder_ri","j_wrist_le","j_wrist_ri","j_index_le_0","j_index_ri_0"}){
+        const auto it=skeleton.boneByCanonicalName.find(name);
+        if(it==skeleton.boneByCanonicalName.end()||it->second>=skeleton.bones.size())return false;
+    }
+    return true;
+}
 inline std::optional<std::size_t> t9SourceBone(const Skeleton& s,std::string_view name){
     if(auto it=s.boneByName.find(std::string(name));it!=s.boneByName.end())return it->second;
     if(auto it=s.boneByCanonicalName.find(std::string(name));it!=s.boneByCanonicalName.end())return it->second;
@@ -22,6 +53,7 @@ inline bool retargetColdWarLegacyRange(CastScene& target,std::size_t firstTarget
     if(!tv||!sv||firstTarget>=target.animations.size()||firstSource>=source.animations.size())return false;
     struct Binding { std::optional<std::size_t> source; Mat4 offset=Mat4::identity(); };
     std::vector<Binding> bindings(target.skeleton.bones.size());
+    const bool iwTarget=target.skeleton.boneByName.contains("j_clavicle_le")&&target.skeleton.boneByName.contains("j_wristfronttwist1_le");
     for(const auto& c:kT9LegacyConstraints){
         const auto t=target.skeleton.boneByCanonicalName.find(std::string(c.target));const auto s=t9SourceBone(source.skeleton,c.source);
         if(t==target.skeleton.boneByCanonicalName.end()||!s)continue;
@@ -36,7 +68,48 @@ inline bool retargetColdWarLegacyRange(CastScene& target,std::size_t firstTarget
         if(name=="tag_weapon_right"||name=="tag_weapon_left")continue;
         if(auto s=t9SourceBone(source.skeleton,name))bindings[i].source=s;
     }
+    // The T9 constraints end in legacy IW4 frames, not IW7 deform frames.
+    // Compose the existing inverse IW calibration, including finger indexing
+    // and wrist twist offsets, rather than applying legacy offsets to IW7 skin.
+    if(iwTarget)for(std::size_t i=0;i<bindings.size();++i){
+        const auto& name=target.skeleton.bones[i].name;
+        // T9 exports also carry body-only joints with IW names. They are not
+        // view-arm drivers: importing their bind pose creates an independent
+        // spine branch, forcing sparse ADS to replace the calibrated idle arms.
+        // Uncalibrated IW deform helpers must retain their native parent chain.
+        bool weaponBone=false;
+        for(int b=static_cast<int>(i);b>=0;b=target.skeleton.bones[b].parent){
+            const auto& ancestor=target.skeleton.bones[b].name;
+            if(ancestor=="j_gun"||ancestor=="tag_weapon"){weaponBone=true;break;}
+        }
+        if(name.starts_with("j_")&&!weaponBone&&!legacyToIwCalibration(name))bindings[i]={};
+        if(const auto calibration=legacyToIwCalibration(target.skeleton.bones[i].name))
+            for(const auto& c:kT9LegacyConstraints)if(c.target==calibration->legacyBone){
+                if(auto s=t9SourceBone(source.skeleton,c.source)){
+                    if(c.target=="tag_weapon")if(auto gun=t9SourceBone(source.skeleton,"tag_weapon"))s=gun;
+                    bindings[i]={s,trs(c.position,fromEulerRadians(c.rotationDegrees*(kPi/180.f)),{1,1,1})*calibration->offset};
+                }
+                break;
+            }
+    }
+    if(iwTarget)for(const auto side:{"le","ri"}){
+        const auto clavicle=target.skeleton.boneByName.find(std::string("j_clavicle_")+side);
+        const auto shoulder=target.skeleton.boneByName.find(std::string("j_shoulder_")+side);
+        if(clavicle==target.skeleton.boneByName.end()||shoulder==target.skeleton.boneByName.end())continue;
+        const auto& child=target.skeleton.bones[shoulder->second];
+        if(child.parent!=static_cast<std::int32_t>(clavicle->second)||!bindings[shoulder->second].source)continue;
+        // Recover the missing legacy parent from the calibrated shoulder.
+        // It must share ADS ownership too; leaving it in bind pose stretches
+        // weighted collar vertices across the camera as the arms aim.
+        bindings[clavicle->second]=bindings[shoulder->second];
+        bindings[clavicle->second].offset=bindings[clavicle->second].offset*inverseAffine(trs(child.restLocal.position,child.restLocal.rotation,child.restLocal.scale));
+    }
     for(const char* name:{"j_shoulder_le","j_shoulder_ri","j_wrist_le","j_wrist_ri","j_index_le_0","j_index_ri_0"}){
+        if(iwTarget&&std::string_view(name).starts_with("j_index_")){
+            const auto actual=target.skeleton.boneByName.find(std::string(name).substr(0,std::string(name).size()-1)+"1");
+            if(actual==target.skeleton.boneByName.end()||!bindings[actual->second].source)return false;
+            continue;
+        }
         const auto it=target.skeleton.boneByCanonicalName.find(name);if(it==target.skeleton.boneByCanonicalName.end()||!bindings[it->second].source)return false;
     }
     const auto alignment=target.skeleton.bones[*tv].restGlobal*inverseAffine(source.skeleton.bones[*sv].restGlobal);
@@ -81,6 +154,7 @@ inline bool retargetColdWarLegacyRange(CastScene& target,std::size_t firstTarget
         output.unmappedCurveCount=input.unmappedCurveCount;
         changed=true;
     }
+    if(changed&&iwTarget)supportIwLegacySleeves(target);
     return changed;
 }
 }

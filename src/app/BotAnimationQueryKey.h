@@ -22,7 +22,7 @@ inline scene::AnimationQuery actionQuery(scene::ActionRole action,scene::WeaponC
 inline auto queryKey(const scene::AnimationQuery& q) {
     return std::make_tuple(q.domain, q.motion, q.action, q.weapon, q.stance,
         q.direction, q.ads, q.reloadStyle, q.allowContextual,
-        q.requireMappedTracks, q.preferredGame, q.forceT6Locomotion);
+        q.requireMappedTracks, q.preferredGame, q.forceT6Locomotion, q.preferredWeaponFamily);
 }
 using QueryKey = decltype(queryKey(scene::AnimationQuery{}));
 struct ActionCache {

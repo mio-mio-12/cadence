@@ -29,6 +29,7 @@ GL_API_DEF(void,RenderbufferStorage,(GLenum,GLenum,GLsizei,GLsizei));
 GL_API_DEF(void,RenderbufferStorageMultisample,(GLenum,GLsizei,GLenum,GLsizei,GLsizei));
 GL_API_DEF(void,FramebufferRenderbuffer,(GLenum,GLenum,GLenum,GLuint));
 GL_API_DEF(void,BlitFramebuffer,(GLint,GLint,GLint,GLint,GLint,GLint,GLint,GLint,GLbitfield,GLenum));
+GL_API_DEF(void,DrawBuffers,(GLsizei,const GLenum*));
 GL_API_DEF(void,GenerateMipmap,(GLenum));
 GL_API_DEF(void,BlendFuncSeparate,(GLenum,GLenum,GLenum,GLenum));
 #undef GL_API_DEF
@@ -42,7 +43,7 @@ bool load() {
     LOAD(UseProgram); LOAD(GetUniformLocation); LOAD(UniformMatrix4fv); LOAD(Uniform4f); LOAD(Uniform3f); LOAD(Uniform2f); LOAD(Uniform1i); LOAD(Uniform1iv); LOAD(Uniform1f);
     LOAD(DrawElements); LOAD(DrawArrays); LOAD(ActiveTexture); LOAD(TexBuffer); LOAD(CompressedTexImage2D);
     LOAD(GenFramebuffers); LOAD(BindFramebuffer); LOAD(DeleteFramebuffers); LOAD(FramebufferTexture2D); LOAD(CheckFramebufferStatus);
-    LOAD(GenRenderbuffers); LOAD(BindRenderbuffer); LOAD(DeleteRenderbuffers); LOAD(RenderbufferStorage); LOAD(RenderbufferStorageMultisample); LOAD(FramebufferRenderbuffer); LOAD(BlitFramebuffer);
+    LOAD(GenRenderbuffers); LOAD(BindRenderbuffer); LOAD(DeleteRenderbuffers); LOAD(RenderbufferStorage); LOAD(RenderbufferStorageMultisample); LOAD(FramebufferRenderbuffer); LOAD(BlitFramebuffer); LOAD(DrawBuffers);
     LOAD(GenerateMipmap);
     LOAD(BlendFuncSeparate);
 #undef LOAD

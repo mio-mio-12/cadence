@@ -2,6 +2,22 @@
 #include "scene/CastScene.h"
 
 namespace cadence::body_donor {
+// BO2 body clips carry constant facial defaults for faces that are not present
+// on every multiplayer body. These do not drive cross-rig body retargeting.
+// Animated facial curves and all non-facial channels still count toward coverage.
+inline bool optionalStaticFace(std::string_view game,std::string_view name,std::size_t keys){
+    if(game!="bo2"||keys!=1)return false;
+    return name=="j_bridge"||name=="j_tongue"||name=="j_chin_skinroll"||
+        name.starts_with("j_brow_")||name.starts_with("j_forehead_")||
+        name.starts_with("j_lip_")||name.starts_with("j_nose_");
+}
+inline bool requiredBodyChannel(std::string_view game,std::string_view name){
+    if(game!="bo2")return false;
+    return name=="j_mainroot"||name=="j_spinelower"||name=="j_spineupper"||name=="j_spine4"||
+        name=="j_neck"||name=="j_head"||name.starts_with("j_shoulder_")||
+        name.starts_with("j_elbow_")||name.starts_with("j_wrist_")||
+        name.starts_with("j_hip_")||name.starts_with("j_knee_")||name.starts_with("j_ankle_");
+}
 inline std::vector<bool> requiredBones(const scene::CastScene& body){
     const auto& bones=body.skeleton.bones;std::vector<bool> required(bones.size());
     for(const auto& mesh:body.meshes)if(mesh.skinned)for(const auto& vertex:mesh.vertices)

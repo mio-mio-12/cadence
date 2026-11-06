@@ -2,7 +2,7 @@
 void processPlayerKnifeAttack(AppState& app){
     if(app.botProcessedKnifeAttack==app.playerKnifeAttack)return;
     app.botProcessedKnifeAttack=app.playerKnifeAttack;
-    if(!app.actorMode||app.takePreview||!isKnifeWeapon(app)||!app.botActorScene)return;
+    if(!app.actorMode||app.takePreview||!app.botActorScene)return;
     const scene::Vec3 origin=app.actorPosition+scene::Vec3{0,0,app.actorViewHeight};
     const float cp=std::cos(app.cameraPitch);
     const scene::Vec3 forward{cp*std::cos(app.actorYaw),cp*std::sin(app.actorYaw),std::sin(app.cameraPitch)};
@@ -19,6 +19,9 @@ void processPlayerKnifeAttack(AppState& app){
         });
         if(!hit)continue;
         const auto clip=botDeathAnimation(*app.botActorScene,bot,bot.weaponClass,app.playerKnifeAttack,&app);
+        bot.deathVelocity=bot.velocity;bot.deathShotDirection={};
+        bot.deathEffectStart=app.gameplayClock;
+        bot.deathEffectPosition=*hit;
         bot.health=0;bot.alive=false;bot.behavior=gameplay::bot::BehaviorState::Dead;
         bot.respawnTime=app.botRespawnTime;bot.velocity.x*=.35f;bot.velocity.y*=.35f;
         bot.input={};bot.animationFrame=0;bot.previousAnimation=bot.animation;bot.previousAnimationFrame=0;bot.animationBlendElapsed=0;

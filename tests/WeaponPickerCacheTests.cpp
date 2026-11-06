@@ -2,6 +2,12 @@
 #include <cassert>
 #include <iostream>
 int main(){
+    assets::Asset glove;glove.game="cs2";glove.role=assets::Role::ViewHands;glove.name="viewhands_ctm_fbi_variantd_hands_model";
+    glove.path="cs2/models/glove_sporty__sporty_light_blue/viewhands_ctm_fbi_variantd_hands_model.cast";
+    assert(assets::source2::skin(glove)=="glove_sporty__sporty_light_blue");
+    assert(assets::source2::weaponFamily(glove).empty());
+    glove.path="cs2/models/viewhands_ctm_fbi_variantd_hands_model.cast";
+    assert(assets::source2::skin(glove).empty());
     assets::Catalog c;cadence::WeaponPickerCache cache;
     const auto add=[&](std::string name,std::string game="bocw_sp"){assets::Asset a;a.name=name;a.game=game;a.role=assets::Role::ViewWeapon;c.entries.push_back(a);};
     add("wpn_t9_ar_damage_nocturne_view_LOD0");add("wpn_t9_ar_damage_view_LOD0");
@@ -21,5 +27,14 @@ int main(){
     add("magnum_7952_fp_1_20984_weapon","eldewrito");add("magnum_7952_fp_0_20976_weapon","eldewrito");add("magnum_7952_fp_1_20984_dual_weapon","eldewrito");
     assert(cache.isImportedVariant(c,c.entries[0]));assert(!cache.isImportedVariant(c,c.entries[1]));assert(!cache.isImportedVariant(c,c.entries[2]));
     add("magnum_7952_fp_0_20976_dual_weapon","eldewrito");assert(cache.isImportedVariant(c,c.entries[2]));assert(!cache.isImportedVariant(c,c.entries[3]));
-    std::cout<<"PASS stable index, base preference, absent base, pool keys, mutation invalidation\n";
+    c.clear();cache.clear();
+    add("ak47_model","cs2");c.entries.back().path="cs2/models/cu_anubis/ak47_model.cast";
+    add("ak47_model","cs2");c.entries.back().path="cs2/models/ak47_model.cast";
+    add("usp_silencer_model","cs2");c.entries.back().path="cs2/models/usps_silent_boy/usp_silencer_model.cast";
+    assert(cache.isSource2SkinVariant(c,c.entries[0]));assert(!cache.isSource2SkinVariant(c,c.entries[1]));
+    assert(!cache.isSource2SkinVariant(c,c.entries[2]));
+    assert(assets::source2::weaponFamily(c.entries[2])=="usp_silencer");
+    assert(assets::source2::skin(c.entries[2])=="usps_silent_boy");
+    c.entries.erase(c.entries.begin()+1);assert(!cache.isSource2SkinVariant(c,c.entries[0]));
+    std::cout<<"PASS stable index, base preference, absent base, pool keys, mutation invalidation, skin-only CS2 families\n";
 }

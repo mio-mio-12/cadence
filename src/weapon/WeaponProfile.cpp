@@ -104,7 +104,7 @@ Archetype inferArchetype(std::string value){value=lower(std::move(value));const 
         }))return Archetype::Rifle;
     return Archetype::Unknown;}
 
-Stats defaultsFor(Archetype value){Stats s;s.hideWeaponOnAds=isSniper(value);switch(value){case Archetype::Rifle:s.fireTime=.095f;s.fullAuto=true;s.reloadTime=2.3f;s.reloadEmptyTime=2.8f;s.damage=35.0f;break;case Archetype::Smg:s.fireTime=.075f;s.fullAuto=true;s.reloadTime=2.0f;s.reloadEmptyTime=2.5f;s.raiseTime=.50f;s.moveSpeedScale=1.0f;s.damage=30.0f;break;case Archetype::Lmg:s.fireTime=.09f;s.fullAuto=true;s.reloadTime=5.5f;s.reloadEmptyTime=6.0f;s.raiseTime=.72f;s.moveSpeedScale=.92f;s.damage=40.0f;break;case Archetype::Shotgun:s.fireTime=.55f;s.reloadTime=.62f;s.rechamberTime=.72f;s.raiseTime=.62f;s.boltAction=true;s.damage=150.0f;break;case Archetype::BoltIndividualSniper:s.fireTime=.9f;s.reloadTime=.7f;s.reloadEmptyTime=4.2f;s.rechamberTime=1.05f;s.boltAction=true;s.individualReload=true;s.adsIn=.32f;s.adsOut=.25f;s.raiseTime=.75f;s.moveSpeedScale=.95f;s.adsFov=30.0f;s.damage=1000.0f;break;case Archetype::BoltSniper:s.fireTime=.9f;s.reloadTime=2.8f;s.reloadEmptyTime=3.3f;s.rechamberTime=1.05f;s.boltAction=true;s.adsIn=.32f;s.adsOut=.25f;s.raiseTime=.75f;s.moveSpeedScale=.95f;s.adsFov=30.0f;s.damage=1000.0f;break;case Archetype::SemiSniper:s.fireTime=.22f;s.reloadTime=2.7f;s.reloadEmptyTime=3.2f;s.adsIn=.30f;s.raiseTime=.72f;s.moveSpeedScale=.95f;s.adsFov=30.0f;s.damage=1000.0f;break;case Archetype::Pistol:s.fireTime=.12f;s.reloadTime=1.65f;s.reloadEmptyTime=2.0f;s.dropTime=.25f;s.raiseTime=.35f;s.quickDropTime=.18f;s.quickRaiseTime=.28f;s.moveSpeedScale=1.0f;s.damage=35.0f;break;case Archetype::DualWield:s.fireTime=.12f;s.reloadTime=2.5f;s.reloadEmptyTime=2.8f;s.adsFov=65.0f;s.damage=35.0f;break;case Archetype::Launcher:s.fireTime=.8f;s.reloadTime=3.0f;s.raiseTime=.8f;s.moveSpeedScale=.9f;s.damage=500.0f;break;case Archetype::Equipment:s.fireTime=.4f;s.raiseTime=.4f;s.adsFov=65.0f;s.damage=150.0f;break;default:break;}return s;}
+Stats defaultsFor(Archetype value){Stats s;s.hideWeaponOnAds=isSniper(value);switch(value){case Archetype::Rifle:s.fireTime=.095f;s.fullAuto=true;s.reloadTime=2.3f;s.reloadEmptyTime=2.8f;s.damage=35.0f;break;case Archetype::Smg:s.fireTime=.075f;s.fullAuto=true;s.reloadTime=2.0f;s.reloadEmptyTime=2.5f;s.raiseTime=.50f;s.moveSpeedScale=1.0f;s.damage=30.0f;break;case Archetype::Lmg:s.fireTime=.09f;s.fullAuto=true;s.reloadTime=5.5f;s.reloadEmptyTime=6.0f;s.raiseTime=.72f;s.moveSpeedScale=.92f;s.damage=40.0f;break;case Archetype::Shotgun:s.fireTime=.55f;s.reloadTime=.62f;s.rechamberTime=.72f;s.raiseTime=.62f;s.boltAction=true;s.damage=150.0f;break;case Archetype::BoltIndividualSniper:s.fireTime=.9f;s.reloadTime=.7f;s.reloadEmptyTime=4.2f;s.rechamberTime=1.05f;s.boltAction=true;s.individualReload=true;s.adsIn=.32f;s.adsOut=.25f;s.raiseTime=.75f;s.moveSpeedScale=.95f;s.adsFov=30.0f;s.damage=1000.0f;break;case Archetype::BoltSniper:s.fireTime=.9f;s.reloadTime=2.8f;s.reloadEmptyTime=3.3f;s.rechamberTime=1.05f;s.boltAction=true;s.adsIn=.32f;s.adsOut=.25f;s.raiseTime=.75f;s.moveSpeedScale=.95f;s.adsFov=30.0f;s.damage=1000.0f;break;case Archetype::SemiSniper:s.fireTime=.22f;s.reloadTime=2.7f;s.reloadEmptyTime=3.2f;s.adsIn=.30f;s.raiseTime=.72f;s.moveSpeedScale=.95f;s.adsFov=30.0f;s.damage=1000.0f;break;case Archetype::Pistol:s.fireTime=.12f;s.reloadTime=1.65f;s.reloadEmptyTime=2.0f;s.dropTime=.25f;s.raiseTime=.35f;s.quickDropTime=.18f;s.quickRaiseTime=.28f;s.moveSpeedScale=1.0f;s.damage=35.0f;break;case Archetype::DualWield:s.fireTime=.12f;s.reloadTime=2.5f;s.reloadEmptyTime=2.8f;s.adsFov=65.0f;s.damage=35.0f;break;case Archetype::Launcher:s.fireTime=.8f;s.reloadTime=3.0f;s.raiseTime=.8f;s.moveSpeedScale=.9f;s.damage=500.0f;break;case Archetype::Equipment:s.fireTime=.4f;s.raiseTime=.4f;s.adsFov=65.0f;s.damage=150.0f;break;default:break;}s.quickDropTime=s.dropTime;s.quickRaiseTime=s.raiseTime;return s;}
 
 Profile makeGenerated(std::string name,Archetype archetype,std::string animationPrefix){Profile result;result.name=std::move(name);result.internalName=lower(result.name);result.archetype=archetype;result.animationPrefix=std::move(animationPrefix);result.stats=defaultsFor(archetype);return result;}
 std::vector<std::string> animationVariantsFor(const Profile& profile,const std::string& action,const std::string& pairing){
@@ -124,7 +124,10 @@ bool save(const Profile& p,const std::filesystem::path& path,std::string& error)
     out<<"scope_overlay "<<std::quoted(p.scopeOverlayImage)<<'\n'<<"recoil_curve "<<p.stats.recoil<<'\n'<<"recoil_intensity "<<p.stats.recoil.intensity<<'\n';
     out<<"gun_position "<<p.gunPosition.x<<' '<<p.gunPosition.y<<' '<<p.gunPosition.z<<'\n'
        <<"viewmodel_projection "<<p.viewmodelFovMultiplier<<' '<<p.flipViewmodel<<'\n'
+       <<"disable_sprint_animations "<<p.disableSprintAnimations<<'\n'
        <<"sprint_bob_multiplier "<<p.sprintBobMultiplier<<'\n'
+       <<"sprint_bob_speed_multiplier "<<p.sprintBobSpeedMultiplier<<'\n'
+       <<"weapon_turning "<<p.overrideWeaponTurning<<' '<<p.weaponTurningEnabled<<' '<<p.weaponTurningHipMultiplier<<' '<<p.weaponTurningAdsMultiplier<<'\n'
        <<"ads_gun_position "<<p.separateAdsPosition<<' '<<p.adsGunPosition.x<<' '<<p.adsGunPosition.y<<' '<<p.adsGunPosition.z<<'\n'
        <<"material camo_luma "<<(p.materials.useBaseColorLumaMask?1:0)<<'\n'
        <<"material camo_invert "<<(p.materials.invertCamoMask?1:0)<<'\n'
@@ -136,11 +139,17 @@ bool save(const Profile& p,const std::filesystem::path& path,std::string& error)
        <<"material cubemap_specular_intensity "<<p.materials.cubemapSpecularIntensity<<'\n'
        <<"material specular_color_levels "<<p.materials.specularColorLow.x<<' '<<p.materials.specularColorLow.y<<' '<<p.materials.specularColorLow.z<<' '<<p.materials.specularColorHigh.x<<' '<<p.materials.specularColorHigh.y<<' '<<p.materials.specularColorHigh.z<<'\n';
     const auto f=[&](const char* key,float value){out<<"stat "<<key<<' '<<std::setprecision(9)<<value<<'\n';};const auto i=[&](const char* key,int value){out<<"stat "<<key<<' '<<value<<'\n';};
+    f("fire_playback_scale",p.stats.firePlaybackScale);
+    f("iw4_yy_smoothing_time",p.stats.iw4YySmoothingTime);
+    out<<"iw4_yy_curve "<<p.stats.iw4YyCurve<<'\n';
+    i("instant_scope",p.stats.instantScope);i("disable_ads",p.stats.disableAds);i("grenade",p.stats.grenade);
+    if(p.hideCrosshair)i("hide_crosshair",*p.hideCrosshair);
     i("rechamber_delay_from_fire_end",p.stats.rechamberDelayFromFireEnd?1:0);i("can_fire_while_rechambering",p.stats.canFireWhileRechambering?1:0);f("rechamber_fire_unlock",p.stats.rechamberFireUnlock);f("rechamber_start_delay",p.stats.rechamberStartDelay);f("sprint_playback_scale",p.stats.sprintPlaybackScale);f("damage",p.stats.damage);f("fire_time",p.stats.fireTime);f("rechamber_time",p.stats.rechamberTime);f("ads_in",p.stats.adsIn);f("ads_out",p.stats.adsOut);f("drop_time",p.stats.dropTime);f("raise_time",p.stats.raiseTime);f("yy_return_scale",p.stats.yyReturnScale);f("reload_time",p.stats.reloadTime);f("reload_empty_time",p.stats.reloadEmptyTime);f("first_raise_time",p.stats.firstRaiseTime);f("melee_time",p.stats.meleeTime);f("sprint_in_time",p.stats.sprintInTime);f("sprint_loop_time",p.stats.sprintLoopTime);f("sprint_out_time",p.stats.sprintOutTime);f("quick_drop_time",p.stats.quickDropTime);f("quick_raise_time",p.stats.quickRaiseTime);f("ads_fov",p.stats.adsFov);f("move_speed_scale",p.stats.moveSpeedScale);f("ads_kick_pitch_min",p.stats.adsKickPitchMin);f("ads_kick_pitch_max",p.stats.adsKickPitchMax);f("ads_kick_yaw_min",p.stats.adsKickYawMin);f("ads_kick_yaw_max",p.stats.adsKickYawMax);f("ads_kick_center_speed",p.stats.adsKickCenterSpeed);f("hip_kick_pitch_min",p.stats.hipKickPitchMin);f("hip_kick_pitch_max",p.stats.hipKickPitchMax);f("hip_kick_yaw_min",p.stats.hipKickYawMin);f("hip_kick_yaw_max",p.stats.hipKickYawMax);f("hip_kick_center_speed",p.stats.hipKickCenterSpeed);i("burst_count",p.stats.burstCount);f("burst_delay",p.stats.burstDelay);i("full_auto",p.stats.fullAuto?1:0);i("bolt_action",p.stats.boltAction?1:0);i("individual_reload",p.stats.individualReload?1:0);i("hide_weapon_on_ads",p.stats.hideWeaponOnAds?1:0);
     for(const auto& [key,value]:p.animations)out<<"animation "<<std::quoted(key)<<' '<<std::quoted(value)<<'\n';
     for(const auto& [key,value]:p.animationFiles)out<<"animation_file "<<std::quoted(key)<<' '<<std::quoted(value)<<'\n';
     for(const auto& [key,values]:p.animationVariants)for(const auto& value:values)if(!value.empty())out<<"animation_variant "<<std::quoted(key)<<' '<<std::quoted(value)<<'\n';
     for(const auto& o:p.animationOffsets)out<<"offset "<<std::quoted(o.animation)<<' '<<o.position.x<<' '<<o.position.y<<' '<<o.position.z<<' '<<o.rotationDegrees.x<<' '<<o.rotationDegrees.y<<' '<<o.rotationDegrees.z<<' '<<o.scale<<'\n';
+    for(const auto& [rig,t]:p.rigWeaponTransforms)out<<"rig_weapon_transform "<<std::quoted(rig)<<' '<<t.position.x<<' '<<t.position.y<<' '<<t.position.z<<' '<<t.rotationDegrees.x<<' '<<t.rotationDegrees.y<<' '<<t.rotationDegrees.z<<' '<<t.scale<<'\n';
     for(const auto& m:p.rigMounts){
         if(m.attachedModel){
             out<<"attachment_mount "<<std::quoted(m.model)<<' '<<std::quoted(m.parentTag)<<' '<<m.position.x<<' '<<m.position.y<<' '<<m.position.z<<' '<<m.attachmentRotationDegrees.x<<' '<<m.attachmentRotationDegrees.y<<' '<<m.attachmentRotationDegrees.z<<' '<<m.attachmentScale.x<<' '<<m.attachmentScale.y<<' '<<m.attachmentScale.z<<'\n';
@@ -202,9 +211,19 @@ bool load(const std::filesystem::path &path, Profile &p, std::string &error) {
       int flip{};float multiplier{1.f};row >> multiplier >> flip;
       if(!row||!std::isfinite(multiplier)||multiplier<=0.f||(flip!=0&&flip!=1)){error="Invalid viewmodel projection";return false;}
       result.viewmodelFovMultiplier=multiplier;result.flipViewmodel=flip!=0;
+    } else if (kind == "disable_sprint_animations") {
+      int value{};row>>value;
+      if(!row||(value!=0&&value!=1)){error="Invalid sprint animation switch";return false;}
+      result.disableSprintAnimations=value!=0;
     } else if (kind == "sprint_bob_multiplier") {
       row >> result.sprintBobMultiplier;
       if(!row||!std::isfinite(result.sprintBobMultiplier)||result.sprintBobMultiplier<0){error="Invalid sprint bob multiplier";return false;}
+    } else if (kind == "weapon_turning") {
+      row >> result.overrideWeaponTurning >> result.weaponTurningEnabled >> result.weaponTurningHipMultiplier >> result.weaponTurningAdsMultiplier;
+      if(!row||!std::isfinite(result.weaponTurningHipMultiplier)||!std::isfinite(result.weaponTurningAdsMultiplier)||result.weaponTurningHipMultiplier<0||result.weaponTurningAdsMultiplier<0){error="Invalid weapon turning settings";return false;}
+    } else if (kind == "sprint_bob_speed_multiplier") {
+      row >> result.sprintBobSpeedMultiplier;
+      if(!row||!std::isfinite(result.sprintBobSpeedMultiplier)||result.sprintBobSpeedMultiplier<0){error="Invalid sprint bob speed multiplier";return false;}
     } else if (kind == "ads_gun_position") {
       row >> result.separateAdsPosition >> result.adsGunPosition.x >> result.adsGunPosition.y >> result.adsGunPosition.z;
     } else if (kind == "lock_inspect_rig") {
@@ -262,6 +281,7 @@ bool load(const std::filesystem::path &path, Profile &p, std::string &error) {
       if(!row||key.empty()||value.empty()){error="Invalid animation source dependency";return false;}
       result.animationFiles[key]=value;
     } else if (kind == "scope_overlay") { row >> std::quoted(result.scopeOverlayImage);
+    } else if (kind == "iw4_yy_curve") { row>>result.stats.iw4YyCurve;if(!row){error="Invalid YY curve";return false;}result.stats.iw4YyCurve.points[0].y=0;result.stats.iw4YyCurve.points[result.stats.iw4YyCurve.count-1].y=1;
     } else if (kind == "recoil_curve") { const float intensity=result.stats.recoil.intensity;row >> result.stats.recoil;result.stats.recoil.intensity=intensity;if(!row){error="Invalid recoil curve";return false;}
     } else if (kind == "recoil_intensity") { row >> result.stats.recoil.intensity;result.stats.recoil.sanitize();
     } else if (kind == "animation_variant") {
@@ -276,6 +296,11 @@ bool load(const std::filesystem::path &path, Profile &p, std::string &error) {
           o.rotationDegrees.z >> o.scale;
       if (row)
         result.animationOffsets.push_back(std::move(o));
+    } else if (kind == "rig_weapon_transform") {
+      std::string rig;RigWeaponTransform t;
+      row>>std::quoted(rig)>>t.position.x>>t.position.y>>t.position.z>>t.rotationDegrees.x>>t.rotationDegrees.y>>t.rotationDegrees.z>>t.scale;
+      if(!row||!std::isfinite(t.position.x)||!std::isfinite(t.position.y)||!std::isfinite(t.position.z)||!std::isfinite(t.rotationDegrees.x)||!std::isfinite(t.rotationDegrees.y)||!std::isfinite(t.rotationDegrees.z)||!std::isfinite(t.scale)||t.scale<=0){error="Invalid per-rig weapon transform";return false;}
+      result.rigWeaponTransforms[rig]=t;
     } else if (kind == "attachment_mount") {
       RigMount m; m.attachedModel=true;
       row >> std::quoted(m.model) >> std::quoted(m.parentTag)
@@ -331,6 +356,18 @@ bool load(const std::filesystem::path &path, Profile &p, std::string &error) {
       if (!row)
         continue;
       auto &s = result.stats;
+      if(key=="iw4_yy_smoothing_time"){
+          if(!std::isfinite(value)||value<0){error="Invalid IW4 YY smoothing time";return false;}
+          s.iw4YySmoothingTime=value;continue;
+      }
+      if(key=="instant_scope"){s.instantScope=value!=0;continue;}
+      if(key=="disable_ads"){s.disableAds=value!=0;continue;}
+      if(key=="hide_crosshair"){result.hideCrosshair=value!=0;continue;}
+      if(key=="grenade"){s.grenade=value!=0;continue;}
+      if(key=="fire_playback_scale"){
+          if(!std::isfinite(value)||value<=0){error="Invalid fire animation speed";return false;}
+          s.firePlaybackScale=value;continue;
+      }
 #define IW_STAT(name,field) if(key==name)s.field=value;else
             if(key=="burst_count")s.burstCount=std::max(1,static_cast<int>(value));else if(key=="full_auto")s.fullAuto=value!=0;else if(key=="bolt_action")s.boltAction=value!=0;else if(key=="individual_reload")s.individualReload=value!=0;else if(key=="hide_weapon_on_ads"){s.hideWeaponOnAds=value!=0;hasAdsVisibility=true;}else if(key=="rechamber_delay_from_fire_end")s.rechamberDelayFromFireEnd=value!=0;else if(key=="can_fire_while_rechambering")s.canFireWhileRechambering=value!=0;else IW_STAT("rechamber_fire_unlock",rechamberFireUnlock) IW_STAT("rechamber_start_delay",rechamberStartDelay) IW_STAT("sprint_playback_scale",sprintPlaybackScale) IW_STAT("damage",damage) IW_STAT("fire_time",fireTime) IW_STAT("rechamber_time",rechamberTime) IW_STAT("ads_in",adsIn) IW_STAT("ads_out",adsOut) IW_STAT("drop_time",dropTime) IW_STAT("raise_time",raiseTime) IW_STAT("yy_return_scale",yyReturnScale) IW_STAT("reload_time",reloadTime) IW_STAT("reload_empty_time",reloadEmptyTime) IW_STAT("first_raise_time",firstRaiseTime) IW_STAT("melee_time",meleeTime) IW_STAT("sprint_in_time",sprintInTime) IW_STAT("sprint_loop_time",sprintLoopTime) IW_STAT("sprint_out_time",sprintOutTime) IW_STAT("quick_drop_time",quickDropTime) IW_STAT("quick_raise_time",quickRaiseTime) IW_STAT("ads_fov",adsFov) IW_STAT("move_speed_scale",moveSpeedScale) IW_STAT("ads_kick_pitch_min",adsKickPitchMin) IW_STAT("ads_kick_pitch_max",adsKickPitchMax) IW_STAT("ads_kick_yaw_min",adsKickYawMin) IW_STAT("ads_kick_yaw_max",adsKickYawMax) IW_STAT("ads_kick_center_speed",adsKickCenterSpeed) IW_STAT("hip_kick_pitch_min",hipKickPitchMin) IW_STAT("hip_kick_pitch_max",hipKickPitchMax) IW_STAT("hip_kick_yaw_min",hipKickYawMin) IW_STAT("hip_kick_yaw_max",hipKickYawMax) IW_STAT("hip_kick_center_speed",hipKickCenterSpeed) IW_STAT("burst_delay",burstDelay) {}
 #undef IW_STAT

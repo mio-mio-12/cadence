@@ -4,6 +4,10 @@
 #include <limits>
 
 namespace gameplay::movement {
+inline scene::Vec2 horizontalExtents(float radius){return {radius,radius};}
+inline scene::Vec2 horizontalExtents(scene::Vec2 extents){return extents;}
+inline float hullReach(float radius,scene::Vec3){return radius;}
+inline float hullReach(scene::Vec2 extents,scene::Vec3 direction){return std::abs(direction.x)*extents.x+std::abs(direction.y)*extents.y;}
 struct Trace {
     float fraction{1.0f};
     scene::Vec3 end{}, normal{};
@@ -13,13 +17,13 @@ struct Trace {
 // Continuous swept AABB/triangle SAT. Unlike constrainMove this checks the
 // entire path, including ceilings and walkable faces. Feet are the origin.
 inline Trace sweep(const scene::glb::Map& map, scene::Vec3 start,
-                   scene::Vec3 end, float radius, float height, bool ceilingsOnly=false) {
+                   scene::Vec3 end, scene::Vec2 halfExtents, float height, bool ceilingsOnly=false) {
     using namespace scene;
     Trace result; result.end=end;
-    const Vec3 ext{radius,radius,height*0.5f};
+    const Vec3 ext{std::max(0.f,halfExtents.x),std::max(0.f,halfExtents.y),height*0.5f};
     const Vec3 center=start+Vec3{0,0,ext.z}, delta=end-start;
-    const Vec3 lo{std::min(start.x,end.x)-radius,std::min(start.y,end.y)-radius,std::min(start.z,end.z)};
-    const Vec3 hi{std::max(start.x,end.x)+radius,std::max(start.y,end.y)+radius,std::max(start.z,end.z)+height};
+    const Vec3 lo{std::min(start.x,end.x)-ext.x,std::min(start.y,end.y)-ext.y,std::min(start.z,end.z)};
+    const Vec3 hi{std::max(start.x,end.x)+ext.x,std::max(start.y,end.y)+ext.y,std::max(start.z,end.z)+height};
     std::vector<std::uint32_t> candidates;
     if(map.gridWidth>0 && !map.gridCollision.empty()) {
         // Dense canopy cells contain thousands of triangles far above the
@@ -80,7 +84,10 @@ inline Trace sweep(const scene::glb::Map& map, scene::Vec3 start,
         if(miss||leave<0||enter>result.fraction)continue;
         if(strictInside){result.startSolid=true;result.fraction=0;result.end=start;return result;}
         if(ceilingsOnly&&normal.z>=-.05f)continue;
-        if(enter<-epsilon||dot(delta,normal)>=-epsilon)continue;
+        // Spatial contact tolerance is not a minimum inward displacement.
+        // Ignoring slow contact lets shallow-slope movement penetrate a little
+        // every tick until the next sweep reports startSolid and stops walking.
+        if(enter<-epsilon||dot(delta,normal)>=-1e-8f)continue;
         result.fraction=std::max(0.0f,enter-epsilon/-dot(delta,normal));
         result.normal=normal;
     }
@@ -88,6 +95,7 @@ inline Trace sweep(const scene::glb::Map& map, scene::Vec3 start,
     return result;
 }
 
+inline Trace sweep(const scene::glb::Map& map,scene::Vec3 start,scene::Vec3 end,float radius,float height,bool ceilingsOnly=false){return sweep(map,start,end,scene::Vec2{radius,radius},height,ceilingsOnly);}
 inline scene::Vec3 clip(scene::Vec3 v,scene::Vec3 normal) {
     const float into=scene::dot(v,normal);
     return into<0?v-normal*into:v;

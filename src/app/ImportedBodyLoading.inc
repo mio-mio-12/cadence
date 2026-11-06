@@ -2,6 +2,7 @@
 // loader. Imported body routing shares the native assembly transaction.
 // Scope ImportedBodyPreparationBatch beside each PointBlankPreparationBatch.
 std::string bodyDonorContextKey(const AppState&,const std::string&);
+std::optional<scene::Skeleton> pointBlankDonor(const AppState&,const std::string&);
 struct ImportedBodyPreparationCache {
     struct Selection { std::filesystem::path path;std::string error; };
     std::map<std::filesystem::path,std::shared_ptr<const scene::CastScene>> bodies;
@@ -48,16 +49,19 @@ static ImportedBodyPreparationCache::Selection importedBodyDonor(const AppState&
     const auto filename=assets::imported::lower(assets::imported::utf8(std::filesystem::path(document.sourceName()).filename()));
     std::vector<std::string> curves;
     const auto visit=[&](const auto& self,const cast::Node& node)->void{
-        if(cast::nodeTypeName(node.identifier)=="Curve")if(const auto* name=node.findProperty("nn");name&&name->stringValue)curves.push_back(*name->stringValue);
+        if(cast::nodeTypeName(node.identifier)=="Curve")if(const auto* name=node.findProperty("nn");name&&name->stringValue){
+            const auto* values=node.findProperty("kv");
+            if(!cadence::body_donor::optionalStaticFace(game,*name->stringValue,values?values->elementCount:0))curves.push_back(*name->stringValue);
+        }
         for(const auto& child:node.children)self(self,child);
     };
     for(const auto& root:document.roots())visit(visit,root);
     std::sort(curves.begin(),curves.end());
     std::string identity;
+    if(const auto native=assets::imported::nativeBodyAction(game,filename))identity=native->identity;
     if(game=="eldewrito"){
-        const auto marker=filename.find("_combat_");
-        if(marker==std::string::npos)return {{},"Unsupported Eldewrito body action identity"};
-        identity=filename.substr(0,marker);
+        identity=assets::imported::dewBodyIdentity(filename);
+        if(identity.empty())return {{},"Unsupported Eldewrito body action identity"};
     }
     std::string key=bodyDonorContextKey(app,game)+":"+identity;
     for(const auto& name:curves){key+='\n';key+=name;}
@@ -90,7 +94,11 @@ static ImportedBodyPreparationCache::Selection importedBodyDonor(const AppState&
     }
     std::sort(candidates.begin(),candidates.end(),[](const auto* a,const auto* b){return a->path.native()<b->path.native();});
     for(const auto* asset:candidates){const auto physical=cadence::content::resolve(asset->path);const auto body=importedBodyReference(cache,physical);if(!body)continue;
-        std::size_t covered{};for(const auto& name:curves)covered+=body->skeleton.boneByName.contains(name)||body->skeleton.boneByCanonicalName.contains(scene::canonicalName(name));
+        std::size_t covered{};bool missingBodyChannel=false;
+        for(const auto& name:curves){const bool mapped=body->skeleton.boneByName.contains(name)||body->skeleton.boneByCanonicalName.contains(scene::canonicalName(name));
+            covered+=mapped;missingBodyChannel|=!mapped&&cadence::body_donor::requiredBodyChannel(game,name);
+        }
+        if(missingBodyChannel)continue;
         if(covered>bestCoverage){bestCoverage=covered;best=body;selected.path=physical;ambiguous=false;}
         else if(covered&&covered==bestCoverage&&best&&!cadence::body_donor::equivalent(best->skeleton,cache.requiredBones.at(selected.path),body->skeleton,cache.requiredBones.at(physical)))ambiguous=true;
     }
@@ -105,17 +113,19 @@ static ImportedBodyPreparationCache::Selection importedBodyDonor(const AppState&
 bool appendImportedWorldAnimation(AppState& app,const cast::Document& document,scene::CastScene& target,const std::string& sourceGame,const std::string& targetGame){
     const auto game=assets::imported::lower(sourceGame),destination=assets::imported::lower(targetGame);
     const bool importedTarget=static_cast<bool>(scene::imported::bodyLayout(target.skeleton));
-    if(!importedTarget&&!assets::imported::supported(game)&&!assets::imported::supported(destination))return false;
+    if(!importedTarget&&game!="cs2"&&destination!="cs2"&&!assets::imported::supported(game)&&!assets::imported::supported(destination))return false;
     const auto reject=[&](const std::string& reason){const auto warning="Imported body animation: "+reason;
         if(std::find(target.warnings.begin(),target.warnings.end(),warning)==target.warnings.end())target.warnings.push_back(warning);return true;};
     if(!scene::imported::completeBodyLayout(scene::imported::bodyOrCodLayout(target.skeleton)))return reject("unsupported target anatomy");
-    // Foreign conventional rigs need an explicit reference unless a verified
-    // shared BO2 donor exists. Never bind their local tracks directly.
+    if(game=="cs2"&&scene::source2ContextualBody(document))return reject("contextual CS2 hostage/low-violence sequence excluded from combat pool");
+    // Conventional CoD rigs already have a shared native reference selector
+    // used by the other cross-game body routes. Use that same skeleton below;
+    // do not require a redundant manual choice or bind foreign local tracks.
     const auto& donorGame=game;
     const auto configured=app.gameReferenceSetups.find(donorGame);
     const bool explicitDonor=configured!=app.gameReferenceSetups.end()&&configured->second.playermodelAsset<app.assetCatalog.entries.size();
-    if(donorGame!="bo2"&&!assets::imported::supported(game)&&!explicitDonor)return reject("select a native reference body for donor game "+game);
-    if(importedTarget&&game==destination){
+    if(donorGame!="bo2"&&game!="cs2"&&!assets::imported::supported(game)&&!scene::imported::world_grip::codSocketConvention(game)&&!explicitDonor)return reject("select a native reference body for donor game "+game);
+    if(importedTarget&&game==destination&&!assets::imported::nativeBodyAction(game,document.sourceName())){
         // A selected native character is itself the authoritative reference.
         // Shared pb_* labels need not redundantly encode the character name.
         // Halo's graph exports do carry identity: mismatched graph clips are
@@ -127,7 +137,10 @@ bool appendImportedWorldAnimation(AppState& app,const cast::Document& document,s
         scene::CastScene native;native.skeleton=target.skeleton;native.importedTranslationScale=target.importedTranslationScale;native.importedBodyIdentity=target.importedBodyIdentity;
         try{scene::appendAnimations(document,native);}catch(const std::exception& e){return reject(e.what());}
         for(auto& clip:native.animations){
-            if(assets::imported::sourceFamily(game))scene::imported::classifySourceBodyAnimation(clip);
+            clip.sourceGame=sourceGame;
+            if(assets::imported::sourceFamily(game)||game=="cs2")scene::imported::classifySourceBodyAnimation(clip);
+            scene::imported::classifyNativeGaitLayer(native.skeleton,clip);
+            scene::imported::inferNativeWalkDirection(native,static_cast<std::size_t>(&clip-native.animations.data()));
             if((clip.domain!=scene::AnimationDomain::PlayerBody&&clip.domain!=scene::AnimationDomain::PlayerTorso)||clip.contextual){reject("only non-contextual native body clips are enabled");continue;}
             if(clip.tracks.empty()||!clip.sourceCurveCount||clip.unmappedCurveCount*10>clip.sourceCurveCount){reject("selected native body does not cover animation curves");continue;}
             if(clip.domain==scene::AnimationDomain::PlayerTorso){const auto mask=scene::imported::nativeBodyTorsoMask(target.skeleton);for(auto& track:clip.tracks)if(track.boneIndex>=mask.size()||!mask[track.boneIndex])track.ownsLayer=false;}
@@ -136,14 +149,24 @@ bool appendImportedWorldAnimation(AppState& app,const cast::Document& document,s
         return true;
     }
     ImportedBodyPreparationCache localCache;auto& cache=activeImportedBodyPreparation?*activeImportedBodyPreparation:localCache;
-    const auto selection=importedBodyDonor(app,cache,document,donorGame);
-    if(selection.path.empty())return reject(selection.error);
-    const auto reference=importedBodyReference(cache,selection.path);if(!reference)return reject("native donor unavailable");
-    auto donor=std::make_shared<scene::CastScene>(*reference);
+    std::shared_ptr<scene::CastScene> donor;
+    if(donorGame!="bo2"&&scene::imported::world_grip::codSocketConvention(donorGame)){
+        const auto reference=pointBlankDonor(app,donorGame=="bo2_sp"?"bo2":donorGame);
+        if(!reference||!scene::imported::completeBodyLayout(scene::imported::bodyOrCodLayout(*reference)))return reject("complete native CoD body reference unavailable for "+donorGame);
+        donor=std::make_shared<scene::CastScene>();donor->skeleton=*reference;
+    }else{
+        const auto selection=importedBodyDonor(app,cache,document,donorGame);
+        if(selection.path.empty())return reject(selection.error);
+        const auto reference=importedBodyReference(cache,selection.path);if(!reference)return reject("native donor unavailable");
+        donor=std::make_shared<scene::CastScene>(*reference);
+    }
     try{scene::appendAnimations(document,*donor);}catch(const std::exception& e){return reject(e.what());}
     if(donor->animations.empty())return reject("no native body clip bound");
     for(std::size_t i=0;i<donor->animations.size();++i){auto& clip=donor->animations[i];
-        if(assets::imported::sourceFamily(game))scene::imported::classifySourceBodyAnimation(clip);
+        clip.sourceGame=sourceGame;
+        if(assets::imported::sourceFamily(game)||game=="cs2")scene::imported::classifySourceBodyAnimation(clip);
+        scene::imported::classifyNativeGaitLayer(donor->skeleton,clip);
+        scene::imported::inferNativeWalkDirection(*donor,i);
         if((clip.domain!=scene::AnimationDomain::PlayerBody&&clip.domain!=scene::AnimationDomain::PlayerTorso)||clip.contextual){reject("only non-contextual body clips are enabled");continue;}
         clip.sourceGame=sourceGame;
         // Keep native clips native when both model identity and bind match.
@@ -151,6 +174,7 @@ bool appendImportedWorldAnimation(AppState& app,const cast::Document& document,s
         // when complete skeleton equality is established.
         if(importedBodySameBind(target.skeleton,donor->skeleton)&&
            (game!="eldewrito"||target.importedBodyIdentity==donor->importedBodyIdentity)){
+            if(clip.domain==scene::AnimationDomain::PlayerTorso){const auto mask=scene::imported::nativeBodyTorsoMask(target.skeleton);for(auto& track:clip.tracks)if(track.boneIndex>=mask.size()||!mask[track.boneIndex])track.ownsLayer=false;}
             target.animations.push_back(clip);
         }else{
             std::string error;if(!scene::imported::appendRetargetedBody(target,donor,i,error))reject(error);

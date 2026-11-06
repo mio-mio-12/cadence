@@ -9,6 +9,74 @@ std::string lowerText(std::string text){for(auto& c:text)c=static_cast<char>(std
 int main(){
     {
         scene::CastScene s;
+        for(const char* name:{"pb_grenade_run_f.cast","pb_rifle_crouch_walk_lowready_f.cast","pb_rifle_stand_idle.cast"}){
+            scene::Animation a;a.sourceName=name;scene::classifyAnimationName(name,a);a.tracks.emplace_back();s.animations.push_back(a);
+        }
+        scene::Animation fallback;fallback.domain=scene::AnimationDomain::PlayerBody;fallback.motion=scene::MotionRole::Run;fallback.stance=scene::Stance::Stand;fallback.weapon=scene::WeaponClass::Rifle;fallback.direction=scene::Direction::Forward;
+        assert(needsWorldMovementFallback(s,fallback,3)); // Grenade carry is not a rifle substitute.
+        fallback.stance=scene::Stance::Crouch;
+        assert(!needsWorldMovementFallback(s,fallback,3)); // Keep native walk even for a run query.
+        fallback.stance=scene::Stance::Stand;fallback.tracks.emplace_back();s.animations.push_back(fallback);
+        assert(needsWorldMovementFallback(s,fallback,3)); // Imported variants cannot hide remaining holes.
+        assert(!needsWorldMovementFallback(s,fallback,4));
+        for(auto action:{scene::ActionRole::Fire,scene::ActionRole::Reload}){fallback.action=action;assert(!needsWorldMovementFallback(s,fallback,3));}
+        fallback.action=scene::ActionRole::None;fallback.motion=scene::MotionRole::Idle;assert(!needsWorldMovementFallback(s,fallback,3));
+    }
+    {
+        scene::CastScene s;
+        for(const auto* name:{"mp_stand_idle_twitch_b.cast","mp_stand_idle.cast"}){
+            scene::Animation a;scene::classifyAnimationName(name,a);a.sourceName=name;a.tracks.emplace_back();s.animations.push_back(a);
+        }
+        s.animations[0].looping=false;s.animations[1].looping=true;
+        scene::AnimationQuery q;q.domain=scene::AnimationDomain::PlayerBody;q.motion=scene::MotionRole::Idle;q.stance=scene::Stance::Stand;q.weapon=scene::WeaponClass::Rifle;q.direction=scene::Direction::Backward;
+        assert(worldClipDirection(s.animations[0])==scene::Direction::Any);
+        assert(selectGroundWorldLocomotion(s,q)==1);
+        for(const char* suffix:{"f","b","l","r"})for(const char* ending:{".cast","_variant.cast"}){
+            scene::Animation a;a.sourceName=std::string("mp_stand_idle_twitch_")+suffix+ending;scene::classifyAnimationName(a.sourceName,a);
+            assert(worldClipDirection(a)==scene::Direction::Any);
+        }
+        for(const char* name:{"mp_stand_idle_backward.cast","pb_stand_walk_b.cast","pb_stand_run_b.cast","pb_stand_run_b_2_idle.cast"}){
+            scene::Animation a;a.sourceName=name;scene::classifyAnimationName(name,a);
+            assert(worldClipDirection(a)==scene::Direction::Backward);
+        }
+    }
+    {
+        scene::CastScene s;
+        for(const auto* name:{"mp_female_assault_sprint.cast","pb_stand_shoot_walk_forward.cast","pt_rifle_fire.cast"}){
+            scene::Animation a;scene::classifyAnimationName(name,a);a.sourceName=name;a.tracks.emplace_back();s.animations.push_back(a);
+        }
+        assert(s.animations[1].action==scene::ActionRole::None&&s.animations[1].ads);
+        assert(s.animations[2].action==scene::ActionRole::Fire);
+        scene::AnimationQuery q;q.domain=scene::AnimationDomain::PlayerBody;q.motion=scene::MotionRole::Walk;q.stance=scene::Stance::Stand;q.weapon=scene::WeaponClass::Rifle;q.direction=scene::Direction::Forward;
+        assert(selectGroundWorldLocomotion(s,q)==1);
+    }
+    {
+        scene::CastScene s;
+        for(const auto* name:{"mp_stand_flash_reaction_b.cast","pb_stand_ads.cast"}){scene::Animation a;scene::classifyAnimationName(name,a);a.sourceName=name;a.tracks.emplace_back();s.animations.push_back(a);}
+        assert(s.animations[0].contextual);
+        scene::AnimationQuery q;q.domain=scene::AnimationDomain::PlayerBody;q.motion=scene::MotionRole::Idle;q.stance=scene::Stance::Stand;q.weapon=scene::WeaponClass::Rifle;q.direction=scene::Direction::Backward;
+        assert(selectGroundWorldLocomotion(s,q)==1);
+        scene::Animation view;scene::classifyAnimationName("viewmodel_flash_reaction.cast",view);assert(!view.contextual);
+    }
+    {
+        scene::CastScene s;
+        for(const auto* name:{"mp_akimbo_crouch_walk_f.cast","pb_crouch_hold_run.cast"}){
+            scene::Animation a;scene::classifyAnimationName(name,a);a.sourceName=name;a.tracks.emplace_back();s.animations.push_back(a);
+        }
+        assert(!hasCrouchedLongGunLocomotion(s,scene::Direction::Forward));
+        scene::Animation native;scene::classifyAnimationName("pb_crouch_run_forward.cast",native);
+        native.sourceName="pb_crouch_run_forward.cast";native.tracks.emplace_back();s.animations.push_back(native);
+        assert(hasCrouchedLongGunLocomotion(s,scene::Direction::Forward));
+        assert(!hasCrouchedLongGunLocomotion(s,scene::Direction::Backward));
+        scene::AnimationQuery q;q.domain=scene::AnimationDomain::PlayerBody;q.stance=scene::Stance::Crouch;
+        q.weapon=scene::WeaponClass::Rifle;q.motion=scene::MotionRole::Walk;q.direction=scene::Direction::Forward;
+        assert(selectGroundWorldLocomotion(s,q)==2);
+        s.animations.back().motion=scene::MotionRole::Walk;
+        assert(hasCrouchedLongGunLocomotion(s,scene::Direction::Forward));
+        s.animations.back().contextual=true;assert(!hasCrouchedLongGunLocomotion(s,scene::Direction::Forward));
+    }
+    {
+        scene::CastScene s;
         for(const auto name:{"pb_rifle_stand_shuffle_f.cast","pb_walk_forward.cast"}){scene::Animation c;scene::classifyAnimationName(name,c);c.sourceName=name;c.sourceGame="bo2";c.tracks.emplace_back();s.animations.push_back(c);}
         scene::AnimationQuery q;q.motion=scene::MotionRole::Walk;q.weapon=scene::WeaponClass::Rifle;q.stance=scene::Stance::Stand;q.direction=scene::Direction::Forward;q.ads=true;
         assert(selectGroundWorldLocomotion(s,q)==1);
@@ -95,4 +163,12 @@ int main(){
     q.stance=scene::Stance::Crouch;assert(selectGroundWorldLocomotion(actor,q)==4);
     q.stance=scene::Stance::Prone;q.motion=scene::MotionRole::Crawl;assert(selectGroundWorldLocomotion(actor,q)==1);
     q.stance=scene::Stance::Stand;q.motion=scene::MotionRole::Idle;assert(selectGroundWorldLocomotion(actor,q)==0);
+    actor.animations.clear();
+    for(const auto* name:{"mp_assault_sprint.cast","pb_combatrun_forward_loop_lmg.cast","pb_walk_forward.cast"}){
+        scene::Animation a;scene::classifyAnimationName(name,a);a.tracks.push_back({});a.sourceGame="ghosts";a.direction=scene::Direction::Forward;actor.animations.push_back(a);
+    }
+    q={};q.domain=scene::AnimationDomain::PlayerBody;q.stance=scene::Stance::Stand;q.weapon=scene::WeaponClass::Rifle;q.direction=scene::Direction::Forward;
+    q.motion=scene::MotionRole::Run;assert(selectGroundWorldLocomotion(actor,q)==1);
+    q.motion=scene::MotionRole::Walk;assert(selectGroundWorldLocomotion(actor,q)==2);
+    q.motion=scene::MotionRole::Sprint;assert(selectGroundWorldLocomotion(actor,q)==0);
 }

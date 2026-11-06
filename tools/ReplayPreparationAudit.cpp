@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
 #undef main
@@ -9,6 +8,103 @@
 int main(int argc,char** argv){
     try{
         if(argc!=3)return 2;
+        if(std::string_view(argv[2])=="--italy"){
+            auto owner=std::make_unique<AppState>();auto& app=*owner;
+            app.defaultSalukiDirectory="exported_files";
+            take::Take incoming;std::string error;
+            if(!take::load(argv[1],incoming,error))throw std::runtime_error(error);
+            for(const auto* game:{"css","bo","bo2","blacksquad","cs2"})
+                if(!assets::appendScan(app.defaultSalukiDirectory/game,game,app.assetCatalog,error))throw std::runtime_error(error);
+            PreparedReplay replay;
+            bool ready=prepareReplay(app,incoming,{},replay,error);
+            if(!ready)std::cerr<<error<<'\n';
+            if(!glfwInit())throw std::runtime_error("GLFW initialization failed");
+            glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto* window=glfwCreateWindow(800,600,"Italy rig audit",nullptr,nullptr);
+            if(!window)throw std::runtime_error("Audit window failed");
+            glfwMakeContextCurrent(window);
+            render::StageRenderer renderer;if(!renderer.initialize(error))throw std::runtime_error(error);
+            const auto captures=std::filesystem::current_path()/"diagnostics/v494/italy";std::filesystem::create_directories(captures);
+            bool mounts=true;
+            ImportedWorldGripBatch batch;
+            for(std::uint8_t slot=0;slot<3;++slot){
+                const auto& actor=incoming.actorSlots[slot];
+                const auto& world=incoming.worldActorSlots[slot];
+                std::cout<<"slot "<<int(slot+1)<<": ";
+                if(ready)std::cout<<replay.rigs[slot]->scene.skeleton.bones.size()<<" bones ";
+                std::cout<<'\n';
+                if(ready&&replay.rigs[slot]->worldActor){
+                    for(const auto& mount:replay.rigs[slot]->worldActor->attachments)
+                        std::cout<<"restored world "<<mount.name<<'\n';
+                }
+                const auto view=std::find_if(app.assetCatalog.entries.begin(),app.assetCatalog.entries.end(),[&](const auto& a){return a.path==std::filesystem::path(actor.rigModels.at(0));});
+                if(view==app.assetCatalog.entries.end())throw std::runtime_error("Missing view catalog entry");
+                const auto index=std::size_t(view-app.assetCatalog.entries.begin());
+                const auto worldIndex=findWorldWeaponForViewWeapon(app,*view);
+                auto body=scene::buildScene(cast::Document::load(world.baseModel));
+                const auto doc=cast::Document::load(app.assetCatalog.entries.at(worldIndex).path);
+                if(!attachImportedWorldWeaponAndParts(app,doc,index,worldIndex,body,"css")||body.attachments.empty()){
+                    for(const auto& warning:body.warnings)std::cerr<<warning<<'\n';
+                    mounts=false;continue;
+                }
+                std::cout<<"mount "<<body.skeleton.bones.at(body.attachments.front().boneIndex).name
+                         <<" model "<<body.attachments.front().name<<'\n';
+                const std::string family=slot==0?"rifle":slot==1?"pistol":"knife";
+                const auto folder=app.defaultSalukiDirectory/"css"/"animations";
+                assets::AnimationFileIndex files;
+                for(const auto& file:files.files(folder))if(file.lowerFilename.starts_with("pb_"+family+"_stand_idle_clip")){
+                    scene::appendAnimations(cast::Document::load(file.path),body);if(!body.animations.empty())break;
+                }
+                const auto pose=body.samplePose(0,0);
+                const auto wrist=scene::transformPoint(pose.at(body.attachments.front().boneIndex),{});
+                const auto shoulder=scene::imported::world_grip::bone(body.skeleton,{"ValveBiped.Bip01_R_UpperArm"});
+                const auto focus=shoulder>=0?(wrist*2+scene::transformPoint(pose[shoulder],{}))/3.f:wrist;
+                if(!renderer.loadScene(body,error))throw std::runtime_error(error);
+                for(int angle=0;angle<2;++angle){
+                    const auto eye=focus+scene::Vec3{angle?80.f:-70.f,-110,38};
+                    renderer.setCameraPosition(eye);
+                    const auto vp=scene::perspective(55*scene::kPi/180,800.f/600,.1f,2000)*scene::lookAt(eye,focus,{0,0,1});
+                    renderer.render(body,pose,vp,800,600,false,false,false);
+                    if(!renderer.saveColorPng(captures/("slot_"+std::to_string(slot+1)+"_"+std::to_string(angle)+".png"),error))throw std::runtime_error(error);
+                }
+            }
+            renderer.shutdown();glfwDestroyWindow(window);glfwTerminate();
+            if(!ready||!mounts)return 1;
+            if(!replay.rigs[0]->worldActor||replay.rigs[0]->worldActor->attachments.empty()||
+                replay.rigs[0]->worldActor->attachments.front().name!="w_snip_awp"||
+                !replay.rigs[1]->worldActor||replay.rigs[1]->worldActor->attachments.empty())
+                throw std::runtime_error("The original replay did not pick up the corrected default world mounts");
+            const auto originalCount=incoming.samples.size();
+            const auto* originalPose=incoming.samples.front().pose.data();
+            take::TrimHistory trims;
+            if(!trims.apply(incoming,10,originalCount-11)||!trims.apply(incoming,4,incoming.samples.size()-5)||
+               !trims.undo(incoming)||!trims.undo(incoming)||incoming.samples.size()!=originalCount||incoming.samples.front().pose.data()!=originalPose)
+                throw std::runtime_error("Real replay tick trim/undo did not preserve pose storage");
+            app.recordedTake=std::move(incoming);app.scene=std::move(replay.rigs[0]->scene);
+            app.loadedAttachmentPaths=replay.rigs[0]->attachmentPaths;app.takePreview=true;app.takePlaybackSlot=0;
+            const auto before=replayAttachmentSnapshot(app);
+            const auto prop=std::filesystem::path(app.recordedTake.actorSlots[0].rigModels.back());
+            if(!scene::appendAttachment(cast::Document::load(prop),app.scene,0,"audit prop"))throw std::runtime_error("Could not add test attachment");
+            app.loadedAttachmentPaths.push_back(prop);app.scene.attachments.back().position={4,5,6};
+            commitReplayAttachmentEdits(app,before);
+            if(!app.takeDirty||app.recordedTake.actorSlots[0].attachedModels.back().position.z!=6||!app.recordedTake.actorSlots[1].attachedModels.empty())
+                throw std::runtime_error("Attachment edit did not stay in the selected slot");
+            const auto beforeTags=app.scene.hiddenBones;
+            const auto tag=std::find_if(app.scene.skeleton.bones.begin(),app.scene.skeleton.bones.end(),[&](const auto& b){
+                return scene::canonicalName(b.name).starts_with("tag_")&&!beforeTags.contains(std::size_t(&b-app.scene.skeleton.bones.data()));
+            });
+            if(tag!=app.scene.skeleton.bones.end()){
+                const auto index=std::uint32_t(tag-app.scene.skeleton.bones.begin());
+                app.scene.hiddenBones.insert(index);commitReplayTagEdits(app,beforeTags);
+                const auto& sample=app.recordedTake.samples.front();
+                if(std::find(sample.hiddenBones.begin(),sample.hiddenBones.end(),index)==sample.hiddenBones.end())throw std::runtime_error("Tag edit did not reach replay ticks");
+            }
+            auto restored=std::make_unique<AppState>();restored->deferSceneUpload=true;restored->assetCatalog=app.assetCatalog;restored->defaultSalukiDirectory=app.defaultSalukiDirectory;
+            if(!restoreTakeActorInternal(*restored,app.recordedTake.actorSlots[0],app.recordedTake.bonesForSlot(0),false,error)||
+               restored->scene.attachments.empty()||restored->scene.attachments.back().position.z!=6)
+                throw std::runtime_error("Edited attachment could not be restored: "+error);
+            std::cout<<"PASS exact original slot counts, tick undo, isolated attachment edit and rebuild\n";
+            return 0;
+        }
         if(!glfwInit())throw std::runtime_error("GLFW initialization failed");
         glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);
         auto* window=glfwCreateWindow(640,360,"Replay preparation audit",nullptr,nullptr);
@@ -19,7 +115,7 @@ int main(int argc,char** argv){
         std::filesystem::create_directories(root);
         auto owner=std::make_unique<AppState>();auto& app=*owner;
         app.window=window;
-        app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
+        app.defaultSalukiDirectory="exported_files";
         std::string error;
         if(!app.renderer.initialize(error))throw std::runtime_error(error);
         for(const auto* game:{"bo2","csnz"})

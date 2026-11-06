@@ -15,7 +15,10 @@
             // Rechamber entry already crossfades from the captured fire pose.
             // A second idle-to-bolt ramp bends that path back through idle.
             const float enter=app.activeAction==scene::ActionRole::Fire||app.gameplayRechamber||app.activeAction==scene::ActionRole::Equip||app.activeAction==scene::ActionRole::FirstRaise?1.f:std::clamp(app.actionElapsed/fade,0.f,1.f);
-            const float leave=actionRequiresHold(app.activeAction)?1.f:std::clamp((duration-app.actionElapsed)/fade,0.f,1.f);
+            // Play the native reload/bolt recovery instead of simultaneously
+            // rotating it back through idle. Completion blends the final pose.
+            const bool nativeRecovery=!app.scene.pointBlankWeaponStem.empty()&&app.activeAction==scene::ActionRole::Reload;
+            const float leave=actionRequiresHold(app.activeAction)||nativeRecovery?1.f:std::clamp((duration-app.actionElapsed)/fade,0.f,1.f);
             const float t=std::min(enter,leave);actions.nodes.push_back({app.actionAnimationIndex,app.actionFrame,t*t*(3-2*t),scene::LayerMode::Override,false});
         }
         if(!actions.nodes.empty())slots.push_back(std::move(actions));

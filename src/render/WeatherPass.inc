@@ -2,16 +2,19 @@ namespace {
 struct WeatherGlState {
     GLint fb{},readFb{},active{},program{},vao{},viewport[4]{},textures[2]{},srcRgb{},dstRgb{},srcAlpha{},dstAlpha{};
     GLboolean depthMask{};bool blend{},depth{},cull{};
+    bool stencil{};GLint stencilFunc{},stencilRef{},stencilValueMask{},stencilWriteMask{},stencilFail{},stencilDepthFail{},stencilPass{},stencilClear{},renderbuffer{};
     WeatherGlState(){
         glGetIntegerv(0x8CA6,&fb);glGetIntegerv(0x8CAA,&readFb);glGetIntegerv(0x84E0,&active);glGetIntegerv(0x8B8D,&program);glGetIntegerv(0x85B5,&vao);glGetIntegerv(GL_VIEWPORT,viewport);
         glGetIntegerv(0x80C9,&srcRgb);glGetIntegerv(0x80C8,&dstRgb);glGetIntegerv(0x80CB,&srcAlpha);glGetIntegerv(0x80CA,&dstAlpha);
         glGetBooleanv(GL_DEPTH_WRITEMASK,&depthMask);blend=glIsEnabled(GL_BLEND);depth=glIsEnabled(GL_DEPTH_TEST);cull=glIsEnabled(GL_CULL_FACE);
+        stencil=glIsEnabled(GL_STENCIL_TEST);glGetIntegerv(GL_STENCIL_FUNC,&stencilFunc);glGetIntegerv(GL_STENCIL_REF,&stencilRef);glGetIntegerv(GL_STENCIL_VALUE_MASK,&stencilValueMask);glGetIntegerv(GL_STENCIL_WRITEMASK,&stencilWriteMask);glGetIntegerv(GL_STENCIL_FAIL,&stencilFail);glGetIntegerv(GL_STENCIL_PASS_DEPTH_FAIL,&stencilDepthFail);glGetIntegerv(GL_STENCIL_PASS_DEPTH_PASS,&stencilPass);glGetIntegerv(GL_STENCIL_CLEAR_VALUE,&stencilClear);glGetIntegerv(0x8CA7,&renderbuffer);
         for(int i=0;i<2;++i){glapi::ActiveTexture(glapi::Texture0+i);glGetIntegerv(GL_TEXTURE_BINDING_2D,&textures[i]);}
     }
     ~WeatherGlState(){
         for(int i=0;i<2;++i){glapi::ActiveTexture(glapi::Texture0+i);glBindTexture(GL_TEXTURE_2D,textures[i]);}
         glapi::ActiveTexture(active);glapi::UseProgram(program);glapi::BindVertexArray(vao);glapi::BindFramebuffer(glapi::DrawFramebuffer,fb);glapi::BindFramebuffer(glapi::ReadFramebuffer,readFb);glViewport(viewport[0],viewport[1],viewport[2],viewport[3]);
         glapi::BlendFuncSeparate(srcRgb,dstRgb,srcAlpha,dstAlpha);glDepthMask(depthMask);
+        glStencilFunc(stencilFunc,stencilRef,stencilValueMask);glStencilMask(stencilWriteMask);glStencilOp(stencilFail,stencilDepthFail,stencilPass);glClearStencil(stencilClear);if(stencil)glEnable(GL_STENCIL_TEST);else glDisable(GL_STENCIL_TEST);glapi::BindRenderbuffer(glapi::Renderbuffer,renderbuffer);
         for(auto p:{std::pair{GL_BLEND,blend},std::pair{GL_DEPTH_TEST,depth},std::pair{GL_CULL_FACE,cull}}){if(p.second)glEnable(p.first);else glDisable(p.first);}
     }
 };
@@ -32,6 +35,9 @@ void StageRenderer::renderWeather(const scene::Mat4& vp){
     const bool particles=weather_.snow.enabled||weather_.dust.enabled||weather_.debris.enabled;
     if(!particles&&!weather_.fog.enabled)return;
     if(particles&&!weatherProgram_){weatherProgram_=compileProgram(kWeatherVertex.c_str(),kWeatherParticleFragment.c_str(),weatherError_);if(!weatherProgram_)return;}
+    const bool reducedHaze=weatherFast_&&weather_.dust.enabled&&weather_.dust.sheets>0&&weather_.dust.opacity>0;
+    if(reducedHaze&&!weatherHazeComposite_){weatherHazeComposite_=compileProgram(kEnvironmentVertex,kWeatherHazeComposite.c_str(),weatherError_);if(!weatherHazeComposite_)return;}
+    if(reducedHaze&&!weatherHazeMaskProgram_){weatherHazeMaskProgram_=compileProgram(kEnvironmentVertex,kWeatherHazeMask.c_str(),weatherError_);if(!weatherHazeMaskProgram_)return;}
     if(weather_.fog.enabled&&!weatherScreenProgram_){weatherScreenProgram_=compileProgram(kEnvironmentVertex,kWeatherScreenFragment.c_str(),weatherError_);if(!weatherScreenProgram_)return;}
     WeatherGlState restore;
     if(!weatherFramebuffer_)glapi::GenFramebuffers(1,&weatherFramebuffer_);
@@ -49,13 +55,15 @@ void StageRenderer::renderWeather(const scene::Mat4& vp){
     };
     if(particles){
         common(weatherProgram_);const auto loc=[&](const char* n){return uniformLocation(weatherProgram_,n);};
+        glapi::Uniform1i(loc("uWeatherFast"),weatherFast_);
+        glapi::Uniform1f(loc("uPixelScale"),1.f);
         glapi::UniformMatrix4fv(loc("uVP"),1,GL_FALSE,vp.data());glapi::Uniform1f(loc("uRadius"),weather::safe(weather_.range,100,20000));
         glapi::Uniform1i(loc("uShelter"),1);glapi::ActiveTexture(glapi::Texture0+1);glBindTexture(GL_TEXTURE_2D,weatherShelter_.texture);
         glapi::Uniform3f(loc("uTile"),weatherShelter_.center.x,weatherShelter_.center.y,std::max(1.f,weatherShelter_.extent));glapi::Uniform3f(loc("uShelterSlope"),0,0,0);
         glapi::Uniform3f(loc("uLight"),weather::safe(ambientColor_.x*sunAmbient_+sunColor_.x*sunIntensity_*.35f,.05f,10),weather::safe(ambientColor_.y*sunAmbient_+sunColor_.y*sunIntensity_*.35f,.05f,10),weather::safe(ambientColor_.z*sunAmbient_+sunColor_.z*sunIntensity_*.35f,.05f,10));
         glapi::Uniform1i(loc("uFog"),fogEnabled_);glapi::Uniform4f(loc("uFogParams"),fogStart_,fogHalfDistance_,fogOpacity_,0);glapi::Uniform3f(loc("uFogColor"),fogColor_.x,fogColor_.y,fogColor_.z);
         const auto draw=[&](const weather::Particles& p,int kind){
-            if(!p.enabled)return;const auto& w=p.ownWind?p.wind:weather_.wind;const auto drift=weather::drift(w,weatherTime_);
+            if(!p.enabled||p.opacity<=0||(kind==3?p.sheets:p.density)<=0)return;const auto& w=p.ownWind?p.wind:weather_.wind;const auto drift=weather::drift(w,weatherTime_);
             glapi::Uniform3f(loc("uDrift"),drift.x,drift.y,0);glapi::Uniform1f(loc("uFall"),float(std::remainder(weatherTime_*weather::safe(p.speed,-100,100)*100.,1.e8)));
             glapi::Uniform4f(loc("uTurbulence"),weather::safe(w.turbulence,-20,20)*30,weather::safe(std::abs(w.scale),.01f,10000)*100,weather::safe(w.rate,-100,100),0);
             glapi::Uniform4f(loc("uHeight"),weather::safe(std::min(p.bottom,p.top),-1e7f,1e7f),weather::safe(std::max(p.bottom,p.top),-1e7f,1e7f),30,0);
@@ -72,7 +80,59 @@ void StageRenderer::renderWeather(const scene::Mat4& vp){
             glapi::DrawArrays(GL_TRIANGLES,0,13*13*13*budget.slots*6);
         };
         // Coarse haze first; grains and flakes retain their sharper silhouettes.
-        if(weather_.dust.sheets>0)draw(weather_.dust,3);draw(weather_.dust,1);draw(weather_.snow,0);draw(weather_.debris,2);
+        if(reducedHaze){
+            const int divisor=weather_.quality>=2?2:3;
+            const int lowWidth=(width_+divisor-1)/divisor,lowHeight=(height_+divisor-1)/divisor;
+            if(!weatherHazeMaskFramebuffer_)glapi::GenFramebuffers(1,&weatherHazeMaskFramebuffer_);
+            if(!weatherHazeStencil_)glapi::GenRenderbuffers(1,&weatherHazeStencil_);
+            glapi::BindRenderbuffer(glapi::Renderbuffer,weatherHazeStencil_);
+            if(weatherHazeMaskWidth_!=width_||weatherHazeMaskHeight_!=height_){
+                glapi::RenderbufferStorage(glapi::Renderbuffer,0x8D48,width_,height_); // STENCIL_INDEX8
+                weatherHazeMaskWidth_=width_;weatherHazeMaskHeight_=height_;
+            }
+            glapi::BindFramebuffer(glapi::Framebuffer,weatherHazeMaskFramebuffer_);
+            glapi::FramebufferTexture2D(glapi::Framebuffer,glapi::ColorAttachment0,GL_TEXTURE_2D,colorTexture_,0);
+            glapi::FramebufferRenderbuffer(glapi::Framebuffer,0x8D20,glapi::Renderbuffer,weatherHazeStencil_);
+            if(glapi::CheckFramebufferStatus(glapi::Framebuffer)!=glapi::FramebufferComplete){weatherError_="Weather edge mask framebuffer is incomplete";return;}
+            glEnable(GL_STENCIL_TEST);glStencilMask(0xff);glClearStencil(0);glClear(GL_STENCIL_BUFFER_BIT);glStencilFunc(GL_ALWAYS,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);
+            GLboolean colorMask[4];glGetBooleanv(GL_COLOR_WRITEMASK,colorMask);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);
+            glDisable(GL_BLEND);common(weatherHazeMaskProgram_);
+            glapi::Uniform2f(uniformLocation(weatherHazeMaskProgram_,"uLowSize"),float(lowWidth),float(lowHeight));glapi::DrawArrays(GL_TRIANGLES,0,3);
+            glColorMask(colorMask[0],colorMask[1],colorMask[2],colorMask[3]);glDisable(GL_STENCIL_TEST);glStencilMask(0);glStencilOp(GL_KEEP,GL_KEEP,GL_KEEP);
+            glEnable(GL_BLEND);common(weatherProgram_);
+            if(!weatherHazeFramebuffer_)glapi::GenFramebuffers(1,&weatherHazeFramebuffer_);
+            if(!weatherHazeTexture_)glGenTextures(1,&weatherHazeTexture_);
+            glapi::ActiveTexture(glapi::Texture0+1);glBindTexture(GL_TEXTURE_2D,weatherHazeTexture_);
+            if(weatherHazeWidth_!=lowWidth||weatherHazeHeight_!=lowHeight){
+                glTexImage2D(GL_TEXTURE_2D,0,glapi::Rgba16f,lowWidth,lowHeight,0,GL_RGBA,GL_FLOAT,nullptr);
+                glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,glapi::ClampToEdge);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,glapi::ClampToEdge);
+                weatherHazeWidth_=lowWidth;weatherHazeHeight_=lowHeight;
+            }
+            glapi::BindFramebuffer(glapi::Framebuffer,weatherHazeFramebuffer_);
+            glapi::FramebufferTexture2D(glapi::Framebuffer,glapi::ColorAttachment0,GL_TEXTURE_2D,weatherHazeTexture_,0);
+            if(glapi::CheckFramebufferStatus(glapi::Framebuffer)!=glapi::FramebufferComplete){weatherError_="Weather haze framebuffer is incomplete";return;}
+            GLfloat clearColor[4];glGetFloatv(GL_COLOR_CLEAR_VALUE,clearColor);glClearColor(0,0,0,0);glClear(GL_COLOR_BUFFER_BIT);glClearColor(clearColor[0],clearColor[1],clearColor[2],clearColor[3]);
+            // The sampled scene depth is never attached to this framebuffer.
+            glBindTexture(GL_TEXTURE_2D,weatherShelter_.texture);
+            glViewport(0,0,lowWidth,lowHeight);glapi::Uniform2f(loc("uViewport"),float(lowWidth),float(lowHeight));glapi::Uniform1f(loc("uPixelScale"),float(divisor));
+            glapi::BlendFuncSeparate(GL_ONE,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
+            draw(weather_.dust,3);
+            glapi::BindFramebuffer(glapi::Framebuffer,weatherFramebuffer_);glViewport(0,0,width_,height_);
+            glapi::FramebufferRenderbuffer(glapi::Framebuffer,0x8D20,glapi::Renderbuffer,weatherHazeStencil_);
+            glEnable(GL_STENCIL_TEST);glStencilFunc(GL_NOTEQUAL,1,0xff);
+            glapi::BlendFuncSeparate(GL_ONE,GL_ONE_MINUS_SRC_ALPHA,GL_ZERO,GL_ONE);
+            common(weatherHazeComposite_);
+            glapi::Uniform2f(uniformLocation(weatherHazeComposite_,"uLowSize"),float(lowWidth),float(lowHeight));
+            glapi::Uniform1i(uniformLocation(weatherHazeComposite_,"uHaze"),1);
+            glapi::ActiveTexture(glapi::Texture0+1);glBindTexture(GL_TEXTURE_2D,weatherHazeTexture_);glapi::DrawArrays(GL_TRIANGLES,0,3);
+            common(weatherProgram_);glapi::Uniform1f(loc("uPixelScale"),1.f);
+            glapi::ActiveTexture(glapi::Texture0+1);glBindTexture(GL_TEXTURE_2D,weatherShelter_.texture);
+            // Resolve fine geometry with the original shader instead of
+            // allowing missing low-resolution samples to punch holes in haze.
+            glStencilFunc(GL_EQUAL,1,0xff);draw(weather_.dust,3);glDisable(GL_STENCIL_TEST);
+        }else if(weather_.dust.sheets>0)draw(weather_.dust,3);
+        draw(weather_.dust,1);draw(weather_.snow,0);draw(weather_.debris,2);
     }
     if(weather_.fog.enabled){
         common(weatherScreenProgram_);const auto loc=[&](const char* n){return uniformLocation(weatherScreenProgram_,n);};const auto& f=weather_.fog;

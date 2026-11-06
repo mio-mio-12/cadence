@@ -21,6 +21,30 @@ static std::optional<std::size_t> originalContext(const cadence::sp::ContextLibr
 }
 int main(){
     {
+        using gameplay::bot::Actor;using gameplay::bot::selectLocomotionAnimation;
+        std::vector<scene::Animation> clips(4);clips[0].motion=scene::MotionRole::Climb;
+        clips[1].motion=scene::MotionRole::Idle;clips[2].motion=scene::MotionRole::Run;clips[2].durationFrames=40;
+        clips[3].motion=scene::MotionRole::Sprint;clips[3].durationFrames=60;
+        Actor fresh;check(fresh.animation>=clips.size(),"fresh actor starts on arbitrary clip zero");
+        check(selectLocomotionAnimation(fresh,1,clips,true)&&fresh.animation==1&&fresh.previousAnimation>=clips.size()&&fresh.animationFrame==0,"spawn blends mantle zero into first idle");
+        fresh.animationFrame=7;
+        check(!selectLocomotionAnimation(fresh,1,clips,true)&&fresh.animationFrame==7,"unchanged idle restarted");
+        check(selectLocomotionAnimation(fresh,2,clips,true)&&fresh.previousAnimation==1&&fresh.previousAnimationFrame==7&&fresh.animationBlendElapsed==0,"later transition lost its genuine previous pose");
+        fresh.animationFrame=10;selectLocomotionAnimation(fresh,3,clips,true);
+        check(fresh.previousAnimation==2&&fresh.animationFrame==15,"SP gait phase transfer changed");
+        gameplay::bot::respawnActor(fresh,{});
+        check(fresh.animation>=clips.size()&&fresh.previousAnimation>=clips.size(),"respawn retains animation history");
+        selectLocomotionAnimation(fresh,1,clips,true);check(fresh.previousAnimation>=clips.size(),"respawn blends from unpresented clip");
+        Actor firstZero;selectLocomotionAnimation(firstZero,0,clips,false);
+        check(firstZero.animation==0&&firstZero.previousAnimation>=clips.size(),"first selected clip zero is not initialized directly");
+        firstZero.animationFrame=3;selectLocomotionAnimation(firstZero,1,clips,false);
+        check(firstZero.previousAnimation==0&&firstZero.previousAnimationFrame==3,"real presented clip zero was not preserved for later blending");
+        Actor earlyDeath;earlyDeath.previousAnimation=earlyDeath.animation;earlyDeath.animation=0;
+        check(earlyDeath.previousAnimation>=clips.size(),"direct death assignment before initialization acquired a phantom previous clip");
+        Actor classic;selectLocomotionAnimation(classic,2,clips,false);classic.animationFrame=10;selectLocomotionAnimation(classic,3,clips,false);
+        check(classic.animationFrame==0&&classic.previousAnimationFrame==10,"Classic transition unexpectedly acquired SP gait phase");
+    }
+    {
         cadence::BotDeathHistory history;cadence::BotDeathRequest request;request.spMode=true;request.mix=1;
         std::vector<cadence::BotDeathChoice> choices;
         for(unsigned i=0;i<8;++i){cadence::BotDeathChoice c;c.animation=i;c.key="death_"+std::to_string(i);choices.push_back(c);}
@@ -61,6 +85,17 @@ int main(){
     check(!scene.animations[0].looping,"reload remained looping");
     for(int i=30;i<120;++i)check(scene.sampleLocalPose(0,float(i))[0].position.x==10,"short reload wrapped rather than holding final pose");
     using scene::ActionRole;
+    gameplay::bot::ActionCrossfade fade;
+    fade.select(2,60,3,1);
+    check(fade.previous==2&&fade.frame==60&&fade.incoming(.1f)==0,"action switch lost outgoing pose");
+    fade.elapsed=.05f;
+    check(std::abs(fade.incoming(.1f)-.5f)<.0001f,"action crossfade midpoint incorrect");
+    fade.select(3,1,3,1);
+    check(fade.previous==2&&fade.elapsed==.05f,"repeated shot restarted action fade");
+    fade.elapsed=.1f;
+    check(fade.incoming(.1f)==1,"action fade did not complete");
+    fade.select(3,5,4,0);
+    check(fade.previous==static_cast<std::size_t>(-1),"inactive action leaked into next action");
     check(gameplay::bot::restartBotAction(true,true,ActionRole::Reload,true,10,30),"new reload did not restart");
     check(!gameplay::bot::restartBotAction(true,true,ActionRole::Fire,true,10,30),"automatic shot restarted cycle opening");
     check(gameplay::bot::restartBotAction(true,true,ActionRole::Fire,true,30,30),"completed cycle did not restart on next shot");
@@ -77,6 +112,32 @@ int main(){
     check(cadence::selectBotDeath(deaths,history,r).has_value(),"small pool first choice failed");
     check(cadence::selectBotDeath(deaths,history,r).has_value(),"small pool second choice failed");
     check(!cadence::selectBotDeath(deaths,history,r),"exhausted pool violated hard repeat exclusion");
+    {
+        using scene::Direction;
+        using scene::MotionRole;
+        using scene::Stance;
+        using scene::WeaponClass;
+        const std::vector<cadence::BotDeathChoice> pool{
+            {0,"front",MotionRole::Idle,Stance::Stand,Direction::Forward,WeaponClass::Any},
+            {1,"back",MotionRole::Idle,Stance::Stand,Direction::Backward,WeaponClass::Any},
+            {2,"left",MotionRole::Idle,Stance::Stand,Direction::Left,WeaponClass::Any},
+            {3,"right",MotionRole::Idle,Stance::Stand,Direction::Right,WeaponClass::Any},
+            {4,"neutral",MotionRole::Idle,Stance::Stand,Direction::Any,WeaponClass::Any},
+            {5,"crouch",MotionRole::Idle,Stance::Crouch,Direction::Forward,WeaponClass::Any}
+        };
+        for(auto motion:{MotionRole::Idle,MotionRole::Run}){
+            cadence::BotDeathHistory rotation;
+            cadence::BotDeathRequest request{motion,Stance::Stand,motion==MotionRole::Idle?Direction::Any:Direction::Forward,WeaponClass::Rifle};
+            std::array<int,6> counts{};
+            for(unsigned i=0;i<100;++i){
+                rotation.beginBatch(i);
+                const auto choice=cadence::selectBotDeath(pool,rotation,request);
+                check(choice.has_value(),"compatible death rotation ran out of choices");
+                if(choice)++counts[*choice];
+            }
+            check(counts==std::array<int,6>{20,20,20,20,20,0},"death rotation favored one direction or used the wrong posture");
+        }
+    }
 
     cadence::sp::ContextLibrary library;
     for(int copy=0;copy<80;++copy)for(const auto& d:cadence::sp::kContextDescriptors)library.push_back({library.size(),d});

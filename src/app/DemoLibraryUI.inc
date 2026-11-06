@@ -84,15 +84,14 @@ void processDemoLibrary(AppState &app) {
         publishRecordedTakeOpen(app,*prepared);
       else if(!prepared)openRecordedTake(app,demo); // Legacy/manual queue callers.
       else app.status="Pending demo changed; prepared replay was discarded";
-    }else
+    }else{
       app.status = "Map load failed; demo was not opened";
+      app.takeLoadError = app.status + "\n" + demo.string();
+    }
   }
 }
-void openSetDemo(AppState &app, const std::filesystem::path &path) {
-  if (const auto* blocked=replayOpenBlockedReason(app))
-    throw std::runtime_error(blocked);
-  auto prepared=prepareRecordedTakeOpen(app,path);
-  if(!prepared)throw std::runtime_error(app.status);
+void finishSetDemoOpen(AppState &app, std::shared_ptr<PreparedTakeOpen> prepared) {
+  const auto path=prepared->path;
   app.pendingPreparedTakeOpen.reset();
   app.demoLibrary.pendingDemo.clear();app.demoLibrary.pendingMap.clear();
   const auto& metadata=prepared->metadata;
@@ -112,11 +111,16 @@ void openSetDemo(AppState &app, const std::filesystem::path &path) {
         app.demoLibrary.pendingDemo = path;
         app.demoLibrary.pendingMap = map;
         app.demoLibrary.pendingMapScale = metadata.mapScale;
+      } else {
+        app.takeLoadError="Could not start map load for take: "+path.string()+"\n"+app.status;
       }
       return;
     }
   }
   publishRecordedTakeOpen(app,*prepared);
+}
+void openSetDemo(AppState &app, const std::filesystem::path &path) {
+  queueRecordedTakeOpen(app,path,true);
 }
 void drawDemoProgress(AppState &app) {
   auto &l = app.demoLibrary;
@@ -178,6 +182,9 @@ void drawDemoSets(AppState &app) {
     demoAction(app, [&] {
       cadence::content::saveDemo(app.recordedTake, l.recording, l.set,
                                  l.demoName.data());
+      app.takeFilePath=l.set/std::filesystem::u8path(l.demoName.data());
+      if(cadence::content::key(app.takeFilePath.extension())!=".c_dm")app.takeFilePath+=".c_dm";
+      app.cameraHistory.observe({app.recordedTake.dollyCamera,app.recordedTake.cameraPaths});app.takeDirty=false;
       l.plan.reset();
       refreshDemoLibrary(app);
       app.status = "Saved demo in " + l.set.filename().string();

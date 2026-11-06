@@ -11,9 +11,9 @@ int main(int argc, char** argv) {
     if (argc >= 2) {
         testPaths.push_back(std::filesystem::u8path(argv[1]));
     } else {
-        const std::filesystem::path defaultRaid = R"(G:\COD Modding\tools\C2M_COD\C2MBeta 082026\C2MBeta\exported_maps\black_ops_2\mp_raid\mp_raid.c2m)";
-        const std::filesystem::path defaultCrossfire = R"(G:\COD Modding\tools\C2M_COD\C2MBeta 082026\C2MBeta\exported_maps\modern_warfare\mp_crossfire\mp_crossfire.c2m)";
-        const std::filesystem::path defaultSkyway = R"(G:\COD Modding\tools\C2M_COD\C2MBeta 082026\C2MBeta\exported_maps\infinite_warfare\mp_skyway\mp_skyway.c2m)";
+        const std::filesystem::path defaultRaid = R"(local_fixtures\tools\C2M_COD\C2MBeta 082026\C2MBeta\exported_maps\black_ops_2\mp_raid\mp_raid.c2m)";
+        const std::filesystem::path defaultCrossfire = R"(local_fixtures\tools\C2M_COD\C2MBeta 082026\C2MBeta\exported_maps\modern_warfare\mp_crossfire\mp_crossfire.c2m)";
+        const std::filesystem::path defaultSkyway = R"(local_fixtures\tools\C2M_COD\C2MBeta 082026\C2MBeta\exported_maps\infinite_warfare\mp_skyway\mp_skyway.c2m)";
         if (std::filesystem::is_regular_file(defaultRaid)) testPaths.push_back(defaultRaid);
         if (std::filesystem::is_regular_file(defaultSkyway)) testPaths.push_back(defaultSkyway);
         if (std::filesystem::is_regular_file(defaultCrossfire)) testPaths.push_back(defaultCrossfire);

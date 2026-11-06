@@ -1,10 +1,9 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceApplicationMain
 #include "../src/app/main.cpp"
 #undef main
 int main(int argc,char** argv){
     if(!glfwInit())return 2;glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto* window=glfwCreateWindow(640,480,"Action audit",nullptr,nullptr);if(!window)return 2;glfwMakeContextCurrent(window);
-    auto state=std::make_unique<AppState>();auto& a=*state;a.window=window;a.defaultSalukiDirectory=cadence::local_assets::exportPath("");std::string error;int failed{};
+    auto state=std::make_unique<AppState>();auto& a=*state;a.window=window;a.defaultSalukiDirectory="exported_files";std::string error;int failed{};
     for(const auto* game:{"bo2","cs1.6","css","csnz","cso2","eldewrito"}){if(argc>1&&std::string(argv[1])!=game)continue;
         if(!assets::appendScan(a.defaultSalukiDirectory/game,game,a.assetCatalog,error)){std::cerr<<error<<'\n';++failed;continue;}
         const auto model=findGenericPlayermodelForGame(a,game);prepareActionPreview(a,game,model);std::size_t deaths{};

@@ -1,11 +1,10 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceApplicationMain
 #include "../src/app/main.cpp"
 #undef main
 int main(){
  if(!glfwInit())return 1;glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto*w=glfwCreateWindow(900,700,"v202 verification",nullptr,nullptr);if(!w)return 2;glfwMakeContextCurrent(w);
  ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;ImGui_ImplGlfw_InitForOpenGL(w,true);ImGui_ImplOpenGL3_Init("#version 330");
- auto state=std::make_unique<AppState>();auto&a=*state;a.window=w;a.deferSceneUpload=true;a.defaultSalukiDirectory=cadence::local_assets::exportPath("");std::string error;
+ auto state=std::make_unique<AppState>();auto&a=*state;a.window=w;a.deferSceneUpload=true;a.defaultSalukiDirectory="exported_files";std::string error;
  if(!a.renderer.initialize(error))return 3;std::filesystem::create_directories("diagnostics/v202");std::ofstream report("diagnostics/v202/results.txt");
  for(const auto*g:{"bo2","cs2","codm","mw","mwr","aw"})(void)assets::appendScan(a.defaultSalukiDirectory/g,g,a.assetCatalog,error);
  auto find=[&](std::string game,assets::Role role,std::string key){for(size_t i=0;i<a.assetCatalog.entries.size();++i){const auto&e=a.assetCatalog.entries[i];if(e.game==game&&e.role==role&&lowerText(e.name).find(lowerText(key))!=std::string::npos)return i;}throw std::runtime_error("Missing "+game+" "+key);};

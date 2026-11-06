@@ -1,22 +1,16 @@
 #pragma once
 #include "scene/PointBlankNative.h"
 #include "scene/CodmLegacyAdapter.h"
+#include "scene/ImportedViewRetarget.h"
 #include <map>
 namespace scene::pointblank {
 inline bool fitHands(CastScene& native,const cast::Document& referenceDocument,const cast::Document& target,std::string& error){
  auto reference=buildScene(referenceDocument,false);
  if(exportedByPb2cast(target)){
-  // PB male/female skins have different binds, despite identical identities.
-  // Fit the selected skin into the exported clip driver once at assembly.
-  // Unlike cross-game fitting, native PB chains need no helper reassignment.
-  auto skin=buildScene(target,false);std::vector<size_t> map(skin.skeleton.bones.size());std::vector<Mat4> fit(map.size());
-  for(size_t i=0;i<map.size();++i){const auto& b=skin.skeleton.bones[i];auto source=native.skeleton.boneByName.find(b.name);if(source==native.skeleton.boneByName.end()){map[i]=static_cast<size_t>(-1);continue;}map[i]=source->second;fit[i]=native.skeleton.bones[source->second].restGlobal*b.inverseBind;}
-  for(auto& m:skin.meshes){m.viewmodelWeapon=false;for(auto& v:m.vertices){Vec3 position{},normal{};float total=0;
-   for(size_t k=0;k<v.weights.size();++k)if(v.weights[k]>0){const auto b=v.bones[k];if(b>=map.size()||map[b]==static_cast<size_t>(-1)){error="Unmapped weighted PB hand bone: "+(b<skin.skeleton.bones.size()?skin.skeleton.bones[b].name:std::to_string(b));return false;}const auto transform=fit[b]*m.modelTransform;position+=transformPoint(transform,v.position)*v.weights[k];normal+=volume_fit::vector(volume_fit::transpose3(inverseAffine(transform)),v.normal)*v.weights[k];total+=v.weights[k];v.bones[k]=static_cast<uint32_t>(map[b]);}
-   if(total>0){v.position=position/total;v.normal=normalize(normal);}else v.position=transformPoint(m.modelTransform,v.position);
-  }m.modelTransform=Mat4::identity();}
-  std::erase_if(native.meshes,[](const auto& m){return !m.viewmodelWeapon;});native.meshes.insert(native.meshes.begin(),std::make_move_iterator(skin.meshes.begin()),std::make_move_iterator(skin.meshes.end()));
-  native.warnings.push_back("PB native skin bind conversion: "+std::filesystem::path(target.sourceName()).filename().string());return true;
+  // Shared bone names do not imply matching proportions or forearm rolls.
+  // Use the same segment-length and volume-preserving fit as foreign skins;
+  // retain the native weapon, driver skeleton and authored animation channels.
+  return imported::fitPoseOnlyViewSkin(native,buildScene(target,false),error);
  }
  // Explicit anatomical identities. The PB Little chain is the pinky; twist
  // helpers are a parallel forearm chain, never additional finger segments.

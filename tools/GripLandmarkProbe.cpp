@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #include "scene/PointBlankNative.h"
 #include "scene/PointBlankWorld.h"
 #include "scene/GripLandmarks.h"
@@ -6,7 +5,7 @@
 #include "third_party/nlohmann_json.hpp"
 using nlohmann::json;
 int main(){
- const std::filesystem::path root=cadence::local_assets::exportPath("pointblank");
+ const std::filesystem::path root="exported_files/pointblank";
  json result;
  auto dump=[&](const std::string& label,const scene::CastScene& s,const std::vector<scene::Mat4>& pose){for(size_t i=0;i<s.skeleton.bones.size();++i)result[label][s.skeleton.bones[i].name]=pose[i].v;};
  auto body=scene::buildScene(cast::Document::load(root/"models/playermode_SWAT_Male_fb.cast"),false);std::vector<scene::Mat4> bind;for(auto& b:body.skeleton.bones)bind.push_back(b.restGlobal);dump("body",body,bind);

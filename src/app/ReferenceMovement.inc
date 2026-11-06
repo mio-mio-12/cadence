@@ -1,4 +1,7 @@
 // Included only in the two new controllers' live-physics branch.
+if(app.movementAlgorithm==4){
+#include "CssMovement.inc"
+}else{
 const bool halfLife=app.movementAlgorithm==4;
 const auto rules=halfLife?gameplay::reference::Rules::HalfLife:gameplay::reference::Rules::Cod;
 const double interval=gameplay::reference::interval(app.movementAlgorithm);
@@ -13,13 +16,15 @@ if(app.actorVelocity.x!=publishedVelocity.x||app.actorVelocity.y!=publishedVeloc
     state.velocity=app.actorVelocity/unit;
 gameplay::reference::Command command;
 command.forward=forward;command.side=side;command.yaw=app.actorYaw;command.jump=jump;
+command.unlimitedBunnyhop=app.sourceUnlimitedBunnyhop;
 command.sprint=sprint;command.ads=ads;command.weaponScale=app.weaponTiming.moveSpeedScale;
 command.stance=app.gameplayStance==scene::Stance::Prone?2:app.gameplayStance==scene::Stance::Crouch?1:0;
-const float height=unit*(halfLife?(command.stance?36.f:72.f):(command.stance==2?30.f:command.stance==1?50.f:70.f));
+const float height=halfLife?actorCollisionHeight(app,app.gameplayStance,72.f,36.f,36.f)
+                          :actorCollisionHeight(app,app.gameplayStance,70.f,50.f,30.f);
 const float radius=unit*(halfLife?16.f:15.f);
 const auto trace=[&](scene::Vec3 a,scene::Vec3 b){
     gameplay::movement::Trace hit;const auto start=a*unit,end=b*unit;
-    if(app.loadedMap)hit=gameplay::movement::sweep(*app.loadedMap,start,end,radius,height);
+    if(app.loadedMap)hit=actorCollisionSweep(app,*app.loadedMap,start,end,radius,height);
     else {
         hit.end=constrainActorMove(app,start,end,&hit.normal);
         const float floor=actorGroundHeight(app,end.x,end.y,start.z+18*unit);
@@ -41,3 +46,4 @@ while(app.sourceFixedAccumulator+1e-10>=interval){
 app.actorGroundGrace=state.grounded?.1f:0.f;
 app.actorRenderPosition=scene::lerp(app.actorPreviousPosition,app.actorPosition,float(app.sourceFixedAccumulator/interval));
 app.actorSurfing=false;
+}

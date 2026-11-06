@@ -25,8 +25,8 @@ int main(){
     CHECK(loaded.meleeWeapon&&loaded.knifeRadiusCm==212&&loaded.knifeConeDegrees==32);
     std::ifstream in(path);std::string text((std::istreambuf_iterator<char>(in)),{});in.close();
     auto start=text.find("knife_settings ");CHECK(start!=std::string::npos);auto end=text.find('\n',start);text.erase(start,end-start+1);
-    {std::ofstream legacy(path);legacy<<text;}CHECK(weapon::load(path,loaded,error));CHECK(loaded.meleeWeapon&&loaded.knifeRadiusCm==150&&loaded.knifeConeDegrees==40);
-    {std::ofstream bad(path);bad<<text<<"knife_settings invalid 40\n";}CHECK(!weapon::load(path,loaded,error));CHECK(loaded.knifeRadiusCm==150);
+    {std::ofstream legacy(path);legacy<<text;}CHECK(weapon::load(path,loaded,error));CHECK(loaded.meleeWeapon&&loaded.knifeRadiusCm==250&&loaded.knifeConeDegrees==70);
+    {std::ofstream bad(path);bad<<text<<"knife_settings invalid 40\n";}CHECK(!weapon::load(path,loaded,error));CHECK(loaded.knifeRadiusCm==250);
     std::filesystem::remove(path);
     std::cout<<"PASS cone/range/height/occlusion policy, profile roundtrip and legacy defaults\n";
 }

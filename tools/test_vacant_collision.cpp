@@ -9,7 +9,7 @@ int main() {
     std::string err;
     std::cout << "Loading mp_vacant..." << std::endl;
     auto t0 = std::chrono::steady_clock::now();
-    bool ok = scene::c2m::load(R"(G:\COD Modding\tools\C2M_COD\C2MBeta 082026\C2MBeta\exported_maps\modern_warfare_rm\mp_vacant\mp_vacant.c2m)", map, err);
+    bool ok = scene::c2m::load(R"(local_fixtures\tools\C2M_COD\C2MBeta 082026\C2MBeta\exported_maps\modern_warfare_rm\mp_vacant\mp_vacant.c2m)", map, err);
     auto t1 = std::chrono::steady_clock::now();
     std::cout << "Load result: " << ok << " time: " << std::chrono::duration<float>(t1 - t0).count() << "s" << std::endl;
     std::cout << "Total collision triangles: " << map.collision.size() << std::endl;

@@ -30,6 +30,9 @@ scene::Direction worldClipDirection(const scene::Animation& clip){
         {"forward",scene::Direction::Forward},{"backward",scene::Direction::Backward},
         {"l",scene::Direction::Left},{"r",scene::Direction::Right},
         {"b",scene::Direction::Backward},{"f",scene::Direction::Forward}}){
+        // Idle suffixes such as twitch_b are variants, not travel directions.
+        // Do not reintroduce an alias rejected by classifyAnimationName.
+        if(clip.motion==scene::MotionRole::Idle&&token[1]=='\0')continue;
         const std::string key="_"+std::string(token);
         if(name.ends_with(key)||name.find(key+"_")!=std::string::npos)return direction;
     }
@@ -47,6 +50,22 @@ float worldPresentationMovementFacing(float viewYaw,scene::Vec3 travel,scene::Di
     return worldMovementFacing(viewYaw,travel,reference);
 }
 
+bool hasCrouchedLongGunLocomotion(const scene::CastScene& actor,scene::Direction direction){
+    using W=scene::WeaponClass;using M=scene::MotionRole;
+    for(const auto& clip:actor.animations){
+        if(clip.tracks.empty()||clip.domain!=scene::AnimationDomain::PlayerBody||clip.contextual||
+           clip.action!=scene::ActionRole::None||clip.stance!=scene::Stance::Crouch||
+           (clip.motion!=M::Walk&&clip.motion!=M::Run)||worldClipDirection(clip)!=direction)continue;
+        const auto w=clip.weapon;
+        if(w!=W::Any&&w!=W::Rifle&&w!=W::Sniper&&w!=W::Automatic&&w!=W::LMG&&w!=W::Shotgun&&w!=W::M1216&&w!=W::Judge&&w!=W::G11&&w!=W::Crossbow)continue;
+        const auto name=lowerText(clip.sourceName);
+        if(name.find("unarmed")!=std::string::npos||name.find("_hold")!=std::string::npos||
+           name.find("_shuffle_")!=std::string::npos||name.find("_2_")!=std::string::npos)continue;
+        return true;
+    }
+    return false;
+}
+
 bool isGroundWorldMotion(scene::MotionRole motion){
     using M=scene::MotionRole;
     return motion==M::Idle||motion==M::Walk||motion==M::Run||motion==M::Sprint||motion==M::Crawl;
@@ -54,11 +73,11 @@ bool isGroundWorldMotion(scene::MotionRole motion){
 
 // Stance and locomotion are requirements, not small score bonuses that an
 // exact weapon name can outweigh. Upper-body actions are layered separately.
-std::optional<std::size_t> selectGroundWorldLocomotion(const scene::CastScene& actor,const scene::AnimationQuery& q){
+std::optional<std::size_t> selectGroundWorldLocomotion(const scene::CastScene& actor,const scene::AnimationQuery& q,std::size_t count=std::numeric_limits<std::size_t>::max()){
     using M=scene::MotionRole;using W=scene::WeaponClass;
     const auto longGun=[](W w){return w==W::Rifle||w==W::Sniper||w==W::Automatic||w==W::LMG||w==W::Shotgun||w==W::M1216||w==W::Judge||w==W::G11||w==W::Crossbow;};
     std::optional<std::size_t> best;int bestScore=-100000;
-    for(std::size_t i=0;i<actor.animations.size();++i){
+    for(std::size_t i=0;i<std::min(count,actor.animations.size());++i){
         const auto& c=actor.animations[i];
         if(c.tracks.empty()||c.domain!=scene::AnimationDomain::PlayerBody||c.action!=scene::ActionRole::None||c.contextual||!isGroundWorldMotion(c.motion))continue;
         if(c.stance!=q.stance&&c.stance!=scene::Stance::Any)continue;
@@ -74,7 +93,10 @@ std::optional<std::size_t> selectGroundWorldLocomotion(const scene::CastScene& a
         const auto d=worldClipDirection(c);
         int score=c.stance==q.stance?20000:0;
         if(q.direction!=scene::Direction::Any)score+=d==q.direction?10000:d==scene::Direction::Any?0:-10000;
-        score+=c.motion==q.motion?2000:0;
+        // Within compatible carries, a real walk/run beats a weapon-specific
+        // sprint. Keep unrelated-family fallbacks below a compatible carry.
+        const bool compatibleCarry=c.weapon==q.weapon||c.weapon==W::Any||(longGun(q.weapon)&&longGun(c.weapon));
+        score+=c.motion==q.motion?(compatibleCarry?8000:2000):0;
         score+=c.ads==q.ads?200:0;
         score+=c.weapon==q.weapon?5500:c.weapon==W::Any?3500:0;
         if(longGun(q.weapon)&&longGun(c.weapon))score+=4000;
@@ -88,6 +110,22 @@ std::optional<std::size_t> selectGroundWorldLocomotion(const scene::CastScene& a
         if(score>bestScore){best=i;bestScore=score;}
     }
     return best;
+}
+
+// Supplement only missing sustained movement sectors. Native crouch cycles,
+// idle holds and all one-shot actions remain owned by the selected library.
+bool needsWorldMovementFallback(const scene::CastScene& actor,const scene::Animation& candidate,std::size_t nativeCount){
+    using M=scene::MotionRole;using W=scene::WeaponClass;
+    if(candidate.domain!=scene::AnimationDomain::PlayerBody||candidate.action!=scene::ActionRole::None||candidate.contextual||
+       (candidate.motion!=M::Walk&&candidate.motion!=M::Run&&candidate.motion!=M::Sprint&&candidate.motion!=M::Crawl))return false;
+    scene::AnimationQuery q;q.motion=candidate.motion;q.stance=candidate.stance;q.weapon=candidate.weapon;q.direction=worldClipDirection(candidate);q.ads=candidate.ads;
+    const auto native=selectGroundWorldLocomotion(actor,q,nativeCount);
+    if(!native)return true;
+    const auto& clip=actor.animations[*native];
+    const auto longGun=[](W w){return w==W::Rifle||w==W::Sniper||w==W::Automatic||w==W::LMG||w==W::Shotgun||w==W::M1216||w==W::Judge||w==W::G11||w==W::Crossbow;};
+    const bool carry=clip.weapon==q.weapon||clip.weapon==W::Any||(longGun(clip.weapon)&&longGun(q.weapon));
+    const auto direction=worldClipDirection(clip);
+    return !carry||(direction!=q.direction&&direction!=scene::Direction::Any);
 }
 
 std::optional<std::size_t> selectWorldMantle(const scene::CastScene& actor,float heightIw,bool over,scene::Direction direction,const std::string& game,scene::WeaponClass weapon){

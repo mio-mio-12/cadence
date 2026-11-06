@@ -1,10 +1,16 @@
 #pragma once
 #include "scene/PointBlankAdapter.h"
+#include "scene/ProximalSupportFit.h"
+#include <cstdlib>
 namespace scene::pointblank {
 // Keep the COD driver (including weapon, camera and all action timing) intact.
 // Only the PB skin/binds are fitted once. Its native files stay untouched.
 inline bool fitToCod(CastScene& driver,const cast::Document& pbHands,std::string& error){
  auto reference=driver,skin=buildScene(pbHands);const auto originalMap=driver.skeleton.boneByName;
+ // Explicit opt-in exercises the same conversion during equipment loading
+ // and replay restore. Not a default-on production correction yet.
+ const bool sharedSurfaceCandidate=std::getenv("CADENCE_PROXIMAL_SHARED_CANDIDATE")!=nullptr;
+ const auto supportReference=sharedSurfaceCandidate?std::optional<CastScene>(driver):std::nullopt;
  const bool codmHands=skin.skeleton.boneByName.contains("b_LeftHand");
  if(codmHands&&!codm::prepareLegacyNamedHands(skin,pbHands,error))return false;
  if(!codmHands&&!skin.skeleton.boneByName.contains("L Hand")){error="Not supported replacement viewhands";return false;}
@@ -15,6 +21,10 @@ inline bool fitToCod(CastScene& driver,const cast::Document& pbHands,std::string
   }
   if(weight<10){error=std::string("Incomplete PB hand export: no weighted ")+side+" mesh; re-export the arm skin/bone palette";return false;}
  }
+ // PB twist helpers span the forearm despite parenting to UpperArm. The
+ // skin-only fitter preserves that distribution without a second pose rig.
+ // Keep CODM's separate legacy conversion unchanged in this iteration.
+ if(!codmHands)return imported::fitPoseOnlyViewSkin(driver,skin,error);
  const bool oneBased=reference.skeleton.boneByName.contains("j_metaindex_le_1")&&!reference.skeleton.boneByName.contains("j_pinky_le_0");
  const auto aliasSource=[&](std::string name,std::string alias){
   auto it=originalMap.find(name);if(it==originalMap.end())throw std::runtime_error("COD reference missing "+name);
@@ -43,6 +53,12 @@ inline bool fitToCod(CastScene& driver,const cast::Document& pbHands,std::string
   const bool flag=driver.pointBlankNativeCentimetres;driver.pointBlankNativeCentimetres=true;
   const bool ok=codm::fitPreparedHands(driver,reference,std::move(skin),pbHands.sourceName(),error);driver.pointBlankNativeCentimetres=flag;
   if(!ok){driver.skeleton.boneByName=originalMap;return false;}
+  if(supportReference){
+   proximal_support::Options options;options.enabled=true;options.conformSurface=true;
+   proximal_support::Report report;
+   if(!proximal_support::apply(driver,*supportReference,options,report,error))return false;
+   driver.warnings.push_back("Diagnostic shared proximal surface fit: "+std::to_string(report.edited)+" vertices; visual approval pending");
+  }
   return true;
  }catch(const std::exception& e){driver.skeleton.boneByName=originalMap;error=e.what();return false;}
 }

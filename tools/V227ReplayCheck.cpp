@@ -1,14 +1,13 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
 #undef main
 #include "take/PoseInterpolation.h"
 int main(){
- int failures=0;std::string error;take::Take t;if(!take::load("awawggg.c_dm",t,error)){std::cerr<<error;return 1;}
+ int failures=0;std::string error;take::Take t;if(!take::load("local_fixtures/Downloads/awawggg.c_dm",t,error)){std::cerr<<error;return 1;}
  std::cout<<"Samples "<<t.samples.size()<<" neutral "<<t.neutralGunPosition<<std::endl;
  for(int s=0;s<3;++s){const auto&a=t.actorSlots[s];std::cout<<"SLOT "<<s<<" bones "<<t.bonesForSlot(s)<<" base "<<a.baseModel<<std::endl;for(auto&p:a.rigModels)std::cout<<"PART "<<p<<std::endl;}
  glfwInit();glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto*w=glfwCreateWindow(640,360,"Check",nullptr,nullptr);glfwMakeContextCurrent(w);ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;
- auto state=std::make_unique<AppState>();auto&a=*state;a.window=w;a.deferSceneUpload=true;a.renderer.initialize(error);a.defaultSalukiDirectory=cadence::local_assets::exportPath("");
+ auto state=std::make_unique<AppState>();auto&a=*state;a.window=w;a.deferSceneUpload=true;a.renderer.initialize(error);a.defaultSalukiDirectory="exported_files";
  for(auto game:{"pointblank","bo2","cs2","mw3"})assets::appendScan(a.defaultSalukiDirectory/game,game,a.assetCatalog,error);
  for(int s=0;s<3;++s){const auto&m=t.actorSlots[s];if(m.empty())continue;
   auto index=[&](const std::string&p){for(size_t i=0;i<a.assetCatalog.entries.size();++i)if(a.assetCatalog.entries[i].path==std::filesystem::path(p))return i;return a.assetCatalog.entries.size();};

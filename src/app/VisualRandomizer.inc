@@ -14,7 +14,7 @@ void drawVisualRandomizer(AppState& app){
     const bool seedReleased=ImGui::IsItemDeactivatedAfterEdit();
     if(ImGui::Button("Randomize")){seed=seed==INT_MAX?0:seed+1;changed=true;}
     ImGui::SameLine();if(ImGui::Button("Use current as base")){baseline.clear();baseSky=app.environmentPath;}
-    const auto applySky=[&](const std::filesystem::path& path){if(path==app.environmentPath)return;std::string error;if(path.empty()){app.renderer.clearEnvironment();app.environmentPath.clear();}else if(lowerText(path.extension().string())==".iwi"?app.renderer.setT6SkyboxIwi(path,error):app.renderer.setEnvironmentPanorama(path,error))app.environmentPath=path;else app.status=error;};
+    const auto applySky=[&](const std::filesystem::path& path){if(path==app.environmentPath)return;std::string error;if(path.empty()){app.renderer.clearEnvironment();app.environmentPath.clear();}else if(app.renderer.setEnvironmentPanorama(path,error))app.environmentPath=path;else app.status=error;};
     if(changed||seedReleased){
         if(!baseSky)baseSky=app.environmentPath;
         baseline.restore();std::mt19937 rng(static_cast<unsigned>(seed));const float keep=std::clamp(similarity,0.f,100.f);
@@ -35,7 +35,7 @@ void drawVisualRandomizer(AppState& app){
         app.status="Visuals randomized; save with the visual preset controls";
         // Loading an environment builds GPU resources. Commit on release,
         // not for every intermediate seed while the slider is dragged.
-        if(!seedActive){auto path=*baseSky;if(skybox&&keep<100){std::mt19937 skyRng(static_cast<unsigned>(seed)^0x534b59u);const auto skies=uiFileLists().get(programDirectory()/"skyboxes","|.iwi|.hdr|.exr|.png|.jpg|.jpeg|",true);if(!skies->empty()&&std::uniform_real_distribution<float>(0,100)(skyRng)>=keep)path=(*skies)[std::uniform_int_distribution<std::size_t>(0,skies->size()-1)(skyRng)];}applySky(path);}
+        if(!seedActive){auto path=*baseSky;if(skybox&&keep<100){std::mt19937 skyRng(static_cast<unsigned>(seed)^0x534b59u);const auto skies=skyLibrary(programDirectory()/"skyboxes");if(!skies->empty()&&std::uniform_real_distribution<float>(0,100)(skyRng)>=keep)path=(*skies)[std::uniform_int_distribution<std::size_t>(0,skies->size()-1)(skyRng)];}applySky(path);}
     }
     ImGui::SameLine();ImGui::BeginDisabled(baseline.empty()&&!baseSky);if(ImGui::Button("Undo randomize")){baseline.restore();if(baseSky)applySky(*baseSky);baseline.clear();baseSky.reset();}ImGui::EndDisabled();
 }

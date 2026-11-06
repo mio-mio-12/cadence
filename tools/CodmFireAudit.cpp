@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceApplicationMain
 #include "../src/app/main.cpp"
 #undef main
@@ -9,7 +8,7 @@ int main(int argc,char**argv){
  glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto*w=glfwCreateWindow(960,720,"CODM firing audit",nullptr,nullptr);if(!w)return 2;glfwMakeContextCurrent(w);
  ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;ImGui_ImplGlfw_InitForOpenGL(w,true);ImGui_ImplOpenGL3_Init("#version 330");
  auto state=std::make_unique<AppState>();auto& app=*state;app.window=w;std::string error;if(!app.renderer.initialize(error))return 3;
- app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
+ app.defaultSalukiDirectory="exported_files";
  for(const auto game:{"bo2","codm"})if(!assets::appendScan(app.defaultSalukiDirectory/game,game,app.assetCatalog,error))return 4;
  for(size_t i=0;i<app.assetCatalog.entries.size();++i){const auto&a=app.assetCatalog.entries[i];if(a.name=="viewmodel_pistol_50gs")app.classPrimaryAsset=i;if(a.name=="viewmodel_pistol_50gs_GirlsFrontline")app.classSecondaryAsset=i;}
  for(const auto hands:{"codm_viewhands_C_M_Ghost_1P","c_usa_mp_isa_smg_viewhands_LOD0"}){

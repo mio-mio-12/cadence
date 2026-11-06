@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <limits>
@@ -15,7 +16,7 @@ namespace take {
 namespace {
 
 constexpr std::array<char,8> kMagic{'I','W','T','A','K','E','0','1'};
-constexpr std::uint32_t kVersion=16;
+constexpr std::uint32_t kVersion=19;
 constexpr std::uint32_t kMaxBones=4096;
 constexpr std::uint32_t kMaxSamples=60u*60u*60u*4u;
 constexpr std::uint32_t kMaxString=16u*1024u;
@@ -61,7 +62,37 @@ bool readString(std::ifstream& stream,std::string& value){
     value.resize(length);return length==0||(stream.read(value.data(),length),static_cast<bool>(stream));
 }
 
+bool writeDetached(std::ofstream& stream,const std::vector<scene::DetachedAttachment>& parts){
+    if(parts.size()>128||!writeValue(stream,static_cast<std::uint32_t>(parts.size())))return false;
+    for(const auto& part:parts){
+        if(!std::all_of(part.mount.v.begin(),part.mount.v.end(),[](float x){return std::isfinite(x);})||
+           !writeValue(stream,part.index)||!writeValue(stream,part.mount))return false;
+    }
+    return true;
+}
+bool readDetached(std::ifstream& stream,std::vector<scene::DetachedAttachment>& parts){
+    std::uint32_t count{};
+    if(!readValue(stream,count)||count>128)return false;
+    parts.resize(count);
+    for(auto& part:parts)if(!readValue(stream,part.index)||!readValue(stream,part.mount)||
+        !std::all_of(part.mount.v.begin(),part.mount.v.end(),[](float x){return std::isfinite(x);}))return false;
+    return true;
+}
+std::vector<scene::DetachedAttachment> interpolateDetached(const std::vector<scene::DetachedAttachment>& lower,
+    const std::vector<scene::DetachedAttachment>& upper,float alpha){
+    auto result=lower;
+    for(auto& part:result){
+        const auto other=std::find_if(upper.begin(),upper.end(),[&](const auto& p){return p.index==part.index;});
+        if(other==upper.end())continue;
+        scene::Vec3 a,b,sa,sb;scene::Quat qa,qb;
+        scene::decomposeAffine(part.mount,a,qa,sa);
+        scene::decomposeAffine(other->mount,b,qb,sb);
+        part.mount=scene::trs(scene::lerp(a,b,alpha),scene::slerp(qa,qb,alpha),scene::lerp(sa,sb,alpha));
+    }
+    return result;
+}
 bool writeActorManifest(std::ofstream& stream,const ActorManifest& actor,std::uint32_t version){
+    if(version>=17&&(actor.importRevision>1||!writeValue(stream,actor.importRevision)))return false;
     const auto rigCount=static_cast<std::uint32_t>(actor.rigModels.size()),attachmentCount=static_cast<std::uint32_t>(actor.attachedModels.size()),hiddenCount=static_cast<std::uint32_t>(actor.hiddenBones.size());
     const std::uint8_t viewmodelCamera=actor.viewmodelCamera?1u:0u;
     if(rigCount>kMaxModels||attachmentCount>kMaxModels||hiddenCount>kMaxBones||!writeString(stream,actor.baseModel)||!writeValue(stream,rigCount))return false;
@@ -80,6 +111,8 @@ bool writeActorManifest(std::ofstream& stream,const ActorManifest& actor,std::ui
 }
 
 bool readActorManifest(std::ifstream& stream,ActorManifest& actor,std::uint32_t version){
+    actor.importRevision=0;
+    if(version>=17&&(!readValue(stream,actor.importRevision)||actor.importRevision>1))return false;
     std::uint32_t rigCount{},attachmentCount{},hiddenCount{};std::uint8_t viewmodelCamera{};
     if(!readString(stream,actor.baseModel)||!readValue(stream,rigCount)||rigCount>kMaxModels)return false;actor.rigModels.resize(rigCount);for(auto& path:actor.rigModels)if(!readString(stream,path))return false;
     if(!readValue(stream,attachmentCount)||attachmentCount>kMaxModels)return false;actor.attachedModels.resize(attachmentCount);for(auto& attachment:actor.attachedModels)if(!readString(stream,attachment.path)||!readString(stream,attachment.bone)||!readValue(stream,attachment.position)||!readValue(stream,attachment.rotationDegrees)||!readValue(stream,attachment.scale))return false;
@@ -156,24 +189,39 @@ Sample Take::interpolatedSample(float time,InterpolationRigs rigs) const{
         RecordedActorState recordedActor;recordedActor.id=lowerActor.id;recordedActor.health=lowerActor.health+(upperActor.health-lowerActor.health)*alpha;const auto& actorMetadata=alpha<0.5f?lowerActor:upperActor;recordedActor.alive=actorMetadata.alive;recordedActor.primaryClip=actorMetadata.primaryClip;recordedActor.torsoClip=actorMetadata.torsoClip;recordedActor.visibility=actorMetadata.visibility;
         recordedActor.primaryFrame=lowerActor.primaryClip==upperActor.primaryClip?lowerActor.primaryFrame+(upperActor.primaryFrame-lowerActor.primaryFrame)*alpha:actorMetadata.primaryFrame;
         recordedActor.modelVariant=actorMetadata.modelVariant;
+        recordedActor.detached=interpolateDetached(lowerActor.detached,upperActor.detached,alpha);
         recordedActor.torsoFrame=lowerActor.torsoClip==upperActor.torsoClip?lowerActor.torsoFrame+(upperActor.torsoFrame-lowerActor.torsoFrame)*alpha:actorMetadata.torsoFrame;
         recordedActor.pose=interpolatePose(lowerActor.pose,upperActor.pose,alpha,rigs.bots);result.bots.push_back(std::move(recordedActor));
     }
+    for(const auto& body:lower.corpses){
+        auto output=body;const auto next=std::find_if(upper.corpses.begin(),upper.corpses.end(),[&](const auto& b){return b.id==body.id&&b.modelVariant==body.modelVariant;});
+        if(next!=upper.corpses.end()){output.opacity+=(next->opacity-output.opacity)*alpha;output.pose=interpolatePose(body.pose,next->pose,alpha,rigs.bots);output.detached=interpolateDetached(body.detached,next->detached,alpha);}
+        else output.opacity*=1-alpha;
+        result.corpses.push_back(std::move(output));
+    }
     return result;
 }
-bool Take::trim(float start,float end){
-    if(!std::isfinite(start)||!std::isfinite(end))return false;
-    if(samples.empty())return false;start=std::clamp(start,0.0f,duration());end=std::clamp(end,start,duration());
-    auto first=std::lower_bound(samples.begin(),samples.end(),start,[](const Sample& s,float t){return s.time<t;});auto last=std::upper_bound(samples.begin(),samples.end(),end,[](float t,const Sample& s){return t<s.time;});if(first==last)return false;
+static void trimSelected(Take& take,std::vector<Sample>::iterator first,std::vector<Sample>::iterator last,float start,float end){
+    auto& samples=take.samples;auto& shots=take.shots;const auto sampleRate=take.sampleRate;
     const float offset=first->time;
     const auto count=static_cast<std::size_t>(last-first);
     if(first!=samples.begin())std::move(first,last,samples.begin());
     samples.erase(samples.begin()+static_cast<std::ptrdiff_t>(count),samples.end());
     for(auto& sample:samples)sample.time-=offset;
-    const auto trimKeys=[&](std::vector<DollyCameraKeyframe>& keys){const auto firstTick=static_cast<std::uint32_t>(std::lround(offset*sampleRate)),lastTick=static_cast<std::uint32_t>(std::lround(end*sampleRate));keys.erase(std::remove_if(keys.begin(),keys.end(),[&](const auto& k){return k.tick<firstTick||k.tick>lastTick;}),keys.end());for(auto& key:keys)key.tick-=firstTick;};trimKeys(dollyCamera);for(auto& path:cameraPaths)trimKeys(path.keyframes);
+    const auto trimKeys=[&](std::vector<DollyCameraKeyframe>& keys){const auto firstTick=static_cast<std::uint32_t>(std::lround(offset*sampleRate)),lastTick=static_cast<std::uint32_t>(std::lround(end*sampleRate));keys.erase(std::remove_if(keys.begin(),keys.end(),[&](const auto& k){return k.tick<firstTick||k.tick>lastTick;}),keys.end());for(auto& key:keys)key.tick-=firstTick;};trimKeys(take.dollyCamera);for(auto& path:take.cameraPaths)trimKeys(path.keyframes);
     shots.erase(std::remove_if(shots.begin(),shots.end(),[start,end](const ShotEvent& s){return s.time<start||s.time>end;}),shots.end());
     for(auto& s:shots)s.time-=offset;
-    return true;
+}
+bool Take::trim(float start,float end){
+    if(!std::isfinite(start)||!std::isfinite(end))return false;
+    if(samples.empty())return false;start=std::clamp(start,0.0f,duration());end=std::clamp(end,start,duration());
+    const auto first=std::lower_bound(samples.begin(),samples.end(),start,[](const Sample& s,float t){return s.time<t;});
+    const auto last=std::upper_bound(samples.begin(),samples.end(),end,[](float t,const Sample& s){return t<s.time;});
+    if(first==last)return false;trimSelected(*this,first,last,start,end);return true;
+}
+void Take::trimTicks(std::size_t first,std::size_t last){
+    if(first>last||last>=samples.size())return;
+    trimSelected(*this,samples.begin()+first,samples.begin()+last+1,samples[first].time,samples[last].time);
 }
 void Take::clear(){neutralGunPosition=false;samples.clear();shots.clear();boneCount=0;actor={};worldActor={};actorSlots={};worldActorSlots={};actorSlotBoneCounts={};worldActorSlotBoneCounts={};worldBoneCount=0;botActor={};botBoneCount=0;botCount=0;dollyCamera.clear();cameraPaths.clear();}
 
@@ -188,6 +236,16 @@ float outputTakeTime(float start,std::uint64_t frame,std::uint32_t fps,float tim
     if(!std::isfinite(timescale)||fps==0||timescale<=0)return start;return start+static_cast<float>(static_cast<double>(frame)*timescale/fps);
 }
 
+static bool needsImportRevision(const ActorManifest& actor){
+    if(!actor.importRevision)return false;
+    const auto revised=[](std::string path){
+        std::transform(path.begin(),path.end(),path.begin(),[](unsigned char c){return c=='\\'?'/':static_cast<char>(std::tolower(c));});
+        path='/'+path;
+        return path.find("/dirtybomb/")!=std::string::npos||path.find("/blacksquad/")!=std::string::npos;
+    };
+    return revised(actor.baseModel)||std::any_of(actor.rigModels.begin(),actor.rigModels.end(),revised)||
+        std::any_of(actor.attachedModels.begin(),actor.attachedModels.end(),[&](const auto& a){return revised(a.path);});
+}
 static bool saveStaged(const Take& take,const std::filesystem::path& path,std::string& error){
     error.clear();
     if(take.samples.empty()||take.boneCount==0){error="The take has no recorded samples";return false;}
@@ -200,13 +258,21 @@ static bool saveStaged(const Take& take,const std::filesystem::path& path,std::s
     const bool customCurve=std::any_of(take.shots.begin(),take.shots.end(),[](const ShotEvent& shot){const auto& c=shot.trailTaperCurve;return c.count>2||c.sample(0)!=shot.trailStartTaper||c.sample(1)!=shot.trailEndTaper||(c.smoothness!=0&&shot.trailStartTaper!=shot.trailEndTaper);});
     const bool assembledBots=take.botActor.replaceBaseMeshes||!take.botActor.rigModelVariants.empty();
     const bool recordedVisibility=std::any_of(take.samples.begin(),take.samples.end(),[](const Sample& s){return s.visibility||s.worldActor.visibility||std::any_of(s.bots.begin(),s.bots.end(),[](const RecordedActorState& b){return b.visibility!=0;});});
-    const std::uint32_t outputVersion=take.neutralGunPosition?16u:recordedVisibility?15u:assembledBots?14u:customCurve?(thirdSlot?13u:12u):(thirdSlot?11u:10u);
+    const bool revisedImports=needsImportRevision(take.actor)||needsImportRevision(take.worldActor)||needsImportRevision(take.botActor)||
+        std::any_of(take.actorSlots.begin(),take.actorSlots.end(),needsImportRevision)||std::any_of(take.worldActorSlots.begin(),take.worldActorSlots.end(),needsImportRevision);
+    const bool corpses=std::any_of(take.samples.begin(),take.samples.end(),[](const auto& s){return !s.corpses.empty();});
+    const bool detached=std::any_of(take.samples.begin(),take.samples.end(),[](const auto& s){
+        const auto has=[](const auto& actor){return !actor.detached.empty();};
+        return std::any_of(s.bots.begin(),s.bots.end(),has)||std::any_of(s.corpses.begin(),s.corpses.end(),has);
+    });
+    const std::uint32_t outputVersion=detached?19u:corpses?18u:revisedImports?17u:take.neutralGunPosition?16u:recordedVisibility?15u:assembledBots?14u:customCurve?(thirdSlot?13u:12u):(thirdSlot?11u:10u);
     const std::size_t slotCount=(thirdSlot||outputVersion>=14)?3u:2u;
     for(const auto& sample:take.samples)if(sample.weaponSlot>=slotCount){error="Recorded weapon slot is outside supported limits";return false;}
     if(thirdSlot&&take.actorSlots[2].empty()){error="Third weapon slot has no actor manifest";return false;}
     std::ofstream stream(path,std::ios::binary|std::ios::trunc);if(!stream){error="Could not create the take file";return false;}
     stream.write(kMagic.data(),kMagic.size());const auto bones=static_cast<std::uint32_t>(take.boneCount),count=static_cast<std::uint32_t>(take.samples.size());
     if(!writeValue(stream,outputVersion)||!writeValue(stream,take.sampleRate)||!writeValue(stream,bones)||!writeValue(stream,count)){error="Could not write the take header";return false;}
+    if(outputVersion>=17&&!writeValue(stream,static_cast<std::uint8_t>(take.neutralGunPosition))){error="Could not write pose convention";return false;}
     if(!writeActorManifest(stream,take.actor,outputVersion)){error="Could not write the take actor manifest";return false;}
     const auto botBones=static_cast<std::uint32_t>(take.botBoneCount),botCount=static_cast<std::uint32_t>(take.botCount);
     if(!writeActorManifest(stream,take.botActor,outputVersion)||!writeValue(stream,botBones)||!writeValue(stream,botCount)){error="Could not write the bot actor manifest";return false;}
@@ -240,6 +306,18 @@ static bool saveStaged(const Take& take,const std::filesystem::path& path,std::s
             if(!validVisibility(sample.visibility)||!validVisibility(sample.worldActor.visibility)||!writeValue(stream,sample.visibility)||!writeValue(stream,sample.worldActor.visibility)){error="Invalid recorded actor visibility";return false;}
             for(const auto& bot:sample.bots)if(!validVisibility(bot.visibility)||!writeValue(stream,bot.visibility)){error="Invalid recorded bot visibility";return false;}
         }
+        if(outputVersion>=18){
+            const auto count=static_cast<std::uint32_t>(sample.corpses.size());
+            if(count>160||(!sample.corpses.empty()&&(take.botBoneCount==0||take.botActor.empty()))||!writeValue(stream,count)){error="Invalid corpse count";return false;}
+            for(const auto& b:sample.corpses){
+                if(b.modelVariant<0||b.modelVariant>=128||!std::isfinite(b.opacity)||b.opacity<0||b.opacity>1||b.pose.size()!=take.botBoneCount||!finitePose(b.pose)||!writeValue(stream,b.id)||!writeValue(stream,b.modelVariant)||!writeValue(stream,b.opacity)){error="Invalid corpse data";return false;}
+                stream.write(reinterpret_cast<const char*>(b.pose.data()),static_cast<std::streamsize>(b.pose.size()*sizeof(scene::Mat4)));if(!stream){error="Could not write corpse pose";return false;}
+            }
+        }
+        if(outputVersion>=19){
+            for(const auto& bot:sample.bots)if(!writeDetached(stream,bot.detached)){error="Invalid detached bot weapon";return false;}
+            for(const auto& body:sample.corpses)if(!writeDetached(stream,body.detached)){error="Invalid detached corpse weapon";return false;}
+        }
     }
     const auto shotCount=static_cast<std::uint32_t>(take.shots.size());
     if(!writeValue(stream,shotCount)){error="Could not write shot event count";return false;}
@@ -267,8 +345,11 @@ static bool loadChecked(const std::filesystem::path& path,Take& take,std::string
     }
     if(bones==0||bones>kMaxBones||count==0||count>kMaxSamples||sampleRate<1.0f||sampleRate>240.0f){error="Take dimensions are outside supported limits";return false;}
     const std::size_t slotCount=(version==11||version>=13)?3u:2u;
+    std::uint8_t neutralConvention=version>=16?1:0;
+    if(version>=17&&(!readValue(stream,neutralConvention)||neutralConvention>1)){error="Invalid pose convention";return false;}
     Take imported;imported.neutralGunPosition=version>=16;imported.sampleRate=sampleRate;imported.boneCount=bones;if(version>=2&&!readActorManifest(stream,imported.actor,version)){error="Take actor manifest is malformed";return false;}if(version>=3){std::uint32_t botBones{},botCount{};if(!readActorManifest(stream,imported.botActor,version)||!readValue(stream,botBones)||!readValue(stream,botCount)||botBones>kMaxBones||botCount>kMaxActors||(botCount>0&&(botBones==0||imported.botActor.empty()))){error="Take bot actor manifest is malformed";return false;}imported.botBoneCount=botBones;imported.botCount=botCount;}if(version>=4&&!readCameraKeys(stream,imported.dollyCamera)){error="Take dolly camera keyframes are malformed";return false;}if(version>=5){std::uint32_t worldBones{};if(!readActorManifest(stream,imported.worldActor,version)||!readValue(stream,worldBones)||worldBones>kMaxBones||(worldBones>0&&imported.worldActor.empty())){error="Take world actor manifest is malformed";return false;}imported.worldBoneCount=worldBones;}if(version>=6){for(std::size_t i=0;i<slotCount;++i)if(!readActorManifest(stream,imported.actorSlots[i],version)){error="Take class viewmodel manifest is malformed";return false;}for(std::size_t i=0;i<slotCount;++i)if(!readActorManifest(stream,imported.worldActorSlots[i],version)){error="Take class world-model manifest is malformed";return false;}}else{imported.actorSlots[0]=imported.actor;imported.worldActorSlots[0]=imported.worldActor;}if(version>=7){for(std::size_t slot=0;slot<slotCount;++slot){auto& slotBones=imported.actorSlotBoneCounts[slot];std::uint32_t value{};if(!readValue(stream,value)||value==0||value>kMaxBones){error="Take class skeleton sizes are malformed";return false;}slotBones=value;}std::uint32_t pathCount{};if(!readValue(stream,pathCount)||pathCount>kMaxCameraPaths){error="Take campath collection is malformed";return false;}imported.cameraPaths.resize(pathCount);for(auto& pathSet:imported.cameraPaths)if(!readString(stream,pathSet.name)||!readCameraKeys(stream,pathSet.keyframes)){error="A named campath is malformed";return false;}}else imported.actorSlotBoneCounts={bones,bones};
     if(version>=9){for(std::size_t slot=0;slot<slotCount;++slot){auto& slotBones=imported.worldActorSlotBoneCounts[slot];std::uint32_t value{};if(!readValue(stream,value)||value>kMaxBones){error="Take class world skeleton sizes are malformed";return false;}slotBones=value;}}else imported.worldActorSlotBoneCounts={imported.worldBoneCount,imported.worldBoneCount};
+    if(version>=17)imported.neutralGunPosition=neutralConvention!=0;
     std::uint64_t minimumBones=kMaxBones;
     for(std::size_t slot=0;slot<slotCount;++slot)minimumBones=std::min(minimumBones,static_cast<std::uint64_t>(imported.bonesForSlot(static_cast<std::uint8_t>(slot))));
     // A lower bound valid for all versions; actual records also contain strings/world poses.
@@ -292,6 +373,14 @@ static bool loadChecked(const std::filesystem::path& path,Take& take,std::string
         if(version>=15){
             if(!readValue(stream,sample.visibility)||!validVisibility(sample.visibility)||!readValue(stream,sample.worldActor.visibility)||!validVisibility(sample.worldActor.visibility)){error="Malformed actor visibility";return false;}
             for(auto& bot:sample.bots)if(!readValue(stream,bot.visibility)||!validVisibility(bot.visibility)){error="Malformed bot visibility";return false;}
+        }
+        if(version>=18){
+            std::uint32_t count{};if(!readValue(stream,count)||count>160||(count&&(imported.botBoneCount==0||imported.botActor.empty()))){error="Malformed corpse count";return false;}
+            sample.corpses.resize(count);for(auto& b:sample.corpses){if(!readValue(stream,b.id)||!readValue(stream,b.modelVariant)||b.modelVariant<0||b.modelVariant>=128||!readValue(stream,b.opacity)||!std::isfinite(b.opacity)||b.opacity<0||b.opacity>1||!readPose(stream,b.pose,imported.botBoneCount)){error="Malformed corpse pose";return false;}}
+        }
+        if(version>=19){
+            for(auto& bot:sample.bots)if(!readDetached(stream,bot.detached)){error="Malformed detached bot weapon";return false;}
+            for(auto& body:sample.corpses)if(!readDetached(stream,body.detached)){error="Malformed detached corpse weapon";return false;}
         }
         previous=sample.time;imported.samples.push_back(std::move(sample));
     }

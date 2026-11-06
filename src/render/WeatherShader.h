@@ -61,21 +61,43 @@ void main(){
     if(vAlpha<=0.)gl_Position=vec4(2,2,2,1);
 }
 )GLSL";
+inline const std::string kWeatherHazeEdgeTest=R"GLSL(
+bool hazeEdge(vec2 uv,float raw){
+ // A matching low-resolution sample can be reconstructed bilaterally.
+ // Only pixels with no matching sample need full-resolution sheet shading.
+ float target=linearDepth(raw),tolerance=max(1.,target*.01);
+ vec2 base=floor(uv*uLowSize-.5);
+ for(int y=0;y<2;++y)for(int x=0;x<2;++x){
+  vec2 q=clamp((base+vec2(x,y)+.5)/uLowSize,.5/uLowSize,1.-.5/uLowSize);
+  float d=texture(uDepth,q).r;
+  if(abs(linearDepth(d)-target)<=tolerance&&!(uForeground&&d<.0400001))return false;
+ }
+ return true;
+}
+)GLSL";
 inline const std::string kWeatherParticleFragment=std::string(R"GLSL(#version 330 core
 uniform sampler2D uDepth,uShelter;
 uniform vec2 uViewport,uRange;
 uniform vec3 uCamera,uColor,uLight,uShelterSlope;
 uniform vec3 uTile;
-uniform bool uForeground,uSheltered,uFog;
+uniform bool uForeground,uSheltered,uFog,uWeatherFast;
 uniform int uKind,uStyle;
-uniform float uOpacity,uBrightness,uSoftness,uNear,uTime;
+uniform float uOpacity,uBrightness,uSoftness,uNear,uTime,uPixelScale;
 uniform vec3 uAerosol;
 uniform vec4 uFogParams;uniform vec3 uFogColor;
 in vec2 vUV;in vec3 vWorld;in float vAlpha,vSeed;out vec4 color;
 float linearDepth(float d){return 2.*uRange.x*uRange.y/max(.00001,uRange.y+uRange.x-(d*2.-1.)*(uRange.y-uRange.x));}
 )GLSL")+kWeatherNoise+R"GLSL(
 void main(){
+    // Derivatives are evaluated before divergent rejection, preserving the
+    // original aerosol filter footprint at particle and depth boundaries.
+    vec3 aerosolQ=vec3(0);float aerosolFootprint=0.;
+    if((uKind==1||uKind==3)&&uAerosol.y>0.){
+        aerosolQ=vWorld*uAerosol.x*.01+vec3(vSeed*31.,0,uTime*.15);
+        aerosolFootprint=max(length(dFdx(aerosolQ)),length(dFdy(aerosolQ)))/uPixelScale;
+    }
     if(vAlpha<=0.)discard;
+    if(uWeatherFast&&(uKind==1||uKind==3||(uKind==2&&uStyle==1))&&dot(vUV,vUV)>=1.)discard;
     float d=texture(uDepth,gl_FragCoord.xy/uViewport).r;if(uForeground&&d<.0400001)discard;
     float gap=linearDepth(d)-linearDepth(gl_FragCoord.z);if(gap<0.)discard;
     if(uSheltered){vec2 uv=(vWorld.xy+uShelterSlope.xy*vWorld.z-uTile.xy)/(2.*uTile.z)+.5;
@@ -88,9 +110,9 @@ void main(){
     else if(uStyle==1){shape=1.-smoothstep(.35,1.,r);tint=mix(tint,vec3(.7),.5);}
     else {shape=(1.-smoothstep(.55,.65,abs(vUV.x)))*(1.-smoothstep(.7,.8,abs(vUV.y)));tint*=mix(.5,1.2,vSeed);}
     if((uKind==1||uKind==3)&&uAerosol.y>0.){
-        vec3 q=vWorld*uAerosol.x*.01+vec3(vSeed*31.,0,uTime*.15);
-        float grain=wnoise(q);float footprint=max(length(dFdx(q)),length(dFdy(q)));
-        grain=mix(grain,.5,smoothstep(.5,2.,footprint));
+        float filterWeight=smoothstep(.5,2.,aerosolFootprint);
+        float grain=.5;
+        if(!uWeatherFast||filterWeight<1.)grain=mix(wnoise(aerosolQ),.5,filterWeight);
         shape*=max(0.,1.+(grain-.5)*2.*uAerosol.y*uAerosol.z);
     }
     float distance=length(vWorld-uCamera);
@@ -99,6 +121,43 @@ void main(){
     if(uFog){float f=clamp((1.-exp2(-max(0.,distance-uFogParams.x)/max(1.,uFogParams.y)))*uFogParams.z,0.,1.);rgb=mix(rgb,uFogColor,f);}
     color=vec4(wfinite(rgb)*alpha,alpha);
 }
+)GLSL";
+// Reconstruct only the soft sheet layer. Depth agreement prevents haze from
+// leaking across silhouettes; particles retain native-resolution shading.
+inline const std::string kWeatherHazeComposite=std::string(R"GLSL(#version 330 core
+uniform sampler2D uDepth,uHaze;
+uniform vec2 uViewport,uLowSize,uRange;
+uniform bool uForeground;
+out vec4 color;
+float linearDepth(float d){return 2.*uRange.x*uRange.y/max(.00001,uRange.y+uRange.x-(d*2.-1.)*(uRange.y-uRange.x));}
+)GLSL")+R"GLSL(
+void main(){
+ vec2 uv=gl_FragCoord.xy/uViewport;
+ float raw=texture(uDepth,uv).r;
+ if(uForeground&&raw<.0400001){color=vec4(0);return;}
+ float target=linearDepth(raw);vec2 p=uv*uLowSize-.5,base=floor(p),f=fract(p);
+ vec4 sum=vec4(0),closest=vec4(0);float total=0.,best=1e30;
+ for(int y=0;y<2;++y)for(int x=0;x<2;++x){
+  vec2 q=clamp((base+vec2(x,y)+.5)/uLowSize,.5/uLowSize,1.-.5/uLowSize);
+  float d=texture(uDepth,q).r;
+  if(uForeground&&d<.0400001)continue;
+  float delta=abs(linearDepth(d)-target);
+  vec4 sampleColor=texture(uHaze,q);
+  if(delta<best){best=delta;closest=sampleColor;}
+  float weight=(x==0?1.-f.x:f.x)*(y==0?1.-f.y:f.y)*exp2(-delta/max(.25,target*.002));
+  sum+=sampleColor*weight;total+=weight;
+ }
+ color=total>1e-5?sum/total:(best<max(1.,target*.01)?closest:vec4(0));
+}
+)GLSL";
+inline const std::string kWeatherHazeMask=std::string(R"GLSL(#version 330 core
+uniform sampler2D uDepth;
+uniform vec2 uViewport,uRange,uLowSize;
+uniform bool uForeground;
+out vec4 color;
+float linearDepth(float d){return 2.*uRange.x*uRange.y/max(.00001,uRange.y+uRange.x-(d*2.-1.)*(uRange.y-uRange.x));}
+)GLSL")+kWeatherHazeEdgeTest+R"GLSL(
+void main(){vec2 uv=gl_FragCoord.xy/uViewport;if(!hazeEdge(uv,texture(uDepth,uv).r))discard;color=vec4(1);}
 )GLSL";
 inline const std::string kWeatherScreenFragment=std::string(R"GLSL(#version 330 core
 in vec2 vScreen;out vec4 color;

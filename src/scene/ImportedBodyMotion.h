@@ -1,6 +1,43 @@
 #pragma once
 #include "scene/ImportedBody.h"
 namespace scene::imported {
+// Recover omitted gait direction from stance-foot travel, never from a file hash.
+// Named directions remain authoritative; ambiguous or incomplete cycles stay unknown.
+inline void inferNativeWalkDirection(CastScene& scene,std::size_t index){
+    if(index>=scene.animations.size())return;
+    auto& clip=scene.animations[index];
+    if(clip.sourceGame!="cso2"||clip.domain!=AnimationDomain::PlayerBody||clip.action!=ActionRole::None||clip.motion!=MotionRole::Walk||clip.direction!=Direction::Any||clip.durationFrames<4)return;
+    const auto layout=bodyLayout(scene.skeleton);
+    if(layout.family!=BodyFamily::Cso2||layout.pelvis<0||layout.foot[0]<0||layout.foot[1]<0)return;
+    std::array<std::array<Vec3,21>,2> feet{};std::array<float,2> low{1e20f,1e20f};
+    const auto position=[](const Mat4& m){return Vec3{m.v[12],m.v[13],m.v[14]};};
+    const float legHeight=std::abs(position(scene.skeleton.bones[layout.pelvis].restGlobal).z-position(scene.skeleton.bones[layout.foot[0]].restGlobal).z);
+    if(legHeight<1e-4f)return;
+    for(int k=0;k<21;++k){const auto pose=scene.samplePose(index,clip.durationFrames*k/20.f);const auto pelvis=position(pose[layout.pelvis]);
+        for(int side=0;side<2;++side){const auto foot=position(pose[layout.foot[side]]);feet[side][k]={foot.x-pelvis.x,foot.y-pelvis.y,foot.z};low[side]=std::min(low[side],foot.z);}}
+    Vec3 travel{};float distance=0;int contacts=0;std::vector<Vec3> intervals;
+    for(int side=0;side<2;++side)for(int k=1;k<20;++k){const auto a=feet[side][k-1],b=feet[side][k];
+        if(a.z>low[side]+legHeight*.025f||b.z>low[side]+legHeight*.025f)continue;
+        const Vec3 delta{a.x-b.x,a.y-b.y,0};travel=travel+delta;distance+=length(delta);++contacts;intervals.push_back(delta);}
+    if(distance>0&&length(travel)/distance<.7f){
+        // A recovering foot may skim the floor. Require a two-thirds directional
+        // consensus before excluding those opposing low-foot intervals.
+        std::array<int,8> votes{};std::array<Vec3,8> sums{};std::array<float,8> distances{};int moving=0;
+        for(const auto delta:intervals){const float span=length(delta);if(span<legHeight*.005f)continue;
+            const int sector=(static_cast<int>(std::round(std::atan2(delta.y,delta.x)/(kPi*.25f)))+8)%8;
+            ++moving;++votes[sector];sums[sector]=sums[sector]+delta;distances[sector]+=span;}
+        const auto winner=static_cast<std::size_t>(std::max_element(votes.begin(),votes.end())-votes.begin());
+        if(votes[winner]<5||votes[winner]*3<moving*2)return;
+        travel=sums[winner];distance=distances[winner];contacts=votes[winner];
+    }
+    if(contacts<5||length(travel)<legHeight*.15f||distance<=0||length(travel)/distance<.7f)return;
+    const auto forward=layout.authoredForward;const Vec3 left{-forward.y,forward.x,0};
+    const float angle=std::atan2(dot(travel,left),dot(travel,forward));
+    const int sector=static_cast<int>(std::round(angle/(kPi*.25f)));
+    if(std::abs(angle-sector*kPi*.25f)>kPi/9.f)return;
+    constexpr std::array<Direction,8> directions{Direction::Forward,Direction::ForwardLeft,Direction::Left,Direction::BackwardLeft,Direction::Backward,Direction::BackwardRight,Direction::Right,Direction::ForwardRight};
+    clip.direction=directions[(sector+8)%8];
+}
 inline void repairDetachedBodyRootLoops(CastScene& scene,std::size_t first){
     const auto layout=bodyLayout(scene.skeleton);if(!layout||layout.pelvis<0)return;
     int mainRoot=layout.pelvis;while(scene.skeleton.bones[mainRoot].parent>=0)mainRoot=scene.skeleton.bones[mainRoot].parent;
@@ -33,7 +70,22 @@ inline BodyMotionRoot bodyMotionRoot(const Skeleton& skeleton){
     const auto imported=bodyLayout(skeleton);
     if(imported&&imported.pelvis>=0)return {imported.pelvis,true};
     const auto legacy=skeleton.boneByCanonicalName.find("tag_origin");
-    return legacy==skeleton.boneByCanonicalName.end()?BodyMotionRoot{}:BodyMotionRoot{static_cast<int>(legacy->second),false};
+    if(legacy==skeleton.boneByCanonicalName.end())return {};
+    const int root=static_cast<int>(legacy->second);
+    const auto pelvis=skeleton.boneByCanonicalName.find("j_mainroot");
+    // Some canonicalized rigs put their origin at the pelvis. Retargeting
+    // gives that coincident ancestor the pelvis translation, including collapse.
+    // A distinct ground-level motion root must retain the old Z suppression.
+    if(pelvis!=skeleton.boneByCanonicalName.end()&&pelvis->second<skeleton.bones.size()){
+        const auto position=transformPoint(skeleton.bones[pelvis->second].restGlobal,{});
+        int b=static_cast<int>(pelvis->second);
+        for(std::size_t visited=0;visited<skeleton.bones.size()&&b>=0&&static_cast<std::size_t>(b)<skeleton.bones.size();++visited){
+            if(length(transformPoint(skeleton.bones[b].restGlobal,{})-position)>.001f)break;
+            if(b==root)return {root,true};
+            b=skeleton.bones[b].parent;
+        }
+    }
+    return {root,false};
 }
 inline void suppressBodyRootMotion(const Skeleton& skeleton,std::vector<Mat4>& pose,bool preserveVertical=false){
     const auto root=bodyMotionRoot(skeleton);if(root.bone<0||static_cast<std::size_t>(root.bone)>=pose.size())return;

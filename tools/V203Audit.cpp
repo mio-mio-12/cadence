@@ -1,10 +1,9 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceApplicationMain
 #include "../src/app/main.cpp"
 #undef main
 int main(){
  if(!glfwInit())return 1;glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto*w=glfwCreateWindow(900,700,"v203 audit",nullptr,nullptr);if(!w)return 2;glfwMakeContextCurrent(w);
- auto state=std::make_unique<AppState>();auto&a=*state;a.defaultSalukiDirectory=cadence::local_assets::exportPath("");std::string error;
+ auto state=std::make_unique<AppState>();auto&a=*state;a.defaultSalukiDirectory="exported_files";std::string error;
  if(!a.renderer.initialize(error))return 3;std::filesystem::create_directories("diagnostics/v203");std::ofstream log("diagnostics/v203/results.txt");
  for(auto*g:{"codm","bo2"})(void)assets::appendScan(a.defaultSalukiDirectory/g,g,a.assetCatalog,error);
  PointBlankPreparationBatch batch;

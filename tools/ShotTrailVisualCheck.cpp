@@ -43,6 +43,24 @@ int main(int argc,char** argv) {
             if(changed<4)status=1;
             if(!renderer.saveColorPng(output/(lateral==0?"stationary.png":"offset.png"),error))status=1;
         }
+        // Both presentation modes, frozen age, and feathering variants through
+        // the actual renderer. This is not a substitute for in-game approval.
+        for(int type=0;type<2;++type)for(int step=0;step<3;++step){
+            renderer.clearBulletTrails();renderer.setFirstPersonProjection(false);
+            const scene::Vec3 camera{0,-20,10};
+            const auto vp=scene::perspective(scene::kPi/3,1,.1f,2000)*scene::lookAt(camera,{200,0,0},{0,0,1});
+            renderer.render(empty,{},vp,512,512,false,false,false);
+            render::StageRenderer::BulletTrail t;t.type=type==0?render::StageRenderer::BulletTrail::Type::Sniper:render::StageRenderer::BulletTrail::Type::Projectile;
+            t.start={25,-5,-3};t.end={500,0,0};t.distance=scene::length(t.end-t.start);t.dir=scene::normalize(t.end-t.start);
+            t.width=2;t.lifetime=.75f;t.age=step*.2f;t.currentDist=step*100.f;t.feathering=step*.45f;
+            renderer.addBulletTrail(t);renderer.updateAndRenderBulletTrails(0,vp,camera);
+            if(!renderer.saveColorPng(output/("quality_"+std::to_string(type)+"_"+std::to_string(step)+".png"),error))status=1;
+            std::vector<std::uint8_t> first,repeat;if(!renderer.readColorRgba(first,error))return 1;
+            renderer.render(empty,{},vp,512,512,false,false,false);
+            renderer.updateAndRenderBulletTrails(0,vp,camera);if(!renderer.readColorRgba(repeat,error))return 1;
+            if(first!=repeat){std::cerr<<"Paused trail changed\n";status=1;}
+            if(glGetError()!=GL_NO_ERROR)status=1;
+        }
         auto value=scene::buildScene(cast::Document::load(std::filesystem::u8path(argv[1])));
         std::vector<scene::Mat4> pose;for(const auto& bone:value.skeleton.bones)pose.push_back(bone.restGlobal);
         const auto nativeMuzzle=scene::resolveMuzzlePosition(value,pose);

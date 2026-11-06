@@ -49,7 +49,12 @@ constexpr Palette presets[] = {{"Default", {}, {}, {}, {}},
                                 {.85f, .94f, .96f, 1},
                                 {.70f, .84f, .87f, 1},
                                 {.04f, .18f, .21f, 1},
-                                {.02f, .43f, .45f, 1}}};
+                                {.02f, .43f, .45f, 1}},
+                               {"Red / white",
+                                {.48f, .005f, .025f, 1},
+                                {.55f, .01f, .04f, 1},
+                                {1, 1, 1, 1},
+                                {1, 1, 1, 1}}};
 ImVec4 mix(ImVec4 a, ImVec4 b, float t) {
   return {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t,
           a.w + (b.w - a.w) * t};
@@ -194,7 +199,9 @@ void drawThemeSettings(AppState &app) {
           app.interfaceFonts[std::clamp(app.fontIndex, 0,
                                         int(app.interfaceFonts.size()) - 1)]
               .first.c_str())) {
+    static ImGuiTextFilter fontSearch;fontSearch.Draw("Search fonts");
     for (int i = 0; i < int(app.interfaceFonts.size()); ++i)
+      if(fontSearch.PassFilter(app.interfaceFonts[i].first.c_str()))
       if (ImGui::Selectable(app.interfaceFonts[i].first.c_str(),
                             app.fontIndex == i)) {
         app.fontIndex = i;

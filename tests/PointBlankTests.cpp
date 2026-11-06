@@ -1,11 +1,33 @@
 #include "app/PointBlankAnimationPolicy.h"
 #include "scene/PointBlankNative.h"
 #include "scene/VolumePreservingFit.h"
+#include "scene/ArmSkinning.h"
 #include <iostream>
 #include <cstdlib>
 #define CHECK(x) do{if(!(x)){std::cerr<<"Failed line "<<__LINE__<<": "<<#x;std::abort();}}while(false)
 #include "scene/GripLandmarks.h"
 int main(){
+ {scene::Bone b;CHECK(!scene::pointblank::hasAuthoredRigidRotation(b));
+  b.restLocal.rotation={.707107f,0,.707107f,0};CHECK(scene::pointblank::hasAuthoredRigidRotation(b));
+  b.restLocal.rotation={.5f,.5f,.5f,-.5f};CHECK(scene::pointblank::hasAuthoredRigidRotation(b));
+  b.restLocal.rotation={0,0,0,-1};CHECK(!scene::pointblank::hasAuthoredRigidRotation(b));}
+ {scene::Vertex v;v.position={1,0,0};v.bones={0,1,0,0};v.weights={.5f,.5f,0,0};
+  std::vector<scene::Mat4> m{scene::rotation(scene::fromAxisAngle({0,0,1},-1.4f)),scene::rotation(scene::fromAxisAngle({0,0,1},1.4f))};
+  CHECK(scene::length(scene::skinVertexPosition(v,m))<.2f);
+  v.armSkinning=1;CHECK(std::abs(scene::length(scene::skinVertexPosition(v,m))-1.f)<1e-4f);
+  m[0]=scene::scale({2,1,1});CHECK(!scene::rigidArmTransform(m[0]));
+  const auto expected=(scene::transformPoint(m[0],v.position)+scene::transformPoint(m[1],v.position))*.5f;
+  CHECK(scene::length(scene::skinVertexPosition(v,m)-expected)<1e-5f);
+ }
+ for(const auto family:scene::pointblank::meleeFamilies){
+  for(const auto block:{std::string("Common"),std::string(family)}){
+   scene::Animation clip;clip.sourceName="pt_SWAT_Female_GRS_"+std::string(family)+"_"+block+"_Up_Attack_A.cast";
+   scene::pointblank::classifyPlayer(clip);CHECK(clip.weapon==scene::WeaponClass::Knife&&clip.action==scene::ActionRole::Melee);
+   CHECK(scene::pointblank::torsoWeaponFamily(clip.sourceName)==family);
+  }
+  scene::Animation hold;hold.sourceName="pt_SWAT_Female_GRS_"+std::string(family)+"_Common_Up_Move_AttackIdle.cast";
+  scene::pointblank::classifyPlayer(hold);CHECK(hold.weapon==scene::WeaponClass::Knife&&hold.action==scene::ActionRole::None&&hold.motion==scene::MotionRole::Run&&hold.looping);
+ }
  {scene::Animation a;scene::classifyAnimationName("pb_stand_alert_akimbo.cast",a);CHECK(a.weapon==scene::WeaponClass::DualWield);
  scene::classifyAnimationName("mp_akimbo_crouch_aim_1.cast",a);CHECK(a.weapon==scene::WeaponClass::DualWield&&a.contextual);
  scene::classifyAnimationName("pb_laststand_idle.cast",a);CHECK(a.contextual);

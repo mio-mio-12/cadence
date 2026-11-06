@@ -2,6 +2,7 @@
 
 #include "scene/Math3D.h"
 #include "gameplay/ViewRecoil.h"
+#include "gameplay/ResponseCurve.h"
 
 #include <filesystem>
 #include <map>
@@ -20,12 +21,18 @@ enum class Archetype { Rifle, Smg, Lmg, Shotgun, BoltSniper, BoltIndividualSnipe
 
 struct Stats {
     float fireTime{0.1f},rechamberTime{},adsIn{0.25f},adsOut{0.25f},dropTime{0.4f},raiseTime{0.6f},yyReturnScale{1.5f};
+    float iw4YySmoothingTime{0.391f};
+    gameplay::view::ResponseCurve iw4YyCurve{[] { auto c=gameplay::view::ResponseCurve::linear(0,1);c.smoothness=1;return c;}()};
     float reloadTime{},reloadEmptyTime{},firstRaiseTime{},meleeTime{0.7f};
     float sprintInTime{0.2f},sprintLoopTime{0.8f},sprintOutTime{0.25f};
-    float quickDropTime{0.25f},quickRaiseTime{0.4f};
+    float quickDropTime{0.4f},quickRaiseTime{0.6f};
     float rechamberStartDelay{}; // Signed offset from the fire clip end for new profiles.
     bool rechamberDelayFromFireEnd{true}; // False preserves legacy shot-relative / -1 automatic timing.
     float sprintPlaybackScale{1.f};
+    float firePlaybackScale{1.f};
+    bool instantScope{};
+    bool disableAds{};
+    bool grenade{};
     gameplay::view::RecoilSettings recoil{};
     float adsFov{50.0f},moveSpeedScale{1.0f};
     float adsKickPitchMin{0.3f},adsKickPitchMax{0.45f},adsKickYawMin{-0.5f},adsKickYawMax{0.5f},adsKickCenterSpeed{15.0f};
@@ -57,6 +64,12 @@ struct AnimationOffset {
     scene::Vec3 position{};
     scene::Vec3 rotationDegrees{};
     float scale{1.0f};
+};
+
+struct RigWeaponTransform {
+    scene::Vec3 position{};
+    scene::Vec3 rotationDegrees{};
+    float scale{1.f};
 };
 
 struct MaterialTuning {
@@ -113,6 +126,10 @@ struct Profile {
     scene::Vec3 gunPosition{};
     float viewmodelFovMultiplier{1.f};
     float sprintBobMultiplier{1.f};
+    bool disableSprintAnimations{};
+    float sprintBobSpeedMultiplier{1.f};
+    bool overrideWeaponTurning{},weaponTurningEnabled{true};
+    float weaponTurningHipMultiplier{1.f},weaponTurningAdsMultiplier{1.f};
     bool flipViewmodel{};
     bool separateAdsPosition{};
     scene::Vec3 adsGunPosition{};
@@ -128,6 +145,9 @@ struct Profile {
     // is kept for old weaponfiles and UI code.
     std::map<std::string,std::vector<std::string>> animationVariants;
     std::vector<AnimationOffset> animationOffsets;
+    // Logical hand asset key, not an installation-specific absolute path.
+    // Empty key is the optional all-rigs default; exact hand keys override it.
+    std::map<std::string,RigWeaponTransform> rigWeaponTransforms;
     std::vector<RigMount> rigMounts;
     std::vector<std::string> hiddenTags;
     bool lockInspectRig{true};
@@ -135,8 +155,9 @@ struct Profile {
     // Capability flag; unlike the gameplay weapon class this identifies a
     // melee/knife profile for effect and animation policy decisions.
     bool meleeWeapon{false};
-    float knifeRadiusCm{150.0f};
-    float knifeConeDegrees{40.0f}; // Full angle, centered on aim.
+    std::optional<bool> hideCrosshair; // Unset: hide for snipers and knives.
+    float knifeRadiusCm{250.0f};
+    float knifeConeDegrees{70.0f}; // Full angle, centered on aim.
 };
 
 [[nodiscard]] inline bool isAdsDownClip(std::string_view name) { return name.find("_ads_down")!=std::string_view::npos||name.find("_ads_base_down")!=std::string_view::npos; }
@@ -156,6 +177,10 @@ inline void applyFamilyBehavior(Profile& target,const Profile& family){
 [[nodiscard]] std::optional<std::string> animationFor(const Profile& profile,const std::string& action,const std::string& pairing={});
 [[nodiscard]] std::vector<std::string> animationVariantsFor(const Profile& profile,const std::string& action,const std::string& pairing={});
 [[nodiscard]] const AnimationOffset* offsetFor(const Profile& profile,const std::string& animation);
+[[nodiscard]] inline const RigWeaponTransform* rigTransformFor(const Profile& profile,const std::string& rig){
+    auto it=profile.rigWeaponTransforms.find(rig);if(it==profile.rigWeaponTransforms.end())it=profile.rigWeaponTransforms.find("");
+    return it==profile.rigWeaponTransforms.end()?nullptr:&it->second;
+}
 [[nodiscard]] inline scene::Vec3 gunPositionAt(const Profile& profile,float ads){
     if(!profile.separateAdsPosition)return profile.gunPosition;
     const float t=std::isfinite(ads)?std::clamp(ads,0.f,1.f):0.f;

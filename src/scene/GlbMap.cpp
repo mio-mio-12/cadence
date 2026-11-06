@@ -7,6 +7,7 @@
 #include "scene/SpawnSelection.h"
 #include "scene/CodmMaterialMetadata.h"
 #include "scene/MapTextureCache.h"
+#include "gameplay/PlayerMapMovement.h"
 
 #include <algorithm>
 #include <array>
@@ -504,6 +505,35 @@ bool Map::navigationSegmentClear(Vec3 from,Vec3 to,float radius,float height,flo
     return true;
 }
 
+Vec3 Map::constrainMove(Vec3 oldPosition,Vec3 proposed,Vec2 halfExtents,float height,float stepHeight,Vec3* outContactNormal) const{
+    // Explicit rectangular override only; retain the legacy rounded overload.
+    // Continuous SAT applies independent world-X/Y support on every triangle.
+    bool grounded=false;
+    if(stepHeight>0){const auto support=gameplay::movement::playerSupport(*this,oldPosition,halfExtents,height,std::max(.1f,stepHeight*.5f));grounded=support.has_value();}
+    const auto result=gameplay::movement::movePlayer(*this,oldPosition,proposed-oldPosition,1.f,halfExtents,height,stepHeight,grounded);
+    if(outContactNormal)*outContactNormal=result.normal;
+    return result.position;
+}
+bool Map::navigationSegmentClear(Vec3 from,Vec3 to,Vec2 halfExtents,float height,float stepHeight) const{
+    const Vec3 horizontal{to.x-from.x,to.y-from.y,0};const float distance=length(horizontal);
+    if(distance<1.f)return true;
+    const int samples=std::clamp(static_cast<int>(std::ceil(distance/std::max(32.f,std::min(halfExtents.x,halfExtents.y)*2.f))),1,4);
+    constexpr float noGround=-std::numeric_limits<float>::max()*.25f;
+    Vec3 previous=from;
+    for(int sample=1;sample<=samples;++sample){
+        Vec3 point=from+horizontal*(static_cast<float>(sample)/samples);
+        const float ground=groundHeight(point.x,point.y,previous.z+stepHeight+4.f,noGround);
+        if(ground<=noGround*.5f||std::abs(ground-previous.z)>stepHeight+6.f)return false;
+        // No max-radius surrogate: check the actual rectangular support area.
+        for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x){
+            const float support=groundHeight(point.x+x*halfExtents.x,point.y+y*halfExtents.y,previous.z+stepHeight+4.f,noGround);
+            if(support<=noGround*.5f||std::abs(support-ground)>stepHeight+6.f)return false;
+        }
+        point.z=ground;const auto resolved=constrainMove(previous,point,halfExtents,height,stepHeight);
+        if(length(resolved-point)>.1f)return false;previous=point;
+    }
+    return true;
+}
 Vec3 Map::constrainMove(Vec3 oldPosition,Vec3 proposed,float radius,float height,float stepHeight,Vec3* outContactNormal) const{
     constexpr float noGround=-std::numeric_limits<float>::max()*0.25f;
     const float sampledOldGround=navigationGroundHeight(oldPosition.x,oldPosition.y,oldPosition.z+stepHeight,noGround,radius*0.55f);

@@ -9,7 +9,7 @@ bool equipNativePointBlank(AppState& app,std::size_t weaponIndex){
  const auto wd=cast::Document::load(weapon.path),hd=cast::Document::load(nativeHand);scene::CastScene composite;std::string error;
  if(!scene::pointblank::assemble(wd,hd,composite,error)){app.status=error;return true;}
  if(adapt){const auto selected=cast::Document::load(handPath);const bool importedSkin=assets::imported::supported(scene::imported::gameForPath(handPath))||gameFromExportPath(handPath)=="bocw_sp"||gameFromExportPath(handPath)=="cs2";
-   if(!(importedSkin?scene::imported::fitForeignViewSkin(composite,scene::buildScene(selected),error):scene::pointblank::fitHands(composite,hd,selected,error))){app.status="Unsupported Point Blank hands: "+error;return true;}}
+   if(!(importedSkin?scene::imported::fitPoseOnlyViewSkin(composite,scene::buildScene(selected),error):scene::pointblank::fitHands(composite,hd,selected,error))){app.status="Unsupported Point Blank hands: "+error;return true;}}
  const auto folder=animationFolderFor(weapon);std::vector<std::filesystem::path> files;std::error_code ec;const auto prefix=lowerText(weapon.name)+"_";
  if(folder)for(std::filesystem::recursive_directory_iterator it(*folder,ec),end;it!=end;it.increment(ec)){if(ec){ec.clear();continue;}auto name=lowerText(it->path().filename().string());if(it->is_regular_file(ec)&&name.starts_with(prefix)&&name.ends_with(".cast")&&name.find("_weapon _ ")==std::string::npos)files.push_back(it->path());}
  std::sort(files.begin(),files.end());std::vector<cast::Document> documents;std::vector<std::filesystem::path> validFiles;

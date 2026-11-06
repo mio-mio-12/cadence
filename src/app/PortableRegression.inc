@@ -20,9 +20,15 @@ int portableRegression(const std::filesystem::path& output){
     const auto encoder=cadence::portable::ffmpegExecutable();
     check(encoder==programDirectory()/"tools"/"ffmpeg.exe","Bundled encoder selected without PATH dependency");
     app->exportWidth=16;app->exportHeight=16;app->exportFps=30;
-    FILE* pipe{};const auto movie=output/"portable prores.mov";
-    const bool opened=openProResPipe(*app,pipe,movie,false);check(opened,"ProRes encoder opens through quoted portable path");
-    if(opened){std::vector<unsigned char> pixels(16*16*4,128);std::fwrite(pixels.data(),1,pixels.size(),pipe);check(_pclose(pipe)==0,"ProRes encoder completes");check(std::filesystem::file_size(movie)>128,"ProRes file produced");}
+    const auto movie=output/"portable prores.mov";
+    const bool opened=startProResExport(*app,movie);check(opened,"ProRes encoder opens through quoted portable path");
+    if(opened){
+        using Stream=cadence::capture::ProResExportStream;
+        std::string error;
+        check(app->exportMoviePipe->submit({std::make_shared<Stream::Bytes>(16*16*4,128)},error),"ProRes encoder accepts a frame");
+        check(closeProResExport(*app).empty(),"ProRes encoder completes");
+        check(std::filesystem::exists(movie)&&std::filesystem::file_size(movie)>128,"ProRes file produced");
+    }
     cadence::capture::LiveViewportRecorder recorder;const auto mp4=output/"portable gameplay.mp4";
     check(recorder.start(mp4,16,16,30,18,30,false),"Bundled gameplay recorder starts");
     cadence::capture::CameraFrame camera;camera.width=16;camera.height=16;

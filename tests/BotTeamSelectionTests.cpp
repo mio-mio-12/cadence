@@ -10,6 +10,17 @@ int main() {
     auto& app = *state;
     {
         auto isolated=std::make_unique<AppState>();auto& a=*isolated;
+        assets::Asset view;view.game="aw";view.name="viewmodel_future_rifle";view.role=assets::Role::ViewWeapon;
+        a.assetCatalog.entries.push_back(view);
+        CHECK(findWorldWeaponForViewWeapon(a,a.assetCatalog.entries[0])==0);
+        assets::Asset world;world.game="aw";world.name="weapon_future_rifle";world.role=assets::Role::WorldWeapon;
+        a.assetCatalog.entries.push_back(world);
+        CHECK(findWorldWeaponForViewWeapon(a,a.assetCatalog.entries[0])==1);
+        a.assetCatalog.entries.resize(1);a.assetCatalog.entries[0].game="mwr";
+        CHECK(findWorldWeaponForViewWeapon(a,a.assetCatalog.entries[0])==std::size_t(-1));
+    }
+    {
+        auto isolated=std::make_unique<AppState>();auto& a=*isolated;
         a.sunBlackbody=a.ambientBlackbody=true;
         a.sunColor={.13f,.57f,.91f};a.ambientColor={.73f,.21f,.42f};
         a.bloomIntensity=.37f;a.environmentExposure=1.23f;a.eeveeRoughness=.28f;
@@ -301,6 +312,20 @@ int main() {
         const auto view=add("mwr",std::string("wpn_h1_grenade_")+name+"_vm_LOD0",assets::Role::ViewWeapon);
         const auto world=add("mwr",std::string("wpn_h1_grenade_")+name+(std::string(name)=="flash"?"_mp_npc_LOD0":"_npc_mp_LOD0"),assets::Role::WorldWeapon);
         CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[view])==world);
+    }
+    for(const auto family:{"ak47","m4","test_future_rifle"}){
+        app.assetCatalog.entries.clear();
+        const auto view=add("mw3",std::string("viewmodel_")+family+"_LOD0",assets::Role::ViewWeapon);
+        add("mw3",std::string("weapon_")+family+"_iw5_gold_LOD0",assets::Role::WorldWeapon);
+        add("mw3",std::string("weapon_")+family+"_iw50_LOD0",assets::Role::WorldWeapon);
+        add("mw",std::string("weapon_")+family+"_iw5_LOD0",assets::Role::WorldWeapon);
+        CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[view])==std::size_t(-1));
+        const auto world=add("mw3",std::string("weapon_")+family+"_iw5_LOD0",assets::Role::WorldWeapon);
+        CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[view])==world);
+        const auto exact=add("mw3",std::string("weapon_")+family+"_LOD0",assets::Role::WorldWeapon);
+        CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[view])==exact);
+        app.assetCatalog.entries[view].name=std::string("viewmodel_")+family+"_gold_LOD0";
+        CHECK(findWorldWeaponForViewWeapon(app,app.assetCatalog.entries[view])==1);
     }
     std::cout << "Team assembly, character matching, safe locomotion and scoped world names passed\n";
     for(const auto& names:std::vector<std::pair<std::string,std::string>>{{"kriss","kriss_v"},{"lsat","lsat_iw6"},{"mk14_ebr","mk14_ebr_iw6"},{"mk14","mk14_iw6"},{"rm_22_ar","rm_22"},{"magum_iw6","magnum_iw6"},{"vbr_pdw","vbr"}}){

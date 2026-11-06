@@ -1,10 +1,50 @@
 #include "app/BotAnimationQueryKey.h"
+#include "scene/PointBlankActionIdentity.h"
 #include <iostream>
 #include <stdexcept>
 
 void require(bool value) { if(!value) throw std::runtime_error("bot animation cache regression"); }
 int main() {
+    using scene::pointblank::meleeFamilyFromViewmodel;
+    using scene::pointblank::torsoWeaponFamily;
+    using scene::pointblank::torsoFamilyCompatible;
+    require(meleeFamilyFromViewmodel("D:/pointblank/models/viewmodel_knife_M-9.cast")=="knife");
+    require(meleeFamilyFromViewmodel("D:\\pointblank\\models\\VIEWMODEL_KNIFE_M-9_DUAL.CAST")=="dualknife");
+    require(meleeFamilyFromViewmodel("viewmodel_knife_Spetnatz_Field_Shovel.cast")=="spetnatz_field_shovel");
+    require(meleeFamilyFromViewmodel("viewmodel_pistol_DesertEagle.cast").empty());
+    require(meleeFamilyFromViewmodel("viewmodel_SWAT_Male_hands.cast").empty());
+    require(meleeFamilyFromViewmodel("worldmodel_knife_M-9.cast").empty());
+    // Additional native families exist in torso exports; these viewmodel names
+    // are synthetic convention checks, not claims that those models are loaded.
+    for(const auto family:scene::pointblank::meleeFamilies){
+        const auto clip="pt_SWAT_Female_GRS_"+std::string(family)+"_Common_Up_AttackIdle.cast";
+        require(torsoWeaponFamily(clip)==family);
+        require(torsoFamilyCompatible(family,"pointblank",clip));
+        require(meleeFamilyFromViewmodel("viewmodel_"+std::string(family)+".cast")==family);
+        if(family!="knife")require(!torsoFamilyCompatible("knife","pointblank",clip));
+    }
+    require(torsoWeaponFamily("pt_REBEL_Male_knife_Common_Up_Attack.cast")=="knife");
+    require(torsoWeaponFamily("pt_SWAT_Female_GRS_brass_knuckle_Common_Up_AttackIdle.cast")=="brass_knuckle");
+    require(torsoWeaponFamily("pt_SWAT_Female_GRS_dualknife_Common_Up_Attack.cast")=="dualknife");
+    require(torsoWeaponFamily("pt_SWAT_Female_GRS_dualknife_Dual_Throwing_Knife_Up_Attack_A.cast")=="dualknife");
+    require(!torsoFamilyCompatible("knife","pointblank","pt_SWAT_Female_GRS_dualknife_Dual_Throwing_Knife_Up_Attack_A.cast"));
+    require(torsoWeaponFamily("pt_SWAT_Female_GRS_dualknife_Kunai_Dual_Up_Attack_A.cast")=="dualknife");
+    require(torsoWeaponFamily("pt_SWAT_Female_GRS_knife_Butterfly_Knife_Up_Attack_A.cast")=="knife");
+    require(torsoWeaponFamily("pt_SWAT_Female_GRS_kukrii_Arabian_sword_Up_Attack_A.cast")=="kukrii");
+    for(const auto descriptor:{"CandyCane","Ice_Fork","Stick_Goat"})require(torsoWeaponFamily("pt_SWAT_Female_GRS_keris_"+std::string(descriptor)+"_Up_Attack_A.cast")=="keris");
+    require(torsoWeaponFamily("pt_SWAT_Female_GRS_gh5007_M1918_TrenchKnife_Up_Attack_A.cast").empty());
+    require(torsoWeaponFamily("pt_SWAT_Female_GRS_knife_Common_Up_").empty());
+    require(torsoWeaponFamily("pt_SWAT_Female_GRS_notknife_Common_Up_Attack.cast").empty());
+    require(torsoWeaponFamily("pb_SWAT_Female_GRS_knife_Common_Up_Attack.cast").empty());
+    require(!torsoFamilyCompatible("knife","pointblank","pt_SWAT_Female_GRS_unknown_Common_Up_Attack.cast"));
+    require(torsoFamilyCompatible("knife","bo2","pt_knife_idle.cast"));
+    require(torsoFamilyCompatible("","pointblank","pt_SWAT_Female_GRS_brass_knuckle_Common_Up_AttackIdle.cast"));
+    std::cout<<"PB native melee family identity, specific grips, gender independence and foreign fallback passed\n";
     scene::AnimationQuery base;
+    {scene::CastScene variants;for(const auto descriptor:{"BallisticKnife","Butterfly_Knife","Common"}){scene::Animation c;c.sourceName="pt_SWAT_Female_GRS_knife_"+std::string(descriptor)+"_Up_Attack.cast";c.sourceGame="pointblank";c.domain=scene::AnimationDomain::PlayerTorso;c.action=scene::ActionRole::Melee;c.weapon=scene::WeaponClass::Knife;c.tracks.resize(20);variants.animations.push_back(c);}
+     auto q=bot_animation::actionQuery(scene::ActionRole::Melee,scene::WeaponClass::Knife,scene::Stance::Stand);q.preferredWeaponFamily="knife";require(scene::findBestAnimation(variants,q)==2);
+     variants.animations.pop_back();require(scene::findBestAnimation(variants,q)==0);
+     variants.animations.resize(1);variants.animations[0].sourceName="pt_SWAT_Female_GRS_spetnatz_field_shovel_Spetnatz_Field_Shovel_Up_Attack_A.cast";q.preferredWeaponFamily="spetnatz_field_shovel";require(scene::findBestAnimation(variants,q)==0);}
     std::vector<scene::AnimationQuery> queries{base};
     const auto add=[&](auto change){auto q=base;change(q);require(bot_animation::queryKey(q)!=bot_animation::queryKey(base));queries.push_back(q);};
     add([](auto& q){q.domain=scene::AnimationDomain::PlayerTorso;});
@@ -19,6 +59,15 @@ int main() {
     add([](auto& q){q.requireMappedTracks=false;});
     add([](auto& q){q.preferredGame="aw";});
     add([](auto& q){q.forceT6Locomotion=true;});
+    add([](auto& q){q.preferredWeaponFamily="knife";});
+    {scene::CastScene melee;
+     for(const auto family:{"brass_knuckle","knife","dualknife"}){scene::Animation c;c.sourceName="pt_SWAT_Female_GRS_"+std::string(family)+"_Common_Up_Attack.cast";c.sourceGame="pointblank";c.domain=scene::AnimationDomain::PlayerTorso;c.action=scene::ActionRole::Melee;c.weapon=scene::WeaponClass::Knife;c.tracks.resize(1);melee.animations.push_back(c);}
+     auto q=bot_animation::actionQuery(scene::ActionRole::Melee,scene::WeaponClass::Knife,scene::Stance::Stand);bot_animation::ActionCache identities;
+     q.preferredWeaponFamily="knife";require(identities.find(melee,q)==1);
+     q.preferredWeaponFamily="dualknife";require(identities.find(melee,q)==2);
+     q.preferredWeaponFamily="brass_knuckle";require(identities.find(melee,q)==0);
+     q.preferredWeaponFamily="spetnatz_field_shovel";require(!identities.find(melee,q));
+     auto fallback=melee.animations[0];fallback.sourceGame="bo2";fallback.sourceName="pt_knife_stand_melee_swipe.cast";melee.animations.push_back(fallback);require(identities.find(melee,q)==3);}
     scene::CastScene actor;
     for(int i=0;i<64;++i) {
         scene::Animation clip;
@@ -53,7 +102,7 @@ int main() {
         require(scratch[0].nodes.capacity()==capacity);
         require(scratch[1].nodes.empty()&&scratch[2].nodes.empty());
     }
-    std::cout<<"all 12 query fields distinct; scene/rebuild invalidation passed; 1800 scratch uses retained capacity\n";
+    std::cout<<"all 13 query fields distinct; scene/rebuild invalidation passed; 1800 scratch uses retained capacity\n";
     scene::CastScene postures;
     for(const auto* name:{"pt_rifle_fire","pt_rifle_fire_prone","pt_rifle_prone_reload_rearclip","pt_rifle_reload_rearclip"}) {
         scene::Animation clip;scene::classifyAnimationName(name,clip);clip.tracks.resize(1);

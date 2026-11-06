@@ -18,6 +18,23 @@ void triangle(scene::glb::Map& map,Vec3 a,Vec3 b,Vec3 c){
 }
 void quad(scene::glb::Map& map,Vec3 a,Vec3 b,Vec3 c,Vec3 d){triangle(map,a,b,c);triangle(map,a,c,d);}
 int main(){
+    // Stock GoldSrc and uncapped-server policy share identical air physics.
+    // Removing the jump trim must not inject speed, alter a strafe direction,
+    // disable collision, or change the native per-component velocity bound.
+    for(bool unlimited:{false,true})for(float sign:{-1.f,1.f}){
+        State s;s.velocity={600*sign,0,0};Command cmd;cmd.jump=true;cmd.unlimitedBunnyhop=unlimited;
+        tick(s,cmd,10,Rules::HalfLife,floorTrace);
+        const float expected=unlimited?600.f:600.f/std::sqrt(360016.f)*544.f*.65f;
+        CHECK(near(s.velocity.x,sign*expected));CHECK(!s.grounded);
+        const float before=s.velocity.x;
+        for(int i=0;i<5;++i){cmd.yaw+=.5f;tick(s,cmd,10,Rules::HalfLife,floorTrace);CHECK(near(s.velocity.x,before));}
+    }
+    for(float heading:{0.f,.37f,2.1f})for(float side:{-1.f,1.f}){
+        State f,b;f.position=b.position={0,0,10000};f.velocity=b.velocity={300,0,0};
+        Command a;a.yaw=heading;a.side=side;Command reverse=a;reverse.yaw+=scene::kPi;reverse.side=-side;
+        for(int i=0;i<30;++i){a.yaw+=.01f;reverse.yaw+=.01f;tick(f,a,10,Rules::HalfLife,empty);tick(b,reverse,10,Rules::HalfLife,empty);}
+        CHECK(scene::length(f.velocity-b.velocity)<.01f);CHECK(scene::length(f.position-b.position)<.01f);
+    }
     // Independent scalar goldens for 10 ms split gravity and a 2000/unit
     // component bound. Include naturally reached terminal fall and both sides
     // of each boundary; no production clamp helper computes expectations.
@@ -226,6 +243,9 @@ int main(){
     }
     CHECK(request(0,1,0,true)==Action::BeginDrop);CHECK(request(0,0,1,true)==Action::CancelDrop);
     CHECK(request(0,2,1,true)==Action::RetargetDrop);CHECK(request(1,0,2,true)==Action::BeginDrop);
+    CHECK(admitsCadence(Busy::Fire,true,true));CHECK(admitsCadence(Busy::Fire,false));
+    CHECK(!admitsCadence(Busy::Melee,false));CHECK(!admitsCadence(Busy::Offhand,false));
+    CHECK(request(0,1,0,admitsCadence(Busy::Fire,true))==Action::BeginDrop);
     CHECK(!admits(Busy::Fire,true));CHECK(admits(Busy::Fire,false));CHECK(admits(Busy::Reload,true));
     CHECK(admits(Busy::Rechamber,true));CHECK(!admits(Busy::Melee,false));CHECK(!admits(Busy::Offhand,false));
     // Full adapter-domain gate table from pinned iw4L check_for_change_admits:

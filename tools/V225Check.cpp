@@ -1,11 +1,10 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceApplicationMain
 #include "../src/app/main.cpp"
 #undef main
 #define CHECK(x) do{if(!(x)){std::cerr<<"FAIL "<<__LINE__<<" "<<#x<<'\n';return 1;}}while(false)
 int main(){
     auto state=std::make_unique<AppState>();auto& a=*state;std::string error;
-    const std::filesystem::path root=cadence::local_assets::exportPath("");
+    const std::filesystem::path root="exported_files";
     a.weaponSunMultiplier=2.25f;a.weaponAmbientMultiplier=.125f;
     CHECK(saveVisualPreset(a,"diagnostics/v225/lighting.castvisual"));
     auto target=std::make_unique<AppState>();VisualPresetResources resources;
@@ -29,6 +28,11 @@ int main(){
     const auto folder=root/"iw_sp/animations/vm";
     scene::appendAnimations(cast::Document::load(folder/"vm_kb_m4_idle.cast"),a.scene);
     scene::appendAnimations(cast::Document::load(folder/"vm_default_sprint_loop_medium.cast"),a.scene);
+    // Old/generated profiles can name weapon-specific clips absent from exports.
+    for(const auto slot:{"sprint_in","sprint_loop","sprint_out"}){
+        a.weaponProfile.animations[slot]="vm_kb_m4_"+std::string(slot)+".cast";
+        a.weaponProfile.animationVariants[slot]={a.weaponProfile.animations[slot]};
+    }
     installIwSharedSprint(a,a.assetCatalog.entries[gun]);
     for(const auto slot:{"sprint_in","sprint_loop","sprint_out"}){
         const auto clip=findViewmodelClip(a,slot);CHECK(clip);

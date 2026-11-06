@@ -1,11 +1,10 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
 #undef main
 #define CHECK(x) do{if(!(x)){std::cerr<<"FAIL "<<__LINE__<<" "<<#x<<" "<<error<<'\n';return 1;}}while(false)
 int main(){
  std::string error;CHECK(glfwInit());glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto*w=glfwCreateWindow(640,360,"Replay check",nullptr,nullptr);CHECK(w);glfwMakeContextCurrent(w);ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;
- auto state=std::make_unique<AppState>();auto&a=*state;a.window=w;a.deferSceneUpload=true;CHECK(a.renderer.initialize(error));a.defaultSalukiDirectory=cadence::local_assets::exportPath("");
+ auto state=std::make_unique<AppState>();auto&a=*state;a.window=w;a.deferSceneUpload=true;CHECK(a.renderer.initialize(error));a.defaultSalukiDirectory="exported_files";
  for(auto game:{"pointblank","bo2"})CHECK(assets::appendScan(a.defaultSalukiDirectory/game,game,a.assetCatalog,error));
  auto idx=[&](std::string name){for(size_t i=0;i<a.assetCatalog.entries.size();++i)if(a.assetCatalog.entries[i].name==name)return i;return a.assetCatalog.entries.size();};
  for(auto hand:{"viewmodel_SWAT_Male_hands","c_usa_mp_isa_smg_viewhands_LOD0"})for(auto weapon:{"viewmodel_pistol_DesertEagle","viewmodel_pistol_ColtPython","viewmodel_knife_M-9_Dual"}){

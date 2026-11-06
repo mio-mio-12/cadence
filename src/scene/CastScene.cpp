@@ -1,10 +1,13 @@
 #include "scene/PoseEvaluationScratch.h"
 #include "scene/CastScene.h"
+#include "scene/Source2BodyPolicy.h"
 #include "content/AssetPaths.h"
 #include "scene/PointBlankNative.h"
+#include "scene/PointBlankActionIdentity.h"
 #include "scene/ImportedNative.h"
 #include "scene/ImportedBody.h"
 #include "scene/ImportedMuzzle.h"
+#include "scene/ImportedDirtyBomb.h"
 #include "scene/T6Magazine.h"
 #include "scene/T6SharedTextures.h"
 #include "scene/NativeBoneNames.h"
@@ -20,6 +23,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <fstream>
 #include <unordered_map>
 
 namespace scene {
@@ -224,7 +228,8 @@ std::optional<int> angularToken(const std::vector<std::string>& tokens,std::stri
         if(position==std::string::npos&&token.size()>1&&token.back()==abbreviation)end=token.size()-1;
         if(end==std::string::npos||end==0)continue;
         std::size_t begin=end;while(begin>0&&std::isdigit(static_cast<unsigned char>(token[begin-1])))--begin;
-        if(begin<end)return std::stoi(token.substr(begin,end-begin));
+        // Angular labels are small degrees, not arbitrary export hashes.
+        if(begin<end&&end-begin<=3)return std::stoi(token.substr(begin,end-begin));
     }
     return std::nullopt;
 }
@@ -316,7 +321,7 @@ Skeleton buildSkeleton(const cast::Document& document, const cast::Node& skeleto
     return skeleton;
 }
 
-struct Surface { Vec4 color{0.52f,0.62f,0.72f,1}; std::filesystem::path albedo,normal,specular,metalness,roughness; std::string materialName; bool camoBlend{},camoUseAlpha{true},lens{},eyeOverlay{},emissive{},forceAlpha{},ignoreAlbedoAlpha{},excluded{}; };
+struct Surface { Vec4 color{0.52f,0.62f,0.72f,1}; std::filesystem::path albedo,normal,specular,metalness,roughness; std::string materialName; bool camoBlend{},camoUseAlpha{true},lens{},eyeOverlay{},emissive{},forceAlpha{},alphaTest{},ignoreAlbedoAlpha{},excluded{}; };
 
 Surface materialSurface(const cast::Document& document, const cast::Node& model, const cast::Node& mesh) {
     const auto refs=uints(document,mesh,"m");
@@ -326,7 +331,10 @@ const auto* material=childHash(model,refs[0]);
     const auto materialName=text(*material,"n");const auto canonicalMaterial=canonicalName(materialName),sourceLower=canonicalName(document.sourceName());
     auto normalizedSource=document.sourceName();std::transform(normalizedSource.begin(),normalizedSource.end(),normalizedSource.begin(),[](unsigned char c){return c=='\\'?'/' : static_cast<char>(std::tolower(c));});
     const bool awViewWeapon=containsAny(sourceLower,{"/aw/models/vm_","\\aw\\models\\vm_"})&&!containsAny(sourceLower,{"vm_view_arms","viewhands"});
-    const bool source2Weapon=normalizedSource.find("/cs2/models/weapons/")!=std::string::npos;
+    const auto source2Stem=std::filesystem::path(normalizedSource).stem().string();
+    const bool source2Weapon=normalizedSource.find("/cs2/models/")!=std::string::npos&&
+        !source2Stem.starts_with("viewhands")&&
+        (source2Stem.ends_with("_model")||source2Stem.starts_with("worldmodel_"));
     const bool importedUtf8=containsAny(normalizedSource,{"/cs1.6/","/cz/","/cscz/","/css/","/csnz/","/cso2/","/eldewrito/"});
     const auto texturePath=[&](const std::string& value){return importedUtf8?std::filesystem::u8path(value):std::filesystem::path(value);};
     const bool coldWarWeapon=std::filesystem::path(document.sourceName()).filename().string().starts_with("wpn_t9_");
@@ -403,6 +411,24 @@ const auto* material=childHash(model,refs[0]);
         const auto colorIdentity=canonicalName(importedUtf8?std::string(colorUtf8.begin(),colorUtf8.end()):result.albedo.string());
         result.emissive=result.emissive||isEmissiveMaterialIdentity(colorIdentity);
         result.forceAlpha=result.lens||result.emissive||result.eyeOverlay;
+        // Legacy CoD exports keep the alpha-tested technique in _mat_info,
+        // rather than in CAST's generic PBR material. Do not infer opacity
+        // from texture alpha alone: weapon alpha can be a camo mask.
+        auto sidecarMaterial=canonicalMaterial;
+        if(sidecarMaterial.starts_with("mc_"))sidecarMaterial.erase(0,3);
+        if(sidecarMaterial.find_first_of("/\\") == std::string::npos){
+            std::ifstream info(std::filesystem::path(document.sourceName()).parent_path()/"_mat_info"/(sidecarMaterial+".txt"));
+            std::string line;
+            while(std::getline(info,line)){
+                if(!line.starts_with("Techset:"))continue;
+                while(!line.empty()&&std::isspace(static_cast<unsigned char>(line.back())))line.pop_back();
+                // IW techniques encode coverage in t0 (tested), not the _sat
+                // shader suffix shared by opaque r0 and blended b0 materials.
+                if(line.find("_t0")!=std::string::npos){result.alphaTest=true;result.ignoreAlbedoAlpha=false;}
+                else if(line.find("_b0")!=std::string::npos){result.forceAlpha=true;result.ignoreAlbedoAlpha=false;}
+                break;
+            }
+        }
         // Native CAST material sidecars explicitly distinguish soft opacity
         // from opaque textures whose alpha stores auxiliary surface data.
         if(normalizedSource.find("/codm/")!=std::string::npos&&!result.albedo.empty()){
@@ -417,7 +443,7 @@ const auto* material=childHash(model,refs[0]);
                 }
             }
         }
-        result.camoBlend=weaponSource&&!result.forceAlpha&&!result.excluded;
+        result.camoBlend=weaponSource&&!result.forceAlpha&&!result.alphaTest&&!result.excluded;
     };
     for (const auto slot : {"albedo","diffuse"}) {
         const auto surfaceRefs=uints(document,*material,slot);
@@ -464,7 +490,7 @@ std::optional<Mesh> buildMesh(const cast::Document& document, const cast::Node& 
         if(found!=surfaces.end())surface=found->second;
         else{surface=materialSurface(document,model,node);surfaces.emplace(materialRefs.front(),surface);}
     }
-    if(surface.excluded)return std::nullopt;mesh.color=surface.color;mesh.albedoPath=surface.albedo;mesh.normalPath=surface.normal;mesh.specularPath=surface.specular;mesh.metalnessPath=surface.metalness;mesh.roughnessPath=surface.roughness;mesh.materialName=surface.materialName;mesh.camoBlend=surface.camoBlend;mesh.camoUseAlpha=surface.camoUseAlpha;mesh.lens=surface.lens;mesh.eyeOverlay=surface.eyeOverlay;mesh.emissive=surface.emissive;mesh.forceAlpha=surface.forceAlpha;mesh.ignoreAlbedoAlpha=surface.ignoreAlbedoAlpha;mesh.decal=surface.emissive;
+    if(surface.excluded)return std::nullopt;mesh.color=surface.color;mesh.albedoPath=surface.albedo;mesh.normalPath=surface.normal;mesh.specularPath=surface.specular;mesh.metalnessPath=surface.metalness;mesh.roughnessPath=surface.roughness;mesh.materialName=surface.materialName;mesh.camoBlend=surface.camoBlend;mesh.camoUseAlpha=surface.camoUseAlpha;mesh.lens=surface.lens;mesh.eyeOverlay=surface.eyeOverlay;mesh.emissive=surface.emissive;mesh.forceAlpha=surface.forceAlpha;mesh.alphaTest=surface.alphaTest;mesh.ignoreAlbedoAlpha=surface.ignoreAlbedoAlpha;mesh.decal=surface.emissive;
     const auto source=canonicalName(document.sourceName());mesh.normalProfile=containsAny(source,{"/aw/","\\aw\\"})?4:containsAny(source,{"iw5","mw3"})?2:containsAny(source,{"/mw/","\\mw\\","iw3","cod4"})?5:containsAny(source,{"t5","black_ops","/bo/","\\bo\\"})?1:0;
     mesh.vertices.resize(positions.size()/3);
     for (std::size_t i=0;i<mesh.vertices.size();++i) mesh.vertices[i].position={positions[i*3],positions[i*3+1],positions[i*3+2]};
@@ -566,8 +592,24 @@ Animation buildAnimation(const cast::Document& document, const cast::Node& node,
     std::replace(sourcePath.begin(),sourcePath.end(),'\\','/');
     if(sourcePath.find("/cs2/animations/viewmodel/")!=std::string::npos)
         animation.domain=AnimationDomain::ViewModel;
+    else if(sourcePath.find("/cs2/")!=std::string::npos&&source2ContextualBody(document))animation.contextual=true;
 
     std::vector<std::string> missingBones;
+    // Match CAST's Blender/Maya importers: overrides affect descendants,
+    // not the named bone's own curves. Resolve real ancestry, not prefixes.
+    // Preserve the explicitly excluded Source2 animation path unchanged.
+    struct ModeOverride {std::size_t bone;TrackMode mode;bool translation,rotation,scale;};
+    std::vector<ModeOverride> modeOverrides;
+    if(sourcePath.find("/cs2/")==std::string::npos){
+        for(const auto& entry:node.children)if(entry.identifier==0x564F4D43){
+            const auto name=text(entry,"nn");auto bone=skeleton.boneByName.find(name);
+            std::size_t index{};
+            if(bone!=skeleton.boneByName.end())index=bone->second;
+            else {const auto canonical=skeleton.boneByCanonicalName.find(canonicalName(name));if(canonical==skeleton.boneByCanonicalName.end())continue;index=canonical->second;}
+            const auto mode=text(entry,"m");if(mode!="absolute"&&mode!="relative"&&mode!="additive")continue;
+            modeOverrides.push_back({index,trackMode(mode),scalar(document,entry,"ot",0)!=0,scalar(document,entry,"or",0)!=0,scalar(document,entry,"os",0)!=0});
+        }
+    }
     for (const auto& curve:node.children) {
         if(curve.identifier==kNotification){
             Animation::Notification notification;notification.name=text(curve,"n","event");
@@ -593,6 +635,16 @@ Animation buildAnimation(const cast::Document& document, const cast::Node& node,
         if(frames64.empty())continue;
         Track track; track.boneIndex=boneIndex; track.property=*property;
         track.mode=trackMode(text(curve,"m","absolute")); track.additiveWeight=scalar(document,curve,"ab",1);
+        for(const auto& override:modeOverrides){
+            const bool selected=track.property==TrackProperty::Rotation?override.rotation:
+                (track.property==TrackProperty::ScaleX||track.property==TrackProperty::ScaleY||track.property==TrackProperty::ScaleZ)?override.scale:override.translation;
+            if(!selected)continue;
+            auto ancestor=skeleton.bones[boneIndex].parent;std::size_t visited{};
+            while(ancestor>=0&&static_cast<std::size_t>(ancestor)<skeleton.bones.size()&&visited++<skeleton.bones.size()){
+                if(static_cast<std::size_t>(ancestor)==override.bone){track.mode=override.mode;break;}
+                ancestor=skeleton.bones[ancestor].parent;
+            }
+        }
         if(track.property!=TrackProperty::Rotation&&track.property!=TrackProperty::ScaleX&&track.property!=TrackProperty::ScaleY&&track.property!=TrackProperty::ScaleZ&&skeleton.bones[boneIndex].translationTracksAreDeltas)track.mode=TrackMode::Relative;
         for(auto frame:frames64) track.frames.push_back(static_cast<std::uint32_t>(frame));
         if(track.property==TrackProperty::Rotation) {
@@ -665,13 +717,15 @@ void classifyAnimationName(std::string_view input,Animation& animation) {
     else if(tokenContains(tokens,{"shellshock"}))animation.action=ActionRole::Shellshock;
     else if(tokenContains(tokens,{"reload","rechamber"}))animation.action=ActionRole::Reload;
     else if(tokenContains(tokens,{"riotshield"})&&tokenContains(tokens,{"deploy"}))animation.action=ActionRole::Deploy;
+    // Weapon-family labels such as slowfire must not override an explicit
+    // first-raise action (e.g. Cold War's pt_rifle_ar_slowfire_*_first_raise).
+    else if(tokenContains(tokens,{"firstraise"})||(tokenIs(tokens,{"first"})&&(tokenIs(tokens,{"raise"})||tokenIs(tokens,{"pullout"}))))animation.action=ActionRole::FirstRaise;
     else if(tokenContains(tokens,{"fire","shoot","shoot1"}))animation.action=ActionRole::Fire;
     else if(tokenContains(tokens,{"melee","bash","attack","stab","swipe","thrust"})||containsAny(name,{"heavy_hit","light_hit","heavy_miss","light_miss"}))animation.action=ActionRole::Melee;
     else if(tokenContains(tokens,{"bombplant","plant"}))animation.action=ActionRole::Plant;
     else if(tokenContains(tokens,{"deploy"}))animation.action=ActionRole::Deploy;
     else if(tokenContains(tokens,{"putaway2shield"}))animation.action=ActionRole::SwitchWeapon;
     else if(tokenContains(tokens,{"putaway","holster"}))animation.action=ActionRole::Unequip;
-    else if(tokenContains(tokens,{"firstraise"})||(tokenIs(tokens,{"first"})&&(tokenIs(tokens,{"raise"})||tokenIs(tokens,{"pullout"}))))animation.action=ActionRole::FirstRaise;
     else if(tokenContains(tokens,{"pullout","draw"})||tokenIs(tokens,{"raise","equip"}))animation.action=ActionRole::Equip;
     else if(tokenContains(tokens,{"pullpin"})||tokenIs(tokens,{"prime"}))animation.action=ActionRole::GrenadePrep;
     else if(tokenIs(tokens,{"throw"}))animation.action=ActionRole::Throw;
@@ -738,15 +792,27 @@ void classifyAnimationName(std::string_view input,Animation& animation) {
         animation.domain=AnimationDomain::PlayerTorso;
     }
     animation.ads=tokenIs(tokens,{"ads"});
+    // IW body shoot-walk clips are sustained aiming gait cycles, not the
+    // one-shot torso fire layer. Retain rifle metadata inferred above, but
+    // make the authored walk available to ordinary ground locomotion.
+    if(animation.domain==AnimationDomain::PlayerBody&&name.starts_with("pb_stand_shoot_walk_")&&
+       animation.motion==MotionRole::Walk&&animation.action==ActionRole::Fire){
+        animation.action=ActionRole::None;animation.ads=true;
+    }
     bool aimGrid=false;
     for(size_t i=1;i<tokens.size();++i)if(tokens[i-1]=="aim"&&!tokens[i].empty()&&std::all_of(tokens[i].begin(),tokens[i].end(),[](unsigned char c){return std::isdigit(c)!=0;}))aimGrid=true;
     const bool worldDomain=animation.domain==AnimationDomain::PlayerBody||animation.domain==AnimationDomain::PlayerTorso;
     animation.contextual=tokenContains(tokens,{"slope","lowwall","flare"})||(worldDomain&&(aimGrid||tokenContains(tokens,{"laststand","wpnswp"})||name.find("wpn_swp")!=std::string::npos));
+    // Scripted traversal/vehicle/presentation poses are not ordinary locomotion,
+    // even when their names also contain idle, run or fire. Keep them available
+    // to explicit contextual queries and the animation editor.
+    if(worldDomain&&tokenIs(tokens,{"swim","swimming","dodge","zipline","atv","vehicle","passenger","assassination","endgame"}))animation.contextual=true;
+    if(worldDomain&&tokenIs(tokens,{"reaction"})&&tokenIs(tokens,{"flash","flashbang","stun"}))animation.contextual=true;
     if(worldDomain&&name.starts_with("mp_")&&(tokenIs(tokens,{"bomb"})||(tokenIs(tokens,{"rpg"})&&tokenIs(tokens,{"knife"}))))animation.contextual=true;
     if(animation.action==ActionRole::Reload){
         if(tokenIs(tokens,{"gl"}))animation.reloadStyle=ReloadStyle::GL;
         else if(tokenContains(tokens,{"handleclip"}))animation.reloadStyle=ReloadStyle::HandleClip;
-        else if(tokenContains(tokens,{"rearclip"}))animation.reloadStyle=ReloadStyle::RearClip;
+        else if(tokenContains(tokens,{"rearclip"})||((animation.domain==AnimationDomain::PlayerTorso||animation.domain==AnimationDomain::PlayerBody)&&tokenIs(tokens,{"bullpup"})))animation.reloadStyle=ReloadStyle::RearClip;
         else if(tokenContains(tokens,{"mp40"}))animation.reloadStyle=ReloadStyle::MP40;
         else animation.reloadStyle=ReloadStyle::Standard;
     }
@@ -756,10 +822,13 @@ void classifyAnimationName(std::string_view input,Animation& animation) {
     const bool diagBL=containsAny(name,{"_bl.","_bl_","_backward_left","_back_left"})||name.ends_with("_bl");
     const bool diagBR=containsAny(name,{"_br.","_br_","_backward_right","_back_right"})||name.ends_with("_br");
 
-    const bool shortForward=containsAny(name,{"_run_f","_walk_f","_crawl_f","_shuffle_f","_stumble_f","_f."})||name.ends_with("_f")||(tokenIs(tokens,{"f"})&&animation.motion!=MotionRole::Idle);
-    const bool shortBackward=containsAny(name,{"_run_b","_walk_b","_crawl_b","_shuffle_b","_stumble_b","_b."})||name.ends_with("_b")||(tokenIs(tokens,{"b"})&&animation.motion!=MotionRole::Idle);
-    const bool shortLeft=containsAny(name,{"_run_l","_walk_l","_crawl_l","_shuffle_l","_stumble_l","_l."})||name.ends_with("_l")||(tokenIs(tokens,{"l"})&&animation.motion!=MotionRole::Idle);
-    const bool shortRight=containsAny(name,{"_run_r","_walk_r","_crawl_r","_shuffle_r","_stumble_r","_r."})||name.ends_with("_r")||(tokenIs(tokens,{"r"})&&animation.motion!=MotionRole::Idle);
+    // Single letters on idle clips are often variation labels (idle_twitch_b),
+    // not directions. Keep explicit movement abbreviations and full direction
+    // names, but do not let an idle variant outrank a neutral looping idle.
+    const bool shortForward=containsAny(name,{"_run_f","_walk_f","_crawl_f","_shuffle_f","_stumble_f"})||(animation.motion!=MotionRole::Idle&&(name.find("_f.")!=std::string::npos||name.ends_with("_f")||tokenIs(tokens,{"f"})));
+    const bool shortBackward=containsAny(name,{"_run_b","_walk_b","_crawl_b","_shuffle_b","_stumble_b"})||(animation.motion!=MotionRole::Idle&&(name.find("_b.")!=std::string::npos||name.ends_with("_b")||tokenIs(tokens,{"b"})));
+    const bool shortLeft=containsAny(name,{"_run_l","_walk_l","_crawl_l","_shuffle_l","_stumble_l"})||(animation.motion!=MotionRole::Idle&&(name.find("_l.")!=std::string::npos||name.ends_with("_l")||tokenIs(tokens,{"l"})));
+    const bool shortRight=containsAny(name,{"_run_r","_walk_r","_crawl_r","_shuffle_r","_stumble_r"})||(animation.motion!=MotionRole::Idle&&(name.find("_r.")!=std::string::npos||name.ends_with("_r")||tokenIs(tokens,{"r"})));
 
     if(diagFL)animation.direction=Direction::ForwardLeft;
     else if(diagFR)animation.direction=Direction::ForwardRight;
@@ -795,6 +864,12 @@ CastScene buildScene(const cast::Document& document,bool prepareViewmodel) {
     CastScene result;
     if(!document.valid()){result.warnings.push_back("Cannot build a scene from an invalid Cast document");return result;}
     result.sourceModelPath=std::filesystem::path(document.sourceName());
+    // New CAST animation exports may carry their authoritative bind hierarchy
+    // beneath Animation rather than Model. Read it before binding any curves.
+    if(canonicalName(document.sourceName()).find("cs2")!=std::string::npos)
+        for(const auto& root:document.roots())for(const auto& animation:root.children)
+            if(animation.identifier==kAnimation&&result.skeleton.bones.empty())
+                if(const auto* skeleton=childOf(animation,kSkeleton))result.skeleton=buildSkeleton(document,*skeleton,result.warnings);
     for(const auto& root:document.roots()) for(const auto& model:root.children) {
         if(model.identifier!=kModel)continue;
         const auto* skeletonNode=childOf(model,kSkeleton);
@@ -812,21 +887,33 @@ CastScene buildScene(const cast::Document& document,bool prepareViewmodel) {
     if(containsAny(canonicalName(document.sourceName()),{"juggernaut","jugg"}))if(const auto head=result.skeleton.boneByCanonicalName.find("j_head");head!=result.skeleton.boneByCanonicalName.end())for(auto& mesh:result.meshes)if(containsAny(canonicalName(mesh.materialName),{"jugg_head","headgear"}))for(auto& vertex:mesh.vertices){vertex.bones={static_cast<std::uint32_t>(head->second),0,0,0};vertex.weights={1,0,0,0};}
     if(prepareViewmodel)prepareColdWarViewmodel(result,std::filesystem::path(document.sourceName()).filename().string());
     if(pointblank::exportedByPb2cast(document))pointblank::normalize(result);
+    if(imported::blackSquadMetres(document))imported::normalizeBlackSquad(result);
+    imported::readDirtyBombMount(document,result);
+    if(imported::gameForPath(std::filesystem::path(document.sourceName()))=="dirtybomb")imported::normalizeDirtyBomb(result);
     if(imported::dewExport(document)){
         imported::normalizeDew(result);
         if(result.skeleton.boneByName.contains("pelvis")&&result.skeleton.boneByName.contains("l_thigh"))result.importedBodyIdentity=std::filesystem::path(document.sourceName()).stem().string();
     }
     if(assets::imported::sourceFamily(imported::gameForPath(std::filesystem::path(document.sourceName()))))imported::normalizeSourceBody(result);
+    if(std::filesystem::path(document.sourceName()).parent_path().filename()=="playermodels"&&imported::bodyLayout(result.skeleton).family==imported::BodyFamily::Source2)imported::normalizeSourceBody(result);
     imported::addViewCamera(document,result);
-    imported::prepareMuzzleAnchors(result,std::filesystem::path(document.sourceName()));
     if(assets::imported::supported(imported::gameForPath(std::filesystem::path(document.sourceName()))))for(auto& mesh:result.meshes)mesh.dielectricByDefault=true;
+    // Skeletal_Lit_Common_MAT samples SpecularSampler.R for strength.
+    // Its green channel controls power and blue is a separate mask, not RGB F0.
+    // Preserve authored roughness/scalar controls until CAST carries shader parameters.
+    if(imported::blackSquadMetres(document))for(auto& mesh:result.meshes)
+        if(!mesh.lens&&!mesh.emissive)mesh.specularRedChannel=true;
     codm::prepareWorldBody(result,std::filesystem::path(document.sourceName()));
     if(containsAny(canonicalName(std::filesystem::path(document.sourceName()).generic_string()),{"/codm/"})){
         std::string nativeError;
         if(codm::nativeMetres(document.sourceName(),nativeError))
             for(auto& mesh:result.meshes)mesh.specularGlossiness=true;
     }
+    imported::appendGitsParts(result,std::filesystem::path(document.sourceName()));
+    imported::appendDirtyBombParts(result,document);
     appendAnimations(document,result);
+    imported::recoverCollapsedViewBind(result,std::filesystem::path(document.sourceName()));
+    imported::prepareMuzzleAnchors(result,std::filesystem::path(document.sourceName()));
     for(const auto& mesh:result.meshes) for(const auto& vertex:mesh.vertices) {
         const auto p=transformPoint(mesh.modelTransform,vertex.position);
         if(!result.bounds.valid){result.bounds.minimum=result.bounds.maximum=p;result.bounds.valid=true;}
@@ -913,6 +1000,29 @@ std::size_t appendAnimations(const cast::Document& document,CastScene& scene) {
     }
     for(const auto& root:document.roots()) for(const auto& node:root.children)
         if(node.identifier==kAnimation) scene.animations.push_back(buildAnimation(document,node,scene.skeleton,scene.warnings));
+    const auto additionalGame=imported::gameForPath(std::filesystem::path(document.sourceName()));
+    if(assets::imported::additionalFamily(additionalGame))for(std::size_t i=before;i<scene.animations.size();++i){auto& a=scene.animations[i];
+        if(additionalGame=="dirtybomb"&&(imported::dbShared(document,false)||imported::dbShared(document,true))){
+            std::erase_if(a.tracks,[&](const auto& t){return t.boneIndex>=scene.skeleton.bones.size()||!imported::dbHandBone(scene.skeleton.bones[t.boneIndex].name);});
+            a.name="shared: "+assets::imported::additionalAction(additionalGame,document.sourceName());
+        }
+        if(const auto action=assets::imported::additionalAction(additionalGame,document.sourceName());!action.empty()){
+            classifyAnimationName("viewmodel_"+action,a);
+            if(action=="sprint_loop")a.looping=true;
+        }
+        if(const auto semantic=assets::imported::additionalBodySemantic(additionalGame,document.sourceName());!semantic.empty())classifyAnimationName(semantic,a);
+        if(additionalGame=="dirtybomb"&&a.domain==AnimationDomain::PlayerBody&&a.motion==MotionRole::Idle&&a.action!=ActionRole::Reload)
+            imported::classifyDirtyBombBodyIdle(a,imported::dbProperty(document,"db.source"),imported::dbProperty(document,"db.additive.mode"));
+        if(additionalGame=="dirtybomb")imported::classifyDirtyBombBodyReload(a,imported::dbProperty(document,"db.source"),imported::dbProperty(document,"db.additive.mode"),scene.skeleton);
+        if(additionalGame=="dirtybomb")imported::classifyDirtyBombBodyFire(a,imported::dbProperty(document,"db.source"),imported::dbProperty(document,"db.additive.mode"),scene.skeleton);
+        if(additionalGame=="dirtybomb"&&scene.importedTranslationScale==2.f)for(auto& t:a.tracks)if(t.property<=TrackProperty::TranslationZ)for(auto& v:t.scalarValues)v*=2.f;
+        if(additionalGame=="blacksquad"&&(scene.importedTranslationScale==200.f||scene.importedTranslationScale==100.f))for(auto& t:a.tracks){
+            const bool root=t.boneIndex<scene.skeleton.bones.size()&&scene.skeleton.bones[t.boneIndex].parent<0;
+            if(t.property<=TrackProperty::TranslationZ){for(auto& v:t.scalarValues)v*=scene.importedTranslationScale;if(root)t.property=t.property==TrackProperty::TranslationX?TrackProperty::TranslationY:t.property==TrackProperty::TranslationY?TrackProperty::TranslationZ:TrackProperty::TranslationX;}
+            else if(root&&t.property==TrackProperty::Rotation&&t.mode==TrackMode::Absolute)for(auto& q:t.rotationValues)q=multiply(Quat{.5f,.5f,.5f,.5f},q);
+            else if(root&&t.property==TrackProperty::Rotation&&t.mode==TrackMode::Additive)for(auto& q:t.rotationValues)q=multiply(multiply(Quat{.5f,.5f,.5f,.5f},q),Quat{-.5f,-.5f,-.5f,.5f});
+        }
+    }
     if(assets::imported::sourceFamily(scene.importedViewGame)&&!scene.rigParts.empty())for(std::size_t i=before;i<scene.animations.size();++i){
         auto& a=scene.animations[i];
         if(const auto action=assets::imported::diagnosticAction(scene.importedViewGame,scene.rigParts.front().name,a.sourceName);!action.empty())
@@ -935,7 +1045,11 @@ std::size_t appendAnimations(const cast::Document& document,CastScene& scene) {
                     auto source=buildScene(cameraDoc);codm::normalizeToCentimetres(source,scene.codmTranslationFactor/100.f);
                     if(!source.animations.empty()&&source.skeleton.bones.size()==1){
                         const auto local=source.sampleLocalPose(0,0).front();
-                        auto& motion=scene.skeleton.bones[scene.skeleton.boneByName.at("codm_camera_motion")];motion.restLocal=local;motion.restGlobal=trs(local.position,local.rotation,local.scale);motion.inverseBind=inverseAffine(motion.restGlobal);
+                        auto& motion=scene.skeleton.bones[scene.skeleton.boneByName.at("codm_camera_motion")];motion.restLocal=local;motion.restGlobal=trs(local.position,local.rotation,local.scale);
+                        // Calibration changes the neutral animation pose, not
+                        // the assembly's skin bind. Keep that bind immutable:
+                        // replay restores geometry without loading these clips.
+                        // This synthetic bone has no weighted mesh vertices.
                         auto& viewer=scene.skeleton.bones[scene.skeleton.boneByName.at("tag_camera")];const auto relative=inverseAffine(motion.restGlobal)*viewer.restGlobal;decomposeAffine(relative,viewer.restLocal.position,viewer.restLocal.rotation,viewer.restLocal.scale);
                         scene.codmNativeCameraCalibrated=true;scene.warnings.push_back("CODM viewer camera neutral aligned to first camera sample; raw camera tracks retained: "+cameraPath.filename().string());
                     }
@@ -944,10 +1058,10 @@ std::size_t appendAnimations(const cast::Document& document,CastScene& scene) {
             }}
         }
     }
-    if(scene.importedTranslationScale!=1.f&&imported::dewExport(document))for(size_t i=before;i<scene.animations.size();++i){
+    if(imported::dewExport(document))for(size_t i=before;i<scene.animations.size();++i){
         auto& a=scene.animations[i];for(auto& t:a.tracks)if(t.property<=TrackProperty::TranslationZ)for(auto& v:t.scalarValues)v*=scene.importedTranslationScale;
         if(a.name.starts_with("first_person:")){classifyAnimationName("viewmodel_"+a.name.substr(13),a);a.domain=AnimationDomain::ViewModel;}
-        else if(const auto semantic=assets::imported::dewBodySemantic(a.sourceName,a.name);!semantic.empty())classifyAnimationName(semantic,a);
+        else if(!imported::classifyDewBodyAnimation(a)){classifyAnimationName("",a);a.contextual=true;}
     }
     if(scene.pointBlankNativeCentimetres&&pointblank::animationPath(document))for(size_t i=before;i<scene.animations.size();++i){
         auto& action=scene.animations[i];pointblank::classifyPlayer(action);for(auto& t:action.tracks)if(t.property<=TrackProperty::TranslationZ)for(auto& v:t.scalarValues)v*=100.f;
@@ -1041,6 +1155,10 @@ std::size_t appendAnimations(const cast::Document& document,CastScene& scene) {
                     const bool left=scene.skeleton.bones[b].name.starts_with("pb2cast_weapon__left__");
                     if((suffix=="AttackIdle_Right"&&left)||(suffix=="AttackIdle_Left"&&!left))continue;
                     auto& bone=scene.skeleton.bones[b];const auto& ref=reference[b];
+                    // Non-identity native binds already describe the mesh basis.
+                    // Replacing them with idle cancels authored knife orientation
+                    // (and changes every later animated rotation relative to it).
+                    if(pointblank::hasAuthoredRigidRotation(bone))continue;
                     if(bone.parent<0||std::min({std::abs(ref.scale.x),std::abs(ref.scale.y),std::abs(ref.scale.z)})<.001f)continue;
                     bone.restLocal=ref;bone.restGlobal=scene.skeleton.bones[bone.parent].restGlobal*trs(ref.position,ref.rotation,ref.scale);bone.inverseBind=inverseAffine(bone.restGlobal);
                 }
@@ -1048,7 +1166,10 @@ std::size_t appendAnimations(const cast::Document& document,CastScene& scene) {
         }
     }
     attachColdWarWorldPoses(document,scene,before);
-    if(assets::imported::sourceFamily(imported::gameForPath(std::filesystem::path(document.sourceName())))){
+    auto bodySourcePath=canonicalName(document.sourceName());std::replace(bodySourcePath.begin(),bodySourcePath.end(),'\\','/');
+    const bool source2BodyDocument=bodySourcePath.find("/cs2/animations/")!=std::string::npos&&bodySourcePath.find("/viewmodel/")==std::string::npos&&
+        (std::filesystem::path(document.sourceName()).filename().string().starts_with("pb_")||std::filesystem::path(document.sourceName()).filename().string().starts_with("pt_"));
+    if(assets::imported::sourceFamily(imported::gameForPath(std::filesystem::path(document.sourceName())))||source2BodyDocument){
         imported::normalizeSourceBodyAnimations(scene,before);
         if(imported::bodyLayout(scene.skeleton))for(auto i=before;i<scene.animations.size();++i)imported::classifySourceBodyAnimation(scene.animations[i]);
     }
@@ -1216,6 +1337,13 @@ static Mat4 makeMayaOffset(Vec3 t, Vec3 rRad) {
     const Quat qx{sx, 0, 0, cx}, qy{0, sy, 0, cy}, qz{0, 0, sz, cz};
     const Quat q = normalize(multiply(qz, multiply(qy, qx)));
     return trs(t, q, {1,1,1});
+}
+
+std::optional<LegacyToIwCalibration> legacyToIwCalibration(std::string_view iwBone){
+    for(const auto& mapping:kMayaConstraints)
+        if(iwBone==mapping.driver&&std::string_view(mapping.driven)!="camera_reference_meshes")
+            return LegacyToIwCalibration{mapping.driven,inverseAffine(makeMayaOffset(mapping.t,mapping.r))};
+    return std::nullopt;
 }
 
 bool composeIwSprintOffset(CastScene& scene,std::size_t animation,std::size_t idle){
@@ -1511,7 +1639,10 @@ std::size_t appendAttachment(const cast::Document& document,CastScene& scene,std
 
 std::size_t appendPreparedAttachment(CastScene&& imported,CastScene& scene,std::size_t boneIndex,std::string name) {
     if(boneIndex>=scene.skeleton.bones.size())return 0;
-    if(imported.meshes.empty())return 0;
+    if(imported.meshes.empty()){
+        for(const auto& warning:imported.warnings)scene.warnings.push_back("Attachment '"+name+"': "+warning);
+        scene.warnings.push_back("Attachment '"+name+"': no prepared geometry");return 0;
+    }
     Attachment attachment;attachment.name=std::move(name);attachment.boneIndex=boneIndex;
     attachment.sourceModelPath=imported.sourceModelPath;
     std::vector<Mat4> importedPose;for(const auto& bone:imported.skeleton.bones)importedPose.push_back(bone.restGlobal);
@@ -1546,11 +1677,52 @@ bool sameRigGeometry(const CastScene& a,const CastScene& b){
     return true;
 }
 
-std::size_t appendRigModel(const cast::Document& document,CastScene& scene,std::string name,std::optional<Mat4> sourceMount,float uniformScale){
+std::size_t appendRigModel(const cast::Document& document,CastScene& scene,std::string name,std::optional<Mat4> sourceMount,float uniformScale,bool auxiliaryMelee){
     (void)sourceMount;
     if(!document.valid())return 0;auto imported=buildScene(document);if(imported.meshes.empty())return 0;
+    const auto bodyFamily=imported::bodyLayout(scene.skeleton).family;
+    if(scene.viewHandsDriverGame!="cs2"&&bodyFamily!=imported::BodyFamily::None&&bodyFamily==imported::bodyLayout(imported.skeleton).family&&
+       imported::bodyNeedsIndependentBind(scene.skeleton,imported)){
+        const auto firstBone=scene.skeleton.bones.size(),firstMesh=scene.meshes.size();
+        const auto prefix="body_variant_"+std::to_string(firstBone)+"_";
+        std::vector<std::size_t> roots;
+        for(std::size_t i=0;i<imported.skeleton.bones.size();++i){
+            auto bone=imported.skeleton.bones[i];const int driver=imported::nativeBodyBone(scene.skeleton,bone.name);
+            bone.name=prefix+canonicalName(bone.name);
+            if(bone.parent>=0)bone.parent+=static_cast<int>(firstBone);else roots.push_back(firstBone+i);
+            scene.skeleton.boneByName[bone.name]=firstBone+i;scene.skeleton.boneByCanonicalName[canonicalName(bone.name)]=firstBone+i;
+            scene.skeleton.bones.push_back(std::move(bone));
+            if(driver>=0&&static_cast<std::size_t>(driver)<firstBone)scene.bodyVariantDrivers[firstBone+i]=static_cast<std::size_t>(driver);
+        }
+        for(auto& mesh:imported.meshes){if(mesh.skinned)for(auto& v:mesh.vertices)for(auto& b:v.bones)b+=static_cast<std::uint32_t>(firstBone);
+            mesh.name=name+" / "+mesh.name;mesh.attachmentIndex=-1;scene.meshes.push_back(std::move(mesh));}
+        scene.rigParts.push_back({name,firstMesh,scene.meshes.size()-firstMesh,std::move(roots)});
+        scene.rigParts.back().sourceModelPath=std::filesystem::path(document.sourceName());
+        return scene.meshes.size()-firstMesh;
+    }
     const auto importedPath=std::filesystem::path(document.sourceName());
     const auto nativeGame=imported::gameForPath(importedPath);
+    // Current CS2 weapons may carry a character-space bind skeleton while
+    // their first-person clips carry the view rig. Shared names do not imply
+    // identical inverse binds. Rebase only the appended weapon's vertices.
+    const bool source2ViewWeaponPart=scene.viewHandsDriverGame=="cs2"&&[&]{
+        const auto key=cadence::content::exportKey(importedPath);if(!key.empty())return key.starts_with("cs2/");
+        for(const auto& part:importedPath)if(canonicalName(part.string())=="cs2")return true;return false;
+    }();
+    if(source2ViewWeaponPart){
+        const auto weapon=scene.skeleton.boneByName.find("weapon"),socket=scene.skeleton.boneByName.find("wpn");
+        if(weapon!=scene.skeleton.boneByName.end()&&socket!=scene.skeleton.boneByName.end()&&scene.skeleton.bones[weapon->second].parent<0){
+            // Embedded clip hierarchies export the weapon subtree independently.
+            // Its local channels belong beneath the animated first-person socket.
+            scene.skeleton.bones[weapon->second].parent=static_cast<int>(socket->second);
+            for(size_t b=0;b<scene.skeleton.bones.size();++b){int ancestor=static_cast<int>(b);bool attached=false;
+                for(size_t depth=0;ancestor>=0&&depth<scene.skeleton.bones.size();++depth){if(ancestor==static_cast<int>(weapon->second)){attached=true;break;}ancestor=scene.skeleton.bones[ancestor].parent;}
+                if(!attached)continue;auto& bone=scene.skeleton.bones[b];
+                bone.restGlobal=scene.skeleton.bones[bone.parent].restGlobal*translation(bone.restLocal.position)*rotation(bone.restLocal.rotation)*scale(bone.restLocal.scale);
+                bone.inverseBind=inverseAffine(bone.restGlobal);
+            }
+        }
+    }
     if(!scene.importedViewGame.empty()&&scene.importedViewGame==nativeGame&&scene.rigParts.empty()&&
        assets::imported::role(nativeGame,assets::imported::utf8(importedPath.stem()))==assets::Role::ViewWeapon){
         const auto weaponMeshes=imported.meshes.size();std::vector<std::size_t> roots;
@@ -1579,11 +1751,18 @@ std::size_t appendRigModel(const cast::Document& document,CastScene& scene,std::
     // its j_gun root: merging it with the native hands' wrist helper makes
     // cross-game retargeting copy that helper's pose into the actual weapon.
     const bool iwRevolverPart=partProfile=="weapon_revolver_camo"||partProfile=="weapon_revolver_camo_lod0";
-    const bool iw7WeaponPart=(partProfile.starts_with("weapon_")&&partProfile.find("_vm")!=std::string::npos)||iwRevolverPart;const bool awWeaponPart=partProfile.starts_with("vm_")||iw7WeaponPart;
+    auto partSource=canonicalName(document.sourceName());std::replace(partSource.begin(),partSource.end(),'\\','/');
+    const bool standaloneGunRoot=std::any_of(imported.skeleton.bones.begin(),imported.skeleton.bones.end(),[](const Bone& b){return b.parent<0&&canonicalName(b.name)=="j_gun";});
+    const bool iwExportWeaponRoot=partSource.find("/iw_sp/")!=std::string::npos&&standaloneGunRoot;
+    const bool iw7WeaponPart=iwExportWeaponRoot||(partProfile.starts_with("weapon_")&&partProfile.find("_vm")!=std::string::npos)||iwRevolverPart;const bool awWeaponPart=partProfile.starts_with("vm_")||iw7WeaponPart;
     const bool iw5AttachmentPart=!scene.rigParts.empty()&&partProfile.starts_with("viewmodel_")&&containsAny(partProfile,{"scope","acog","eotech","reflex","reticle","magnifier","silencer","foregrip","thermal"});
     const bool coldWarPart=partProfile.starts_with("wpn_t9_")&&partProfile.find("_view")!=std::string::npos;
-    const bool meleeKnifePart=canonicalName(name).find("wpn_knife_base_view")!=std::string::npos;
+    const bool meleeKnifePart=auxiliaryMelee||(!scene.rigParts.empty()&&canonicalName(name).find("wpn_knife_base_view")!=std::string::npos);
     const bool compositeHeadPart=partProfile.starts_with("head_")&&!containsAny(partProfile,{"juggernaut","jugger"});
+    // PB characters share names but not their hand/finger bind frames or
+    // proportions. Rebase each skin into the shared actor bind before reusing
+    // its bone indices (also required when restoring recorded bot variants).
+    const bool pointBlankBodyPart=pointblank::body(scene.skeleton)&&pointblank::body(imported.skeleton);
     const bool awCharacterPart=partProfile.starts_with("mp_")&&!partProfile.starts_with("mp_view_")&&
         (partProfile.starts_with("mp_top_")||partProfile.starts_with("mp_pants_")||partProfile.starts_with("mp_head")||partProfile.starts_with("mp_glove")||partProfile.starts_with("mp_boot_")||partProfile.starts_with("mp_kneepad_")||partProfile.starts_with("mp_shinguard_")||partProfile.starts_with("mp_loadouts_")||partProfile.starts_with("mp_exo_")||partProfile.starts_with("mp_eyewear_"));
     if(coldWarPart&&std::any_of(imported.skeleton.bones.begin(),imported.skeleton.bones.end(),[](const auto& b){return b.parent<0&&canonicalName(b.name)=="tag_weapon";})){
@@ -1599,12 +1778,12 @@ std::size_t appendRigModel(const cast::Document& document,CastScene& scene,std::
     std::vector<float> rootMinimumY(imported.skeleton.bones.size(),std::numeric_limits<float>::max()),rootMaximumY(imported.skeleton.bones.size(),std::numeric_limits<float>::lowest());
     for(const auto& mesh:imported.meshes)for(const auto& vertex:mesh.vertices)for(std::size_t influence=0;influence<vertex.bones.size();++influence){const auto root=vertex.bones[influence];if(root>=imported.skeleton.bones.size()||imported.skeleton.bones[root].parent>=0||vertex.weights[influence]<0.5f)continue;
         rootMinimumZ[root]=std::min(rootMinimumZ[root],vertex.position.z);rootMinimumY[root]=std::min(rootMinimumY[root],vertex.position.y);rootMaximumY[root]=std::max(rootMaximumY[root],vertex.position.y);}
-    if(iw7WeaponPart||partProfile.starts_with("t6_wpn_"))if(const auto handGun=scene.skeleton.boneByCanonicalName.find("j_gun");handGun!=scene.skeleton.boneByCanonicalName.end()&&scene.skeleton.bones[handGun->second].parent>=0&&canonicalName(scene.skeleton.bones[static_cast<std::size_t>(scene.skeleton.bones[handGun->second].parent)].name)=="j_wrist_ri"){const auto index=handGun->second;const auto oldName=scene.skeleton.bones[index].name;scene.skeleton.boneByName.erase(oldName);scene.skeleton.boneByCanonicalName.erase("j_gun");scene.skeleton.bones[index].name="iw7_hands|j_gun_hand";scene.skeleton.boneByName[scene.skeleton.bones[index].name]=index;scene.skeleton.boneByCanonicalName["j_gun_hand"]=index;}
+    if((standaloneGunRoot&&partSource.find("/cs2/")==std::string::npos)||iw7WeaponPart||partProfile.starts_with("t6_wpn_"))if(const auto handGun=scene.skeleton.boneByCanonicalName.find("j_gun");handGun!=scene.skeleton.boneByCanonicalName.end()&&scene.skeleton.bones[handGun->second].parent>=0&&canonicalName(scene.skeleton.bones[static_cast<std::size_t>(scene.skeleton.bones[handGun->second].parent)].name)=="j_wrist_ri"){const auto index=handGun->second;const auto oldName=scene.skeleton.bones[index].name;scene.skeleton.boneByName.erase(oldName);scene.skeleton.boneByCanonicalName.erase("j_gun");scene.skeleton.bones[index].name="iw7_hands|j_gun_hand";scene.skeleton.boneByName[scene.skeleton.bones[index].name]=index;scene.skeleton.boneByCanonicalName["j_gun_hand"]=index;}
     std::vector<std::size_t> boneMap(imported.skeleton.bones.size());std::vector<std::size_t> partRoots;
-    for(std::size_t i=0;i<imported.skeleton.bones.size();++i){const auto& source=imported.skeleton.bones[i];auto canonical=canonicalName(source.name);if(meleeKnifePart&&source.parent<0&&canonical=="j_gun")canonical="j_gun1";
+    for(std::size_t i=0;i<imported.skeleton.bones.size();++i){const auto& source=imported.skeleton.bones[i];auto canonical=canonicalName(source.name);if(meleeKnifePart)canonical="melee_knife_"+canonical;
         const bool xprScopePart=partProfile.find("xpr50_scope_view")!=std::string::npos;const auto existing=scene.skeleton.boneByCanonicalName.find(canonical);const bool independentAttachmentRoot=(iw5AttachmentPart||xprScopePart)&&source.parent<0;
         if(existing!=scene.skeleton.boneByCanonicalName.end()&&!independentAttachmentRoot){boneMap[i]=existing->second;continue;}
-        Bone bone=source;if(source.parent<0&&partProfile.find("xpr50_view")!=std::string::npos&&canonical=="j_gun")bone.restLocal.position={};if(xprScopePart&&source.parent<0){bone.restLocal.position={};bone.restLocal.rotation={};bone.restLocal.scale={1,1,1};}if(meleeKnifePart&&source.parent<0&&canonical=="j_gun1")bone.name="j_gun1";else if(independentAttachmentRoot)bone.name=name+"|"+source.name;const auto sourceCanonical=canonical;
+        Bone bone=source;if(source.parent<0&&partProfile.find("xpr50_view")!=std::string::npos&&canonical=="j_gun")bone.restLocal.position={};if(xprScopePart&&source.parent<0){bone.restLocal.position={};bone.restLocal.rotation={};bone.restLocal.scale={1,1,1};}if(meleeKnifePart)bone.name=canonical;else if(independentAttachmentRoot)bone.name=name+"|"+source.name;const auto sourceCanonical=canonical;
         // BO2 pistol clip channels are authored as tiny offsets around the
         // model's non-zero bind socket. Treating them as absolute translations
         // nudges the B23R/FNP45 magazine out of its magwell.
@@ -1621,6 +1800,13 @@ std::size_t appendRigModel(const cast::Document& document,CastScene& scene,std::
             bone.translationTracksAreDeltas=true;
         if(source.parent>=0&&static_cast<std::size_t>(source.parent)<i)bone.parent=static_cast<std::int32_t>(boneMap[static_cast<std::size_t>(source.parent)]);
         else if(source.parent<0)if(const auto socket=[&]() -> std::optional<std::size_t>{
+            if(meleeKnifePart){
+                // The auxiliary knife owns its bones; it must never reuse a
+                // pistol's j_gun1 or muzzle. Prefer the authored left-hand tag.
+                for(const auto key:{"tag_knife_attach","tag_weapon_left","j_wrist_le","hand_l"})
+                    if(const auto it=scene.skeleton.boneByCanonicalName.find(key);it!=scene.skeleton.boneByCanonicalName.end())return it->second;
+                return std::nullopt;
+            }
             if(partProfile.starts_with("t6_wpn_")&&partProfile.find("_view_lh")!=std::string::npos&&canonical=="j_gun1"){
                 for(const auto name:{"tag_weapon1","tag_weapon_left"})if(const auto it=scene.skeleton.boneByCanonicalName.find(name);it!=scene.skeleton.boneByCanonicalName.end())return it->second;
             }
@@ -1686,7 +1872,7 @@ std::size_t appendRigModel(const cast::Document& document,CastScene& scene,std::
             // tops retain it; restore the parent without changing local bind.
             if(const auto pelvis=scene.skeleton.boneByCanonicalName.find("pelvis");pelvis!=scene.skeleton.boneByCanonicalName.end())bone.parent=static_cast<std::int32_t>(pelvis->second);
         }
-        if(compositeHeadPart||awCharacterPart){
+        if(compositeHeadPart||awCharacterPart||source2ViewWeaponPart){
             // Modular MW3 heads are exported in spine-local space. Shared
             // j_head/j_neck bones already use the body's bind, while newly
             // added jaw/eye bones must follow that same remapped hierarchy.
@@ -1702,11 +1888,37 @@ std::size_t appendRigModel(const cast::Document& document,CastScene& scene,std::
         const auto clip=scene.skeleton.boneByCanonicalName.find("tag_clip");if(clip!=scene.skeleton.boneByCanonicalName.end())scene.skeleton.bones[clip->second].absoluteTranslationOffset=scene.skeleton.bones[clip->second].restLocal.position;
         const auto swap=scene.skeleton.boneByCanonicalName.find("tag_clip1");if(swap!=scene.skeleton.boneByCanonicalName.end())scene.skeleton.bones[swap->second].absoluteTranslationOffset={};
     }
+    std::vector<Mat4> skinCorrections;
+    if(compositeHeadPart||awCharacterPart||pointBlankBodyPart||source2ViewWeaponPart){
+        skinCorrections.resize(boneMap.size(),Mat4::identity());
+        for(size_t b=0;b<boneMap.size();++b){
+            bool rebase=!pointBlankBodyPart;int ancestor=static_cast<int>(b);
+            for(size_t depth=0;!rebase&&ancestor>=0&&static_cast<size_t>(ancestor)<imported.skeleton.bones.size()&&depth<imported.skeleton.bones.size();++depth){
+                const auto& bone=imported.skeleton.bones[ancestor];
+                rebase=bone.name=="R UpperArm"||bone.name=="L UpperArm"||bone.name=="R Hand"||bone.name=="L Hand";
+                ancestor=bone.parent;
+            }
+            if(rebase&&boneMap[b]<scene.skeleton.bones.size())skinCorrections[b]=scene.skeleton.bones[boneMap[b]].restGlobal*imported.skeleton.bones[b].inverseBind;
+        }
+    }
     const bool viewmodelWeaponPart=scene.skeleton.boneByCanonicalName.contains("tag_view");const auto before=scene.meshes.size();for(auto& mesh:imported.meshes){
-        if((compositeHeadPart||awCharacterPart)&&mesh.skinned)for(auto& vertex:mesh.vertices){const auto sourcePosition=vertex.position,sourceNormal=vertex.normal;Vec3 correctedPosition{},correctedNormal{};float totalWeight{};for(std::size_t influence=0;influence<vertex.bones.size();++influence){const auto sourceBone=vertex.bones[influence];const float weight=vertex.weights[influence];if(weight<=0||sourceBone>=boneMap.size()||sourceBone>=imported.skeleton.bones.size()||boneMap[sourceBone]>=scene.skeleton.bones.size())continue;const auto correction=scene.skeleton.bones[boneMap[sourceBone]].restGlobal*imported.skeleton.bones[sourceBone].inverseBind;correctedPosition=correctedPosition+transformPoint(correction,sourcePosition)*weight;const Vec3 transformedNormal{correction.v[0]*sourceNormal.x+correction.v[4]*sourceNormal.y+correction.v[8]*sourceNormal.z,correction.v[1]*sourceNormal.x+correction.v[5]*sourceNormal.y+correction.v[9]*sourceNormal.z,correction.v[2]*sourceNormal.x+correction.v[6]*sourceNormal.y+correction.v[10]*sourceNormal.z};correctedNormal=correctedNormal+transformedNormal*weight;totalWeight+=weight;}if(totalWeight>0.0001f){vertex.position=correctedPosition/totalWeight;vertex.normal=normalize(correctedNormal);}}
+        if((compositeHeadPart||awCharacterPart||pointBlankBodyPart||source2ViewWeaponPart)&&mesh.skinned)for(auto& vertex:mesh.vertices){
+            const auto sourcePosition=vertex.position,sourceNormal=vertex.normal;
+            Vec3 correctedPosition{},correctedNormal{};float totalWeight{};
+            for(std::size_t influence=0;influence<vertex.bones.size();++influence){
+                const auto sourceBone=vertex.bones[influence];const float weight=vertex.weights[influence];
+                if(weight<=0||sourceBone>=boneMap.size()||sourceBone>=imported.skeleton.bones.size()||boneMap[sourceBone]>=scene.skeleton.bones.size())continue;
+                const auto& correction=skinCorrections[sourceBone];
+                correctedPosition+=transformPoint(correction,sourcePosition)*weight;
+                const Vec3 transformedNormal{correction.v[0]*sourceNormal.x+correction.v[4]*sourceNormal.y+correction.v[8]*sourceNormal.z,correction.v[1]*sourceNormal.x+correction.v[5]*sourceNormal.y+correction.v[9]*sourceNormal.z,correction.v[2]*sourceNormal.x+correction.v[6]*sourceNormal.y+correction.v[10]*sourceNormal.z};
+                correctedNormal+=transformedNormal*weight;totalWeight+=weight;
+            }
+            if(totalWeight>0.0001f){vertex.position=correctedPosition/totalWeight;vertex.normal=normalize(correctedNormal);}
+        }
         if(mesh.skinned)for(auto& vertex:mesh.vertices)for(auto& bone:vertex.bones)if(bone<boneMap.size())bone=static_cast<std::uint32_t>(boneMap[bone]);
         mesh.name=name+" / "+mesh.name;mesh.attachmentIndex=-1;mesh.viewmodelWeapon=viewmodelWeaponPart;scene.meshes.push_back(std::move(mesh));
     }
+    if(meleeKnifePart)for(const auto root:partRoots)scene.hiddenBones.insert(root);
     scene.rigParts.push_back({name,before,scene.meshes.size()-before,std::move(partRoots)});
     scene.rigParts.back().sourceModelPath=std::filesystem::path(document.sourceName());
     for(const auto& anchor:imported.muzzleAnchors)if(anchor.bone<boneMap.size())scene.muzzleAnchors.push_back({boneMap[anchor.bone],anchor.local*uniformScale,anchor.side});
@@ -1730,6 +1942,7 @@ std::size_t appendRigModel(const cast::Document& document,CastScene& scene,std::
 std::optional<std::size_t> findBestAnimation(const CastScene& scene,const AnimationQuery& query) {
     std::optional<std::size_t> best;int bestScore=std::numeric_limits<int>::min();
     for(std::size_t i=0;i<scene.animations.size();++i){const auto& clip=scene.animations[i];
+        if(query.weapon==WeaponClass::Knife&&clip.domain==AnimationDomain::PlayerTorso&&!pointblank::torsoFamilyCompatible(query.preferredWeaponFamily,clip.sourceGame,clip.sourceName))continue;
         if(query.requireMappedTracks&&clip.tracks.empty())continue;
         if(clip.contextual&&!query.allowContextual)continue;
         if(clip.action!=query.action)continue;
@@ -1763,6 +1976,16 @@ std::optional<std::size_t> findBestAnimation(const CastScene& scene,const Animat
         }
         if(query.action==ActionRole::Death&&query.direction!=Direction::Any&&clip.direction!=Direction::Any&&clip.direction!=query.direction)continue;
         int score=100;
+        // An unspecified body reload should not pick a specialized magazine
+        // layout merely because its filename sorts first. Keep that layout
+        // eligible when it is the only available compatible reload.
+        if(query.action==ActionRole::Reload&&query.reloadStyle==ReloadStyle::Any&&
+           (clip.domain==AnimationDomain::PlayerTorso||clip.domain==AnimationDomain::PlayerBody)&&
+           clip.reloadStyle==ReloadStyle::Standard)score+=12;
+        // Family-level PB requests prefer the shared action, not whichever
+        // named skin/variant sorts first. Named-only families remain eligible.
+        if(query.weapon==WeaponClass::Knife&&!query.preferredWeaponFamily.empty()&&clip.domain==AnimationDomain::PlayerTorso&&clip.sourceGame=="pointblank"&&
+           pointblank::actionIdentityStem(clip.sourceName).find("_common_up_")!=std::string::npos)score+=30;
         // COD4's multiplayer crouch holds pair with the shoot family. The
         // rifle_fire sequences are different authored poses, not substitutes
         // for that hold (including when aiming).
@@ -1845,12 +2068,85 @@ void CastScene::globalPoseInto(const std::vector<Transform>& localPose,std::vect
     // the allocating API even for exports with forward parent references.
     globals.assign(localPose.size(),Mat4{});
     for(std::size_t i=0;i<localPose.size();++i){
-        const auto matrix=trs(localPose[i].position,localPose[i].rotation,localPose[i].scale);
+        auto value=localPose[i];
+        if(const auto follower=bodyVariantDrivers.find(i);follower!=bodyVariantDrivers.end()&&follower->second<localPose.size()){
+            const auto driver=follower->second;const auto& reference=skeleton.bones[driver].restLocal;
+            const auto inverse=Quat{-reference.rotation.x,-reference.rotation.y,-reference.rotation.z,reference.rotation.w};
+            value=skeleton.bones[i].restLocal;
+            value.rotation=normalize(multiply(value.rotation,multiply(inverse,localPose[driver].rotation)));
+            // Root/hips translation carries locomotion and crouch height. Other
+            // joints retain their authored lengths instead of inheriting size.
+            const auto driverName=canonicalName(skeleton.bones[driver].name);
+            if(skeleton.bones[driver].parent<0||driverName.find("pelvis")!=std::string::npos||driverName=="b_transform")value.position+=localPose[driver].position-reference.position;
+        }
+        const auto matrix=trs(value.position,value.rotation,value.scale);
         const auto parent=skeleton.bones[i].parent;
         globals[i]=parent>=0?globals[parent]*matrix:matrix;
         if(codmNativeCentimetres)for(const auto& [target,source]:nativePoseFollowers)if(target==i&&source<i){globals[i]=globals[source];break;}
         if(codmRigAdapter&&i>=codmRigAdapter->firstBone&&i-codmRigAdapter->firstBone<codmRigAdapter->bindings.size()){
-            const auto& b=codmRigAdapter->bindings[i-codmRigAdapter->firstBone];if(b.source<i){globals[i]=globals[b.source]*b.offset;if(b.rollSource<i&&b.rollWeight>0){Vec3 p0,p1,s0,s1;Quat q0,q1;decomposeAffine(globals[i],p0,q0,s0);decomposeAffine(globals[b.rollSource]*b.rollOffset,p1,q1,s1);globals[i]=trs(lerp(p0,p1,b.rollWeight),slerp(q0,q1,b.rollWeight),lerp(s0,s1,b.rollWeight));}}
+            const auto& b=codmRigAdapter->bindings[i-codmRigAdapter->firstBone];if(b.source<i){globals[i]=globals[b.source]*b.offset;if(b.rollSource<i&&b.rollWeight>0){Vec3 p0,p1,s0,s1;Quat q0,q1;decomposeAffine(globals[i],p0,q0,s0);decomposeAffine(globals[b.rollSource]*b.rollOffset,p1,q1,s1);
+                if(length(b.rollAxis)>.5f){const auto delta=multiply(Quat{-q0.x,-q0.y,-q0.z,q0.w},q1);const float along=dot(Vec3{delta.x,delta.y,delta.z},b.rollAxis);const Quat twist{b.rollAxis.x*along,b.rollAxis.y*along,b.rollAxis.z*along,delta.w};const float norm=along*along+delta.w*delta.w;q1=norm>1e-8f?multiply(q0,normalize(twist)):q0;}
+                globals[i]=trs(lerp(p0,p1,b.rollWeight),slerp(q0,q1,b.rollWeight),lerp(s0,s1,b.rollWeight));}}
+        }
+    }
+    if(codmRigAdapter&&!codmRigAdapter->positionLinks.empty()){
+        const auto& fit=*codmRigAdapter;
+        if(fit.weaponFitScale!=1.f&&fit.weaponFitAnchor<globals.size()){
+            const auto pivot=transformPoint(globals[fit.weaponFitAnchor],{});
+            const auto adjustment=trs(pivot*(1.f-fit.weaponFitScale),Quat{},Vec3{fit.weaponFitScale,fit.weaponFitScale,fit.weaponFitScale});
+            for(std::size_t i=0;i<globals.size();++i){
+                if(i>=fit.firstBone&&i-fit.firstBone<fit.bindings.size())continue;
+                if(std::find(fit.weaponFitCameras.begin(),fit.weaponFitCameras.end(),i)!=fit.weaponFitCameras.end())continue;
+                globals[i]=adjustment*globals[i];
+            }
+        }
+        // Keep donor geometry/binds intact. Transfer orientations, then rebuild
+        // joint positions from donor lengths rather than native spacing.
+        const auto last=std::min(globals.size(),codmRigAdapter->firstBone+codmRigAdapter->bindings.size());
+        for(std::size_t i=codmRigAdapter->firstBone;i<last;++i){
+            Vec3 p,s;Quat q;decomposeAffine(globals[i],p,q,s);globals[i]=trs(p,q,{1,1,1});
+        }
+        for(const auto& link:codmRigAdapter->positionLinks){
+            if(link.target>=globals.size()||link.anchor>=globals.size()||link.orientation>=globals.size())continue;
+            auto& r=globals[link.orientation];
+            const auto direction=[&](const Mat4& basis){
+                const auto& v=link.offset;
+                return Vec3{basis.v[0]*v.x+basis.v[4]*v.y+basis.v[8]*v.z,
+                            basis.v[1]*v.x+basis.v[5]*v.y+basis.v[9]*v.z,
+                            basis.v[2]*v.x+basis.v[6]*v.y+basis.v[10]*v.z};
+            };
+            auto delta=direction(r);
+            if(link.directionFrom>=0&&link.directionTo>=0&&
+               static_cast<std::size_t>(link.directionFrom)<fit.firstBone&&static_cast<std::size_t>(link.directionTo)<fit.firstBone){
+                const auto guide=transformPoint(globals[link.directionTo],{})-transformPoint(globals[link.directionFrom],{});
+                if(length(guide)>1e-4f&&length(delta)>1e-4f){
+                    auto basis=r;
+                    if(link.rollParent>=0&&static_cast<std::size_t>(link.rollParent)<globals.size()){
+                        // Inherit roll from the donor joint above the bend.
+                        // Absolute driver joints can use different axial frames.
+                        basis=globals[link.rollParent]*skeleton.bones[link.rollParent].inverseBind*
+                            skeleton.bones[link.orientation].restGlobal;
+                    }
+                    const auto from=normalize(direction(basis)),to=normalize(guide);
+                    const float cosine=dot(from,to);
+                    if(cosine>-.999f){
+                        const auto axis=cross(from,to);
+                        const auto swing=rotation(normalize(Quat{axis.x,axis.y,axis.z,1.f+cosine}));
+                        const auto fitted=swing*basis;
+                        // Near reversal, the shortest swing has no stable roll.
+                        // Blend back to the bound joint's authored orientation.
+                        const float weight=std::clamp((cosine+.999f)/.049f,0.f,1.f);
+                        Vec3 pos,scale;Quat previous,corrected;
+                        decomposeAffine(r,pos,previous,scale);
+                        Vec3 ignoredPosition,ignoredScale;
+                        decomposeAffine(fitted,ignoredPosition,corrected,ignoredScale);
+                        r=trs(pos,slerp(previous,corrected,weight),{1,1,1});
+                        delta=direction(r);
+                    }
+                }
+            }
+            const auto p=transformPoint(globals[link.anchor],{})+delta;
+            globals[link.target].v[12]=p.x;globals[link.target].v[13]=p.y;globals[link.target].v[14]=p.z;
         }
     }
 }

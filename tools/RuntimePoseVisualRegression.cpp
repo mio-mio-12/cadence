@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #include "cast/CastDocument.h"
 #include "render/StageRenderer.h"
 #include "scene/CastScene.h"
@@ -108,7 +107,7 @@ scene::Mat4 firstPersonCamera(float worldScale) {
 }
 
 int main(int argc,char** argv) {
-    const std::filesystem::path root=argc>1?std::filesystem::u8path(argv[1]):std::filesystem::path{cadence::local_assets::exportPath("")};
+    const std::filesystem::path root=argc>1?std::filesystem::u8path(argv[1]):std::filesystem::path{R"(exported_files)"};
     const std::filesystem::path output=argc>2?std::filesystem::u8path(argv[2]):std::filesystem::current_path()/"pose_visual_regression";
     const auto sourceHandsPath=root/R"(cs2\models\viewhands\viewhands_model.cast)";
     const auto targetHandsPath=root/R"(bo2\models\viewhands\seal6\c_usa_mp_seal6_longsleeve_viewhands\c_usa_mp_seal6_longsleeve_viewhands_LOD0.cast)";

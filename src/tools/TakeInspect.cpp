@@ -21,6 +21,35 @@ int main(int argc,char** argv) {
     if(argc<2){std::cerr<<"usage: take_inspect <take>\n";return 2;}
     take::Take recorded;std::string error;const auto path=std::filesystem::u8path(argv[1]);
     if(!take::load(path,recorded,error)){std::cerr<<error<<'\n';return 1;}
+    if(argc>2&&std::string_view(argv[2])=="--rigs"){
+        const auto manifest=[](const take::ActorManifest& actor){
+            std::cout<<" base "<<actor.baseModel<<" revision "<<actor.importRevision<<'\n';
+            for(const auto& part:actor.rigModels)std::cout<<" rig "<<part<<'\n';
+            for(const auto& part:actor.attachedModels)std::cout<<" mount "<<part.bone<<' '<<part.path<<'\n';
+        };
+        for(std::uint8_t slot=0;slot<3;++slot){
+            std::cout<<"slot "<<int(slot+1)<<" bones "<<recorded.bonesForSlot(slot)<<'\n';
+            manifest(recorded.actorSlots[slot].empty()?recorded.actor:recorded.actorSlots[slot]);
+            std::cout<<"world bones "<<recorded.bonesForWorldSlot(slot)<<'\n';
+            manifest(recorded.worldActorSlots[slot].empty()?recorded.worldActor:recorded.worldActorSlots[slot]);
+        }
+        return 0;
+    }
+    if(argc>2&&std::string_view(argv[2])=="--bots"){
+        std::cout<<"BASE "<<recorded.botActor.baseModel<<'\n';
+        for(const auto& p:recorded.botActor.rigModels)std::cout<<"RIG "<<p<<'\n';
+        for(const auto& p:recorded.botActor.attachedModels)std::cout<<"ATTACH variant="<<p.modelVariant<<" bone="<<p.bone<<" path="<<p.path<<'\n';
+        std::set<unsigned> dead;unsigned kill=0;
+        for(const auto& s:recorded.samples)for(const auto& b:s.bots)if(!b.alive&&dead.insert(b.id).second)
+            std::cout<<"KILL "<<++kill<<" time="<<s.time<<" id="<<b.id<<" variant="<<b.modelVariant<<" primary="<<b.primaryClip<<" torso="<<b.torsoClip<<'\n';
+        return 0;
+    }
+    if(argc>2&&std::string_view(argv[2])=="--roots"){
+        for(unsigned slot=0;slot<3;++slot){int shown=0;for(const auto& sample:recorded.samples)if(sample.weaponSlot==slot&&shown++<2){
+            std::cout<<"slot "<<slot<<" t "<<sample.time<<" target "<<sample.camera.target.x<<','<<sample.camera.target.y<<','<<sample.camera.target.z<<" yaw "<<sample.camera.yaw<<" pitch "<<sample.camera.pitch<<'\n';
+            for(size_t i=0;i<std::min<size_t>(3,sample.pose.size());++i){const auto& m=sample.pose[i];std::cout<<"bone "<<i<<" pos "<<m.v[12]<<','<<m.v[13]<<','<<m.v[14]<<" forward "<<m.v[0]<<','<<m.v[1]<<','<<m.v[2]<<" up "<<m.v[8]<<','<<m.v[9]<<','<<m.v[10]<<'\n';}
+        }}return 0;
+    }
     std::cout<<"TAKE "<<path.string()<<"\nrate "<<recorded.sampleRate<<" samples "<<recorded.samples.size()<<" duration "<<recorded.duration()<<" bones "<<recorded.boneCount<<"\nbase "<<recorded.actor.baseModel<<'\n';
     std::size_t cameraBone=static_cast<std::size_t>(-1),gunBone=static_cast<std::size_t>(-1),adsBone=static_cast<std::size_t>(-1);
     if(!recorded.actor.baseModel.empty()){

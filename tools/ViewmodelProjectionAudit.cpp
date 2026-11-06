@@ -31,6 +31,18 @@ int main(int argc,char** argv){
             }
             if(!renderer.saveColorPng(std::filesystem::path(argv[4])/(std::to_string(i)+".png"),error)){std::cerr<<error;return 2;}
         }
+        for(int mode=0;mode<3;++mode){
+            renderer.clearSmokeCurve();renderer.setFirstPersonProjection(true);
+            renderer.setViewmodelProjection(mode==2?1.4f:1.f,mode==1);
+            const auto muzzle=scene::resolveMuzzlePosition(scene,pose);if(!muzzle)return 3;
+            for(int frame=0;frame<18;++frame){
+                renderer.render(scene,pose,vp,960,540,false,false,false);
+                renderer.updateAndRenderSmokeCurve(1.f/60,*muzzle,{1,0,0},true,vp,{},1.1f,.2f,2.f,1.4f,6,7,.3f,{1,1,1,1},{},4,0,true);
+            }
+            renderer.renderMuzzleFlash3D(*muzzle,.15f,0,{.1f,1,.1f,1},vp,{},true,{1,0,0});
+            if(glGetError()!=GL_NO_ERROR)return 4;
+            if(!renderer.saveColorPng(std::filesystem::path(argv[4])/("smoke_"+std::to_string(mode)+".png"),error))return 5;
+        }
         renderer.shutdown();glfwDestroyWindow(window);glfwTerminate();
         std::cout<<"Saved default, flipped, 1.4x FOV, non-first-person default and non-first-person edited renders\n";return 0;
     }catch(const std::exception& e){std::cerr<<e.what();return 1;}

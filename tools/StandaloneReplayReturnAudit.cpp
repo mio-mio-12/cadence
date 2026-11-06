@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
 #undef main
@@ -14,7 +13,7 @@ int main(int argc,char** argv){
         glfwMakeContextCurrent(window);ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;
         auto owner=std::make_unique<AppState>();auto& app=*owner;app.window=window;
         std::string error;if(!app.renderer.initialize(error))throw std::runtime_error(error);
-        app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
+        app.defaultSalukiDirectory="exported_files";
         for(const auto* game:{"bo2","csnz"})if(!assets::appendScan(app.defaultSalukiDirectory/game,game,app.assetCatalog,error))throw std::runtime_error(error);
         const auto select=[&](std::string_view game,assets::Role role,std::string_view name){
             for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto& asset=app.assetCatalog.entries[i];if(asset.game==game&&asset.role==role&&asset.name.find(name)!=std::string::npos)return i;}

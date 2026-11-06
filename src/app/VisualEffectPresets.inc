@@ -20,11 +20,17 @@ template<class App> auto weapon_trailsValues(App& app){return std::tie(app.trail
 bool saveCrosshairPreset(const AppState& app,const std::filesystem::path& path){
     std::error_code ec;std::filesystem::create_directories(path.parent_path(),ec);
     std::ofstream out(path);if(!out)return false;out<<std::setprecision(9)<<"CROSSHAIR 1\n";
-    writeVisualValues(out,crosshairValues(app));return bool(out);
+    writeVisualValues(out,crosshairValues(app));out<<"hide_ads "<<app.crosshairHideWhileAds<<'\n';return bool(out);
 }
 bool loadCrosshairPreset(AppState& app,const std::filesystem::path& path){
     std::ifstream in(path);std::string magic;int version{};
-    return bool(in>>magic>>version)&&magic=="CROSSHAIR"&&version==1&&readVisualValues(in,crosshairValues(app));
+    if(!(in>>magic>>version)||magic!="CROSSHAIR"||version!=1)return false;
+    auto values=std::apply([](const auto&... v){return std::make_tuple(v...);},crosshairValues(app));
+    auto refs=std::apply([](auto&... v){return std::tie(v...);},values);
+    if(!readVisualValues(in,refs))return false;
+    bool hide=true;std::string key;in>>std::ws;
+    if(!in.eof()&&(!(in>>key>>hide)||key!="hide_ads"))return false;
+    crosshairValues(app)=values;app.crosshairHideWhileAds=hide;return true;
 }
 void drawCrosshairPresets(AppState& app){
     static std::array<char,96> name{"custom"};

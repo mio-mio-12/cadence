@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #include "assets/AssetCatalog.h"
 #include "assets/CharacterParts.h"
 #include "scene/PointBlankNative.h"
@@ -6,7 +5,7 @@
 #include <map>
 int main(){
  assets::Catalog c;std::string error;
- if(!assets::appendScan(cadence::local_assets::exportPath("pointblank"),"pointblank",c,error))return 1;
+ if(!assets::appendScan("exported_files/pointblank","pointblank",c,error))return 1;
  std::map<std::string,int> pairs;int failures=0,bodies=0,hands=0;
  for(const auto&a:c.entries){
   if(a.path.parent_path().filename()!="models")continue;

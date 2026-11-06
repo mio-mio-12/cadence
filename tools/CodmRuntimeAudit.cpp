@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #include "scene/CastScene.h"
 #include "scene/PointBlankWorld.h"
 #include "app/CodmAnimationPolicy.h"
@@ -10,7 +9,7 @@
 #include <fstream>
 using Clock=std::chrono::steady_clock;
 int main(int argc,char**argv){
- const std::filesystem::path root=cadence::local_assets::exportPath("");
+ const std::filesystem::path root="exported_files";
  std::string error;
  if(argc>1&&std::string(argv[1])=="motion"){
   for(const char* stem:{"viewmodel_pistol_50gs","viewmodel_pistol_50gs_GirlsFrontline","viewmodel_pistol_mw11","viewmodel_special_baseversionmp7"}){
@@ -30,7 +29,7 @@ int main(int argc,char**argv){
  if(argc>1&&std::string(argv[1])=="materials"){
   if(!glfwInit())return 2;glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);auto* w=glfwCreateWindow(1280,720,"CODM materials",nullptr,nullptr);if(!w)return 2;glfwMakeContextCurrent(w);
   render::StageRenderer renderer;if(!renderer.initialize(error)){std::cerr<<error;return 2;}
-  if(!renderer.setT6SkyboxIwi(cadence::portable::executableDirectory()/"skyboxes/city/sky.iwi",error)){std::cerr<<error;return 7;}
+  if(!renderer.setT6SkyboxIwi("C:/Program Files (x86)/Steam/steamapps/common/Call of Duty Black Ops II - redacted/Tools/skyboxes/city/sky.iwi",error)){std::cerr<<error;return 7;}
   renderer.setMaterialParameters(.5f,{.8f,.9f,1},1,.85f,209,.14f,6,1,true,.97f,.08f,1,true,1,0,0,1,0,0,.18f,1);
   std::filesystem::create_directories("diagnostics/v167");
   for(const char* name:{"viewmodel_special_raygun","viewmodel_ar_ak47","viewmodel_sniper_locus"}){

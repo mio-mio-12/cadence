@@ -3,6 +3,8 @@
 #include <fstream>
 #include <set>
 #include <numbers>
+#include <iomanip>
+#include <sstream>
 
 namespace scene::c2mx {
 namespace {
@@ -16,6 +18,50 @@ std::string string(const Json& j,const char* key){require(j.contains(key)&&j[key
 std::string readText(const std::filesystem::path& path){std::ifstream f(path,std::ios::binary|std::ios::ate);require(bool(f),"Cannot open collision metadata");const auto n=f.tellg();require(n>=0&&n<=64*1024*1024,"Metadata file exceeds size bound");std::string s(static_cast<std::size_t>(n),'\0');f.seekg(0);require(bool(f.read(s.data(),n)),"Short metadata read");return s;}
 void grow(Bounds& b,Vec3 p){require(std::isfinite(p.x)&&std::isfinite(p.y)&&std::isfinite(p.z)&&std::abs(p.x)<1e8f&&std::abs(p.y)<1e8f&&std::abs(p.z)<1e8f,"Transformed collider position outside safe world bounds");if(!b.valid){b.minimum=b.maximum=p;b.valid=true;}else{b.minimum={std::min(b.minimum.x,p.x),std::min(b.minimum.y,p.y),std::min(b.minimum.z,p.z)};b.maximum={std::max(b.maximum.x,p.x),std::max(b.maximum.y,p.y),std::max(b.maximum.z,p.z)};}}
 std::uint64_t little(std::span<const std::uint8_t> b,std::size_t p,unsigned n){require(p<=b.size()&&n<=b.size()-p,"Truncated C2MX integer");std::uint64_t v=0;for(unsigned i=0;i<n;++i)v|=std::uint64_t(b[p+i])<<(i*8);return v;}
+Json resolveColliderParts(const Json& envelope,const std::filesystem::path& mapFile){
+    const bool manifest=envelope.contains("externalColliderParts");
+    bool fields=false;if(envelope.contains("colliders")&&envelope["colliders"].is_array())for(const auto&collider:envelope["colliders"])fields|=collider.contains("externalFieldParts");
+    if(!manifest&&!fields)return envelope;
+    require(envelope.contains("colliders")&&envelope["colliders"].is_array(),"External COLL requires collider array");
+    const auto root=std::filesystem::canonical(mapFile.parent_path());Json out=envelope;std::set<std::string>names;std::uint64_t totalBytes=0;
+    const auto readPart=[&](const Json& descriptor,const char*schema){
+        const auto name=string(descriptor,"path");
+        require(name.starts_with("native/collision_parts/")&&name.ends_with(".json")&&name.find('\\')==name.npos&&name.find(':')==name.npos&&name.find('\0')==name.npos&&names.insert(name).second,"Invalid/duplicate external COLL path");
+        const auto relative=std::filesystem::u8path(name);require(!relative.is_absolute(),"External COLL path must be map relative");
+        for(const auto&component:relative)require(component!=".."&&component!=".","External COLL path traversal");
+        const auto file=std::filesystem::canonical(root/relative);auto a=root.begin(),b=file.begin();
+        for(;a!=root.end();++a,++b)require(b!=file.end()&&*a==*b,"External COLL resolves outside map folder");
+        require(std::filesystem::is_regular_file(file),"External COLL part is not a regular file");
+        require(descriptor.contains("bytes")&&descriptor["bytes"].is_number_unsigned(),"External COLL part byte count required");
+        const auto bytes=descriptor["bytes"].get<std::uint64_t>();require(bytes>0&&bytes<=32ull*1024*1024&&std::filesystem::file_size(file)==bytes,"External COLL part size mismatch/bound");
+        require(totalBytes<=1024ull*1024*1024-bytes,"External COLL combined one GiB data bound");totalBytes+=bytes;
+        auto text=readText(file);std::uint64_t fingerprint=14695981039346656037ull;for(unsigned char byte:text)fingerprint=(fingerprint^byte)*1099511628211ull;
+        std::ostringstream digest;digest<<std::hex<<std::setw(16)<<std::setfill('0')<<fingerprint;
+        require(string(descriptor,"hash")==digest.str(),"External COLL part FNV1a64 mismatch");require(string(descriptor,"schema")==schema,"Unsupported external COLL descriptor schema");
+        auto part=codm::parseJson(text);require(part.is_object()&&string(part,"schema")==schema,"External COLL file schema mismatch");return part;
+    };
+    if(manifest){
+        require(out["colliders"].empty(),"External COLL parts require empty embedded collider list");const auto&parts=envelope["externalColliderParts"];
+        require(parts.is_array()&&!parts.empty()&&parts.size()<=4096,"Invalid external COLL part descriptors");
+        for(const auto&descriptor:parts){auto part=readPart(descriptor,"codm.collision/1");
+            require(string(part,"coordinateSystem")=="RH_Z_UP"&&string(part,"units")=="inches"&&!part.contains("externalColliderParts"),"External COLL part coordinates/units/recursion mismatch");
+            require(part.contains("colliders")&&part["colliders"].is_array()&&descriptor.contains("colliderCount")&&descriptor["colliderCount"].is_number_unsigned()&&part["colliders"].size()==descriptor["colliderCount"].get<std::uint64_t>(),"External COLL part collider count mismatch");
+            require(out["colliders"].size()+part["colliders"].size()<=100000,"Combined external COLL collider count bound");for(auto&collider:part["colliders"])out["colliders"].push_back(std::move(collider));
+        }
+    }
+    for(auto&collider:out["colliders"]){if(!collider.contains("externalFieldParts"))continue;const auto id=string(collider,"id");auto&fieldParts=collider["externalFieldParts"];require(fieldParts.is_array()&&!fieldParts.empty()&&fieldParts.size()<=256,"Invalid external collider field descriptors");std::set<std::string>pointers;
+        for(const auto&field:fieldParts){const auto pointer=string(field,"pointer");require((pointer=="/vertices"||pointer=="/triangles"||pointer.starts_with("/source/"))&&pointers.insert(pointer).second,"Forbidden/duplicate external collider field pointer");
+            Json::json_pointer target(pointer);require(collider.contains(target)&&collider.at(target).is_array()&&collider.at(target).empty(),"External collider field target must be declared empty array");
+            require(field.contains("itemCount")&&field["itemCount"].is_number_unsigned()&&field["itemCount"].get<std::uint64_t>()<=20000000,"External collider field item bound");const auto expected=field["itemCount"].get<std::uint64_t>();
+            require(field.contains("parts")&&field["parts"].is_array()&&!field["parts"].empty()&&field["parts"].size()<=4096,"External collider field part list invalid");
+            Json items=Json::array();for(const auto&descriptor:field["parts"]){auto part=readPart(descriptor,"cs2m.collider-field/1");require(string(part,"colliderId")==id&&string(part,"pointer")==pointer&&!part.contains("externalFieldParts"),"External collider field ID/pointer/recursion mismatch");
+                require(part.contains("items")&&part["items"].is_array()&&descriptor.contains("itemCount")&&descriptor["itemCount"].is_number_unsigned()&&part["items"].size()==descriptor["itemCount"].get<std::uint64_t>(),"External collider field part item count mismatch");
+                require(items.size()+part["items"].size()<=expected,"External collider field exceeds declared item count");for(auto&item:part["items"])items.push_back(std::move(item));
+            }require(items.size()==expected,"External collider field total item count mismatch");collider.at(target)=std::move(items);
+        }
+    }
+    return out;
+}
 void triangle(std::vector<glb::CollisionTriangle>& out,Vec3 a,Vec3 b,Vec3 c,Bounds& bounds){
     grow(bounds,a);grow(bounds,b);grow(bounds,c);auto normal=cross(b-a,c-a);if(length(normal)<1e-7f)return;
     glb::CollisionTriangle t;t.a=a;t.b=b;t.c=c;t.normal=normalize(normal);
@@ -50,21 +96,31 @@ Extension readExtension(std::span<const std::uint8_t> bytes){
     require(e.meta.contains("collisionComplete")&&e.meta["collisionComplete"].is_boolean(),"META completeness is required");e.present=true;return e;
 }
 
-bool applyCollision(const Json& collision,const Json& meta,const Json& navigation,glb::Map& map,std::string& error,const c2m::LoadOptions& options,bool rebuildIndex){
+bool applyCollision(const Json& collisionEnvelope,const Json& meta,const Json& navigation,glb::Map& map,std::string& error,const c2m::LoadOptions& options,bool rebuildIndex){
     try{
+        const auto collision=resolveColliderParts(collisionEnvelope,map.sourcePath);
         require(std::isfinite(map.scaleMultiplier)&&map.scaleMultiplier>0&&map.scaleMultiplier<=10000,"Invalid map scale");
         require(options.primitiveSegments>=8&&options.primitiveSegments<=64,"Primitive tessellation must be 8..64 segments");
         require(collision.is_object()&&string(collision,"schema")=="codm.collision/1"&&string(collision,"coordinateSystem")=="RH_Z_UP"&&string(collision,"units")=="inches","Unsupported COLL schema/coordinates/units");
         require(collision.contains("colliders")&&collision["colliders"].is_array()&&collision["colliders"].size()<=100000,"Invalid collider list");
         require(meta.is_object()&&meta.contains("collisionComplete")&&meta["collisionComplete"].is_boolean(),"Collision completeness metadata required");
         require(navigation.is_object()&&string(navigation,"schema")=="codm.navigation/1","Unsupported NAVM schema");
-        const auto navStatus=string(navigation,"status");require(navStatus=="settings_only"||navStatus=="native_payload_preserved"||navStatus=="not_found_in_selected_scenes","Unknown NAVM status");
+        const auto navStatus=string(navigation,"status");require(navStatus=="decoded_graph_consumer_pending"||navStatus=="excluded_by_option"||navStatus=="settings_only"||navStatus=="native_payload_preserved"||navStatus=="not_found_in_selected_scenes","Unknown NAVM status");
         require(navigation.contains("runtimeReady")&&navigation["runtimeReady"].is_boolean()&&!navigation["runtimeReady"].get<bool>(),"NAVM is preservation, not a runtime graph");
         require(navigation.contains("assets")&&navigation["assets"].is_array()&&navigation["assets"].size()<=100000,"Invalid NAVM asset list");
         glb::AuthoredCollisionMetadata info;info.present=true;info.complete=meta["collisionComplete"].get<bool>();info.navigationStatus=navStatus;
         info.colliderCount=collision["colliders"].size();info.primitiveSegments=options.primitiveSegments;info.solidLayerMask=options.solidLayerMask;
         info.metaJson=meta.dump();info.collisionJson=collision.dump();info.navigationJson=navigation.dump();
         std::vector<glb::CollisionTriangle> solids,triggers;std::vector<glb::AuthoredCollider> descriptors;descriptors.reserve(collision["colliders"].size());std::set<std::string> ids;
+        const bool source2Profile=meta.contains("cs2m")&&meta["cs2m"].is_object()
+            &&meta["cs2m"].value("schema",std::string())=="cs2m.map/1"&&meta["cs2m"].value("game",std::string())=="cs2";
+        bool profileReady=source2Profile;
+        std::string profileError;
+        if(source2Profile)for(const auto& issue:meta["cs2m"].value("issues",Json::array())){
+            const auto code=issue.value("code",std::string());
+            if((code.find("COLLISION")!=std::string::npos||code.find("PHYSICS")!=std::string::npos)
+               &&code!="SOURCE2_COLLISION_QUERIES"&&code!="SOURCE2_ENTITY_PHYSICS_QUERIES"){profileReady=false;profileError=code;}
+        }
         const float scale=2.54f*map.scaleMultiplier;bool unsupported=false;
         for(const auto& record:collision["colliders"]){
             require(record.is_object(),"Collider must be object");glb::AuthoredCollider d;d.id=string(record,"id");d.name=string(record,"name");d.kind=string(record,"kind");require(ids.insert(d.id).second,"Duplicate collider id");
@@ -77,6 +133,27 @@ bool applyCollision(const Json& collision,const Json& meta,const Json& navigatio
             const float scales[3]={length(basis[0]),length(basis[1]),length(basis[2])};for(float s:scales)require(s>1e-8f,"Degenerate collider transform");
             const bool shear=std::abs(dot(basis[0],basis[1])/(scales[0]*scales[1]))>1e-4f||std::abs(dot(basis[0],basis[2])/(scales[0]*scales[2]))>1e-4f||std::abs(dot(basis[1],basis[2])/(scales[1]*scales[2]))>1e-4f;
             const bool mirrored=dot(cross(basis[0],basis[1]),basis[2])<0;
+            bool actorSolid=true;
+            if(source2Profile&&!d.trigger&&d.enabled){
+                const auto source=record.value("source",Json::object());
+                const auto query=source.value("queryPolicy",Json::object());
+                const auto attribute=source.value("collisionAttribute",Json::object());
+                auto group=attribute.value("m_CollisionGroupString",std::string());
+                for(auto& c:group)if(c>='A'&&c<='Z')c=static_cast<char>(c-'A'+'a');
+                bool known=query.value("schema",std::string())=="cs2m.source2-collision-filter/1"
+                    &&(group=="default"||group=="conditionallysolid");
+                const auto as=query.value("m_InteractAsStrings",std::vector<std::string>{});
+                const auto with=query.value("m_InteractWithStrings",std::vector<std::string>{});
+                const auto exclude=query.value("m_InteractExcludeStrings",std::vector<std::string>{});
+                const auto has=[](const auto& tags,const char* tag){return std::find(tags.begin(),tags.end(),tag)!=tags.end();};
+                for(const auto& tag:as)if(tag!="playerclip"&&tag!="npcclip"&&tag!="ladder"&&tag!="csgo_grenadeclip"&&tag!="passbullets"&&tag!="sky"&&tag!="window")known=false;
+                for(const auto& tag:with)if(tag!="player"&&tag!="npc"&&tag!="csgo_thrown_grenade")known=false;
+                for(const auto& tag:exclude)if(tag!="player"&&tag!="npc"&&tag!="csgo_thrown_grenade")known=false;
+                actorSolid=(group=="default"||has(as,"playerclip")||has(as,"npcclip")||has(as,"window")||has(as,"passbullets"));
+                if(has(as,"sky")||has(exclude,"player")||(!with.empty()&&!has(with,"player")&&!has(with,"npc")))actorSolid=false;
+                if(source.contains("initialState")&&source["initialState"].value("nonblockingKnown",false))actorSolid=false;
+                if(!known){profileReady=false;actorSolid=false;profileError="Unknown actor query tags: "+d.id;}
+            }
             std::vector<Vec3> vertices;std::vector<std::array<unsigned,3>> faces;bool supported=!shear;
             if(d.kind=="BoxCollider"){
                 // Explicit affine-box policy: keep the exported eight corners,
@@ -115,13 +192,19 @@ bool applyCollision(const Json& collision,const Json& meta,const Json& navigatio
             }else supported=false;
             if(!supported&&d.enabled&&!d.trigger&&(options.solidLayerMask&(1ull<<d.layer)))unsupported=true;
             auto& target=d.trigger?triggers:solids;d.firstTriangle=target.size();
-            if(d.enabled&&supported&&(d.trigger||(options.solidLayerMask&(1ull<<d.layer))))for(const auto& f:faces)triangle(target,vertices[f[0]],vertices[f[1]],vertices[f[2]],d.bounds);
+            if(d.enabled&&supported&&(d.trigger||(actorSolid&&(options.solidLayerMask&(1ull<<d.layer)))))for(const auto& f:faces)triangle(target,vertices[f[0]],vertices[f[1]],vertices[f[2]],d.bounds);
             else for(auto p:vertices)grow(d.bounds,p);
             d.triangleCount=target.size()-d.firstTriangle;if(d.trigger)++info.triggerCount;descriptors.push_back(std::move(d));
         }
         if(unsupported)info.complete=false;
-        info.physicsReady=info.complete&&(!info.approximate||options.allowApproximateCollision);
+        // Export completeness also covers closed-game dynamics and native query
+        // equivalence. Keep that flag intact; validated static actor collision
+        // can operate independently, without substituting rendered triangles.
+        const bool usableSource2=profileReady&&!unsupported&&!solids.empty();
+        info.physicsReady=(source2Profile?usableSource2:info.complete)&&(!info.approximate||options.allowApproximateCollision);
         info.status=!info.complete?"Authored collision incomplete/unsupported: preview only; no visual fallback":info.approximate?(info.physicsReady?"Authored collision with explicitly accepted primitive tessellation":"Authored primitive tessellation needs explicit approval: preview only"):"Complete authored collision (all enabled layers selected by explicit mask)";
+        if(usableSource2&&info.physicsReady)info.status="Authored Source 2 actor collision active; native dynamics/navigation equivalence not certified";
+        else if(source2Profile&&!profileError.empty())info.status+="; "+profileError;
         if(std::any_of(descriptors.begin(),descriptors.end(),[](const auto& d){return d.layer>31;}))info.status+="; exporter-specific layers 32..63 retained; game layer collision matrix unknown";
         // One atomic replacement, including valid empty authored lists.
         map.collision=std::move(solids);map.authoredTriggerTriangles=std::move(triggers);map.authoredColliders=std::move(descriptors);map.authoredCollision=std::move(info);map.hasDefaultSpawnPoint=false;

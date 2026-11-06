@@ -10,6 +10,17 @@
 int main(){
  using cadence::replay::presentationFov;
  {
+  scene::Skeleton rig;scene::Bone root;root.name="root_motion";root.parent=-1;
+  root.restGlobal=scene::trs({0,0,0},{.5f,.5f,.5f,.5f},{1,1,1});rig.bones.push_back(root);rig.boneByName[root.name]=0;
+  const auto camera=scene::trs({7000,-600,1000},scene::fromEulerRadians({.1f,.2f,.3f}),{1,1,1});
+  std::vector<scene::Mat4> pose{camera*root.restGlobal};
+  const auto recovered=cadence::replay::poseCamera(rig,pose);CHECK(recovered.has_value());
+  for(size_t i=0;i<16;++i)CHECK(std::abs(recovered->v[i]-camera.v[i])<.001f);
+  rig.boneByCanonicalName["tag_camera"]=0;CHECK(cadence::replay::poseCamera(rig,pose)->v==pose[0].v);
+  rig.boneByCanonicalName.clear();rig.bones[0].parent=1;CHECK(!cadence::replay::poseCamera(rig,pose));
+  CHECK(!cadence::replay::poseCamera(rig,{}));
+ }
+ {
   weapon::Profile profile;profile.gunPosition={3,4,5};profile.adsGunPosition={8,9,10};profile.separateAdsPosition=true;
   const auto reference=cadence::replay::MountReference::from(profile);
   std::vector<scene::Mat4> original{scene::translation({100,200,300}),scene::translation({110,210,310})};

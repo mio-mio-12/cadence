@@ -56,6 +56,20 @@ int main(int argc,char** argv){
             CHECK(down?difference>24:difference==0);
         }
         forward=savedForward;weather={};std::cout<<"Ground-fog camera direction passed\n";
+        // Reference/combined mist parity, including fractional density (which
+        // deliberately keeps independent card gates), resizes and seek resets.
+        rain.enabled=true;rain.wallMist=true;rain.splashes=true;rain.wind=12;rain.mistAmount=2;rain.mistSize=150;
+        rain.style.grainScale=201.63f;rain.style.grainAmount=.955f;
+        int rainMaxError=0;
+        for(float density:{.35f,1.f,2.3f})for(float clock:{2.25f,12.f,2.25f}){
+            rain.density=density;const int w=clock==12?1279:1280,h=clock==12?719:720;
+            renderer.setWeatherFast(false);render(clock,w,h);CHECK(renderer.readColorRgba(first,error));
+            renderer.setWeatherFast(true);render(clock,w,h);CHECK(renderer.readColorRgba(repeat,error));
+            CHECK(first.size()==repeat.size());for(size_t i=0;i<first.size();++i)rainMaxError=std::max(rainMaxError,std::abs(int(first[i])-int(repeat[i])));
+            CHECK(glGetError()==GL_NO_ERROR);CHECK(renderer.rainError().empty());
+        }
+        CHECK(rainMaxError<=3);rain={};renderer.setWeatherFast(true);
+        std::cout<<"Rain density/resize/seek parity max channel error "<<rainMaxError<<'\n';
         weather=render::weather::preset(0);weather.snow.density=1;render(2);CHECK(renderer.readColorRgba(first,error));weather.snow.density=3;render(2);CHECK(renderer.readColorRgba(repeat,error));CHECK(first!=repeat);
         weather=render::weather::preset(3);weather.dustAerosolAmount=0;render(2);CHECK(renderer.readColorRgba(first,error));weather.dustAerosolAmount=2;weather.dustAerosolDetail=80;render(2);CHECK(renderer.readColorRgba(repeat,error));CHECK(first!=repeat);
         weather={};weather.lens.enabled=true;render(2.25);CHECK(renderer.readColorRgba(first,error));CHECK(first==baseline);

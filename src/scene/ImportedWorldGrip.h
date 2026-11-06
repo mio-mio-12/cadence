@@ -1,28 +1,48 @@
 #pragma once
 #include "scene/CastScene.h"
 #include "scene/ImportedViewRetarget.h"
+#include "scene/ImportedBodyRetarget.h"
 #include "assets/ImportedGamePolicy.h"
 #include <optional>
 #include <span>
 
 namespace scene::imported::world_grip {
+inline bool codSocketConvention(std::string_view game){
+    return game=="bo2"||game=="bo2_sp"||game=="bo"||game=="mw"||game=="mw2"||game=="mw3"||game=="mwr"||game=="ghosts"||game=="aw";
+}
 // This adapter never guesses a grip from a bounding box or rescales a gun to
 // fit a character. The donor is a native body with an authored weapon socket;
 // source and destination bodies/poses must already use centimetres.
 struct Mount { std::size_t bone{}; Mat4 transform{Mat4::identity()}; };
 inline int bone(const Skeleton& s,std::initializer_list<const char*> names){
     for(const auto* name:names){const auto it=s.boneByName.find(name);if(it!=s.boneByName.end()&&it->second<s.bones.size())return static_cast<int>(it->second);}
+    // Body importers already expose anatomical CoD aliases for PB/CODM.
+    // Use those read-only instead of falling back to an unrelated wrist axis.
+    for(const auto* name:names)if(std::string_view(name).starts_with("j_")){
+        const auto it=s.boneByCanonicalName.find(name);
+        if(it!=s.boneByCanonicalName.end()&&it->second<s.bones.size())return static_cast<int>(it->second);
+    }
     return -1;
 }
 struct Palm {int wrist{-1},index{-1},middle{-1},pinky{-1},thumb{-1};};
 inline Palm rightPalm(const Skeleton& s){
     Palm p;
+    if(bodyLayout(s).family==BodyFamily::Source2){
+        p.wrist=nativeBodyBone(s,"hand_R");p.index=nativeBodyBone(s,"finger_index_0_R");p.middle=nativeBodyBone(s,"finger_middle_0_R");p.pinky=nativeBodyBone(s,"finger_pinky_0_R");p.thumb=nativeBodyBone(s,"finger_thumb_0_R");return p;
+    }
     p.wrist=bone(s,{"j_wrist_ri","r_hand","ValveBiped.Bip01_R_Hand","CSO2_BipM R Hand","Bip01 R Hand","R Hand","b_RightHand"});
     p.index=bone(s,{"j_index_ri_0","j_index_ri_1","r_index_low","ValveBiped.Bip01_R_Finger1","CSO2_BipM R Finger1","Bip01 R Finger1","R Index1","b_RightIndex1"});
     p.middle=bone(s,{"j_mid_ri_0","j_mid_ri_1","r_middle_low","ValveBiped.Bip01_R_Finger2","CSO2_BipM R Finger2","R Middle1","b_RightMiddle1"});
     p.pinky=bone(s,{"j_pinky_ri_0","j_pinky_ri_1","r_pinky_low","ValveBiped.Bip01_R_Finger4","CSO2_BipM R Finger4","R Little1","b_RightPinky1"});
     p.thumb=bone(s,{"j_thumb_ri_0","j_thumb_ri_1","r_thumb_low","ValveBiped.Bip01_R_Finger0","CSO2_BipM R Finger0","Bip01 R Finger0","R Thumb1","b_RightThumb1"});
     // Some GoldSrc characters suffix finger names with their model variant.
+    if(p.wrist<0){
+        p.wrist=bone(s,{"Bip01_R_Hand","SkelBone_R_Hand","b_R_Hand","J_Wrist_RI"});
+        p.index=bone(s,{"Bip01_R_Finger1","SkelBone_R_Finger1","b_R_Finger1","J_Index_RI_0"});
+        p.middle=bone(s,{"Bip01_R_Finger2","SkelBone_R_Finger2","b_R_Finger2","J_Mid_RI_0"});
+        p.pinky=bone(s,{"Bip01_R_Finger4","SkelBone_R_Finger4","b_R_Finger4","J_Pinky_RI_0"});
+        p.thumb=bone(s,{"Bip01_R_Finger0","SkelBone_R_Finger0","b_R_Finger0","J_Thumb_RI_0"});
+    }
     // Only accept a base finger directly parented to the matched wrist, never
     // Finger11/12 knuckles or a similarly named accessory skeleton.
     if(p.wrist>=0&&s.bones[p.wrist].name=="Bip01 R Hand"){
@@ -39,14 +59,14 @@ inline std::optional<Mat4> rigid(const Mat4& m){
     if(std::min({s.x,s.y,s.z})<1e-6f)return {};
     return trs(p,q,{1,1,1});
 }
-inline std::optional<Mat4> palmFrame(const Skeleton& s,std::span<const Mat4> pose){
+inline std::optional<Mat4> palmFrame(const Skeleton& s,std::span<const Mat4> pose,bool thumbIndexOnly=false){
     const auto p=rightPalm(s);
     if(p.wrist<0||p.index<0||pose.size()!=s.bones.size())return {};
     const auto pos=[&](int i){return transformPoint(pose[static_cast<std::size_t>(i)],{});};
-    const auto origin=pos(p.wrist),forward=pos(p.middle>=0?p.middle:p.index)-origin;
+    const auto origin=pos(p.wrist),forward=pos(!thumbIndexOnly&&p.middle>=0?p.middle:p.index)-origin;
     // Full rigs use index-to-pinky handedness. Two-finger legacy rigs use
     // their authored thumb/index plane, not an unrelated foreign bind axis.
-    const auto normal=p.pinky>=0?cross(pos(p.index)-origin,pos(p.pinky)-origin):
+    const auto normal=!thumbIndexOnly&&p.pinky>=0?cross(pos(p.index)-origin,pos(p.pinky)-origin):
         p.thumb>=0?cross(pos(p.thumb)-origin,pos(p.index)-origin):Vec3{};
     if(length(forward)<1e-5f||length(normal)<1e-5f)return {};
     const auto x=normalize(forward),y=normalize(cross(normal,x)),z=normalize(cross(x,y));
@@ -175,18 +195,10 @@ inline std::optional<Mount> fromViewHold(CastScene& view,std::span<const Mat4> p
                 const auto heldTrigger=contact(holdPose,donor.wrist,contacts?donor.middle:-1);
                 auto sourceFrame=gripSpanFrame(transformPoint(pose[right.wrist],{}),transformPoint(pose[support],{}));
                 auto heldFrame=gripSpanFrame(transformPoint(holdPose[donor.wrist],{}),transformPoint(holdPose[donorSupport],{}));
-                // Native barrel and body weapon-socket axes preserve the
-                // authored firing angle; camera-forward and palm spans do not.
-                const auto socket=bone(*holdSkeleton,{"tag_weapon_right"});
-                if(socket>=0&&!view.muzzleAnchors.empty()){
-                    const auto barrel=view.muzzleAnchors.front().bone;
-                    if(barrel<pose.size()){
-                        const auto motion=pose[barrel]*source.bones[barrel].inverseBind;
-                        const auto o=transformPoint(motion,{});
-                        sourceFrame=gripSpanFrame(sourceTrigger,sourceTrigger+transformPoint(motion,{0,-1,0})-o,transformPoint(motion,{0,0,1})-o);
-                        heldFrame=rigid(holdPose[socket]);
-                    }
-                }
+                // A body socket is an attachment frame, not a barrel frame:
+                // its axis requires the matching native world-model bind.
+                // This fallback has no such model. Register the two sampled
+                // hand spans, preserving the gun's authored angle to its hands.
                 if(sourceFrame&&heldFrame){
                     sourceFrame->v[12]=sourceTrigger.x;sourceFrame->v[13]=sourceTrigger.y;sourceFrame->v[14]=sourceTrigger.z;
                     heldFrame->v[12]=heldTrigger.x;heldFrame->v[13]=heldTrigger.y;heldFrame->v[14]=heldTrigger.z;
@@ -207,13 +219,6 @@ inline std::optional<Mount> fromViewHold(CastScene& view,std::span<const Mat4> p
             const auto trigger=contacts?(wrist+transformPoint(pose[right.fingers[2][0]],{}))*.5f:wrist;
             auto sourceFrame=gripSpanFrame(wrist,transformPoint(pose[support],{}));
             bool heldValid=convention->spanValid;auto heldFrame=convention->span[contacts?1:0];
-            if(convention->socketValid&&!view.muzzleAnchors.empty()){
-                const auto barrel=view.muzzleAnchors.front().bone;
-                if(barrel<pose.size()){const auto motion=pose[barrel]*source.bones[barrel].inverseBind;const auto o=transformPoint(motion,{});
-                    sourceFrame=gripSpanFrame(trigger,trigger+transformPoint(motion,{0,-1,0})-o,transformPoint(motion,{0,0,1})-o);
-                    heldFrame=convention->socket[contacts?1:0];heldValid=true;
-                }
-            }
             if(sourceFrame&&heldValid){sourceFrame->v[12]=trigger.x;sourceFrame->v[13]=trigger.y;sourceFrame->v[14]=trigger.z;transform=targetFrame*heldFrame*scale({units,units,units})*inverseAffine(*sourceFrame);}
         }
     }
@@ -222,6 +227,20 @@ inline std::optional<Mount> fromViewHold(CastScene& view,std::span<const Mat4> p
     // baked barrel geometry. No source animation or skeleton file is changed.
     for(std::size_t i=0;i<view.skeleton.bones.size();++i)view.skeleton.bones[i].restGlobal=pose[i];
     return Mount{static_cast<std::size_t>(targetHand.wrist),transform};
+}
+// Register a native posed grip to a legacy Source palm at its contact point
+// rather than at the wrist joint. The weapon's size and authored grip remain
+// unchanged; only the contact frame moves.
+inline void alignViewPalmContact(Mount& mount,const CastScene& view,std::span<const Mat4> pose,const Skeleton& target){
+    const auto arm=viewLayout(view).arms[1];
+    const auto palm=rightPalm(target);
+    if(arm.wrist<0||arm.fingers[2][0]<0||palm.wrist<0||palm.middle<0||mount.bone!=std::size_t(palm.wrist))return;
+    const auto source=(transformPoint(pose[arm.wrist],{})+transformPoint(pose[arm.fingers[2][0]],{}))*.5f;
+    const auto& wrist=target.bones[palm.wrist].restGlobal;
+    const auto contact=(transformPoint(wrist,{})+transformPoint(target.bones[palm.middle].restGlobal,{}))*.5f;
+    const auto shift=transformPoint(inverseAffine(wrist),contact)-transformPoint(mount.transform,source);
+    if(std::isfinite(shift.x)&&std::isfinite(shift.y)&&std::isfinite(shift.z))
+        mount.transform=translation(shift)*mount.transform;
 }
 struct NativeSocket {int donor{-1},weapon{-1};float weaponUnits{1};};
 inline int explicitGunAnchor(const Skeleton& skeleton){
@@ -314,7 +333,7 @@ inline NativeSocket nativeSocket(std::string_view game,const CastScene& world,co
     }else if(game=="cso2"){
         n.donor=bone(donor,{"CSO2_W_bone"});n.weapon=bone(world.skeleton,{"CSO2_W_bone"});n.weaponUnits=2.54f;
         if(n.weapon<0){n.donor=bone(donor,{"CSO2_BipM R Hand"});n.weapon=bone(world.skeleton,{"CSO2_BipM R Hand"});}
-    }else if(game=="bo2"){
+    }else if(codSocketConvention(game)){
         n.donor=bone(donor,{"tag_weapon_right"});n.weapon=bone(world.skeleton,{"tag_weapon","j_gun"});
     }
     // GoldSrc w_ exports are dropped art with unrelated roots. A complete
@@ -328,9 +347,29 @@ inline std::optional<Mount> fromNativeSocket(std::string_view weaponGame,const C
     const auto source=nativeSocket(weaponGame,world,donor);const auto targetPalm=rightPalm(target),sourcePalm=rightPalm(donor);
     if(source.donor<0||source.weapon<0){error="No verified native body/world weapon socket pair";return {};}
     if(targetPalm.wrist<0||sourcePalm.wrist<0||donorPose.size()!=donor.bones.size()){error="Missing native or target right-hand reference";return {};}
-    auto nativePalm=palmFrame(donor,donorPose);
+    const bool sharedThumbIndex=sourcePalm.thumb>=0&&targetPalm.thumb>=0&&
+        (sourcePalm.middle<0||sourcePalm.pinky<0||targetPalm.middle<0||targetPalm.pinky<0);
+    auto nativePalm=palmFrame(donor,donorPose,sharedThumbIndex);
     const auto targetRest=restPose(target);
-    const auto destinationPalm=palmFrame(target,targetRest);
+    auto destinationPalm=palmFrame(target,targetRest,sharedThumbIndex);
+    // Older body exports retain an authored wrist/socket but no finger joints.
+    // Use exactly the wrist-rest rotation mapping used by the body retargeter
+    // when it cannot derive a palm frame. Do not invent finger positions or
+    // substitute another game's gun grip. Translation stays at the target wrist.
+    if(!nativePalm&&sourcePalm.index<0&&codSocketConvention(weaponGame)){
+        const auto sourceLayout=bodyOrCodLayout(donor),targetLayout=bodyOrCodLayout(target);
+        if(completeBodyLayout(sourceLayout)&&completeBodyLayout(targetLayout)){
+            const auto sourceRest=rigid(donor.bones[sourcePalm.wrist].restGlobal);
+            nativePalm=rigid(donorPose[sourcePalm.wrist]);
+            if(sourceRest&&nativePalm){
+                const float yaw=std::atan2(targetLayout.authoredForward.y,targetLayout.authoredForward.x)-
+                    std::atan2(sourceLayout.authoredForward.y,sourceLayout.authoredForward.x);
+                auto frame=rotation(fromEulerRadians({0,0,yaw}))*(*sourceRest);
+                for(int k:{12,13,14})frame.v[k]=target.bones[targetPalm.wrist].restGlobal.v[k];
+                destinationPalm=frame;
+            }
+        }
+    }
     auto sourceSocket=rigid(donorPose[source.donor]);
     auto weaponSocket=world.skeleton.bones[source.weapon].restGlobal;
     for(int k:{12,13,14})weaponSocket.v[k]*=source.weaponUnits;
@@ -338,7 +377,7 @@ inline std::optional<Mount> fromNativeSocket(std::string_view weaponGame,const C
     if(!nativePalm||!destinationPalm||!sourceSocket||!weaponFrame){error="Degenerate native palm/socket frame";return {};}
     if(weaponGame=="cso2"&&source.donor!=sourcePalm.wrist){
         const auto helper=bone(donor,{"CSO2_W_bone_RHand"});
-        const auto rest=restPose(donor);const auto restPalm=palmFrame(donor,rest);
+        const auto rest=restPose(donor);const auto restPalm=palmFrame(donor,rest,sharedThumbIndex);
         const auto wristFrame=helper>=0?rigid(donor.bones[helper].restGlobal):std::optional<Mat4>{};
         const auto helperFrame=helper>=0?rigid(donorPose[helper]):std::optional<Mat4>{};
         if(helperFrame&&wristFrame&&restPalm)nativePalm=(*helperFrame)*inverseAffine(*wristFrame)*(*restPalm);
@@ -350,7 +389,7 @@ inline std::optional<Mount> fromNativeSocket(std::string_view weaponGame,const C
         // the weapon bone. It supplies a native hold without guessing a parked
         // weapon's offset, even when the native locomotion clips were not exported.
         const auto helper=weaponGame=="css"?bone(donor,{"ValveBiped.weapon_bone_RHand"}):-1;
-        const auto rest=restPose(donor);const auto restPalm=palmFrame(donor,rest);
+        const auto rest=restPose(donor);const auto restPalm=palmFrame(donor,rest,sharedThumbIndex);
         const auto wristFrame=rigid(donor.bones[sourcePalm.wrist].restGlobal);
         const auto helperFrame=helper>=0?rigid(donor.bones[helper].restGlobal):std::optional<Mat4>{};
         if(!helperFrame||!wristFrame||!restPalm){error="Native weapon socket is detached; sample a native holding animation";return {};}

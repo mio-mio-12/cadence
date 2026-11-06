@@ -57,6 +57,10 @@ public:
     static constexpr std::uint32_t kMagic = 0x74736163;
 
     [[nodiscard]] static Document load(const std::filesystem::path& path);
+    // Explicit session residency; ordinary loads never grow this cache.
+    [[nodiscard]] static std::size_t preload(const std::filesystem::path& path);
+    static void releasePreload(const std::filesystem::path& path);
+    [[nodiscard]] std::size_t residentBytes() const;
     [[nodiscard]] static Document parse(std::vector<std::byte> bytes,
                                         std::string sourceName = "memory");
 

@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
 #undef main
@@ -6,7 +5,7 @@
 #define CHECK(x) do{if(!(x)){std::cerr<<"FAIL "<<__LINE__<<" "<<#x<<"\n";return 1;}}while(false)
 int main(){
  CHECK(glfwInit());
- const std::filesystem::path root=cadence::local_assets::exportPath("bo2");
+ const std::filesystem::path root="exported_files/bo2";
  auto rig=scene::buildScene(cast::Document::load(root/"models/playermodels/isa/c_usa_mp_isa_assault_fb/c_usa_mp_isa_assault_fb_LOD0.cast"),false);CHECK(!rig.skeleton.bones.empty());
  for(const auto* folder:{"pb","pt"})for(const auto& file:std::filesystem::recursive_directory_iterator(root/"animations"/folder))
   if(file.is_regular_file()&&file.path().extension()==".cast"){const auto first=rig.animations.size();scene::appendAnimations(cast::Document::load(file.path()),rig);for(size_t i=first;i<rig.animations.size();++i)rig.animations[i].sourceGame="bo2";}

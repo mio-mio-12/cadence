@@ -41,4 +41,8 @@ inline Action request(int held,int target,int stage,bool allowed){
     if(stage==1)return target==held?Action::CancelDrop:Action::RetargetDrop;
     return target==held?Action::None:Action::BeginDrop;
 }
+// Cadence permits presentation-fire interruption; melee/offhand gates remain.
+inline bool admitsCadence(Busy busy,bool timeRemaining,bool delayRemaining=false){
+    return busy==Busy::Fire||admits(busy,timeRemaining,delayRemaining);
+}
 }

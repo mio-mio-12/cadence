@@ -1,8 +1,10 @@
 #pragma once
 #include "gameplay/MantleAcquisition.h"
+#include "gameplay/LadderVelocity.h"
 
 namespace gameplay::authored {
-inline std::optional<mantle::Trajectory> climb(const scene::glb::Map& map,scene::Vec3 start,scene::Vec3 looking,float radius,float height,float step,float maximum,float reach,float minimum,float rate,bool boxHull){
+inline std::optional<mantle::Trajectory> climb(const scene::glb::Map& map,scene::Vec3 start,scene::Vec3 looking,float radius,float height,float step,float maximum,float reach,float minimum,float rate,bool boxHull,scene::Vec2 footprint={}){
+    const bool rectangular=footprint.x>0&&footprint.y>0;
     if(!map.gameplay.enabled||!map.gameplay.mantles)return {};
     looking.z=0;if(scene::length(looking)<.5f)return {};looking=scene::normalize(looking);
     for(const auto& link:map.gameplay.climbs){
@@ -10,14 +12,14 @@ inline std::optional<mantle::Trajectory> climb(const scene::glb::Map& map,scene:
         auto dir=link.end-start;dir.z=0;if(scene::length(dir)<1||scene::dot(scene::normalize(dir),looking)<.7071f)continue;
         auto target=link.end;const float ground=map.navigationGroundHeight(target.x,target.y,target.z+step-45.f,-1e9f,radius*.7f);
         if(std::abs(ground-target.z)>step)continue;target.z=ground;
-        if(auto path=mantle::findClimbTo(map,start,target,radius,height,step,maximum,reach,minimum)){
+        if(auto path=rectangular?mantle::findClimbTo(map,start,target,footprint,height,step,maximum,reach,minimum):mantle::findClimbTo(map,start,target,radius,height,step,maximum,reach,minimum)){
             path->duration/=std::clamp(rate,.25f,4.f);path->playbackSpeed=std::clamp(rate,.25f,4.f);
-            const auto sweep=[&](scene::Vec3 a,scene::Vec3 b){return boxHull?movement::sweep(map,a,b,radius,height):mantle::sweepRounded(map,a,b,radius,height);};
+            const auto sweep=[&](scene::Vec3 a,scene::Vec3 b){if(rectangular)return movement::sweep(map,a,b,footprint,height);return boxHull?movement::sweep(map,a,b,radius,height):mantle::sweepRounded(map,a,b,radius,height);};
             if(mantle::clear(*path,sweep))return path;
         }
     }
     for(auto dir:map.gameplay.mantleDirections(start,looking,radius,height,reach))
-        if(auto path=mantle::findClimb(map,start,dir,radius,height,step,maximum,reach,minimum,rate,boxHull))return path;
+        if(auto path=rectangular?mantle::findClimb(map,start,dir,footprint,height,step,maximum,reach,minimum,rate,true):mantle::findClimb(map,start,dir,radius,height,step,maximum,reach,minimum,rate,boxHull))return path;
     return {};
 }
 struct LadderState {
@@ -27,14 +29,39 @@ struct LadderState {
     scene::Vec3 normal{};
     mantle::Trajectory exitPath;
 };
+inline bool sourceLadder(LadderState& state,const scene::glb::Map& map,scene::Vec3& position,scene::Vec3& velocity,bool& grounded,
+                        scene::Vec3 facing,scene::Vec3 right,float forward,float side,bool jump,float dt,float radius,float height,scene::Vec2 footprint,float multiplier){
+    state.cooldown=std::max(0.f,state.cooldown-dt);if(state.cooldown>0)return false;
+    const auto* volume=map.gameplay.enabled&&map.gameplay.ladders?map.gameplay.ladder(position,radius,height):nullptr;
+    auto contact=map.findLadderContact(position,radius,height);
+    if(volume){auto normal=volume->facing;if(scene::dot(position-volume->center,normal)<0)normal=-normal;if(scene::length(normal)>.5f)contact=normal;}
+    // Contact loss hands the last ladder velocity back to ordinary movement.
+    // No mantle trajectory, vertical reset or synthetic top-of-ladder impulse.
+    if(!contact){if(state.active)state.cooldown=.1f;state.active=state.exiting=false;return false;}
+    if(!state.active){const auto wish=facing*forward+right*side;if(scene::length(wish)<.01f||scene::dot(wish,*contact)>=-.01f)return false;}
+    state.active=true;state.exiting=false;state.normal=*contact;
+    if(jump){velocity=state.normal*(270.f*2.54f);grounded=false;state.active=false;state.cooldown=.2f;return false;}
+    const float speed=127.f*std::max(0.f,multiplier);
+    velocity=gameplay::ladder::velocity(facing,right,forward,side,state.normal,speed,grounded);
+    if(volume&&volume->forbidDown)velocity.z=std::max(0.f,velocity.z);
+    grounded=false;float remaining=std::clamp(dt,0.f,.1f);
+    while(remaining>0){const float tick=std::min(remaining,.008f);remaining-=tick;const auto target=position+velocity*tick;
+        const auto hit=footprint.x>0&&footprint.y>0?movement::sweep(map,position,target,footprint,height):mantle::sweepRounded(map,position,target,radius,height);
+        position=hit.end;if(hit.startSolid){velocity={};break;}
+        if(hit.fraction<.9999f){const float into=scene::dot(velocity,hit.normal);if(into<0)velocity=velocity-hit.normal*into;}
+    }
+    return true;
+}
 // Returns true only while this controller owns movement. Weapon/aim processing
 // continues normally; no visual configuration is added to recordings.
 inline bool ladder(LadderState& state,const scene::glb::Map& map,scene::Vec3& position,scene::Vec3& velocity,bool& grounded,
-                   scene::Vec3 facing,float input,bool jumpPressed,float dt,float radius,float height){
+                   scene::Vec3 facing,float input,bool jumpPressed,float dt,float radius,float height,scene::Vec2 footprint={},float speedMultiplier=4.f){
+    const float climbSpeed=160.f*(std::isfinite(speedMultiplier)?std::max(0.f,speedMultiplier):4.f);
+    const bool rectangular=footprint.x>0&&footprint.y>0;
     state.cooldown=std::max(0.f,state.cooldown-dt);
     state.exitProbeDelay=std::max(0.f,state.exitProbeDelay-dt);
     if(!map.gameplay.enabled||!map.gameplay.ladders){state.active=state.exiting=false;return false;}
-    const auto sweep=[&](scene::Vec3 a,scene::Vec3 b){return mantle::sweepRounded(map,a,b,radius,height);};
+    const auto sweep=[&](scene::Vec3 a,scene::Vec3 b){return rectangular?movement::sweep(map,a,b,footprint,height):mantle::sweepRounded(map,a,b,radius,height);};
     if(!state.active&&!state.exiting&&state.cooldown<=0&&std::abs(input)>.1f){
         if(const auto* v=map.gameplay.ladder(position,radius,height)){
             auto normal=v->facing;if(scene::length(normal)<.5f)return false;
@@ -66,7 +93,7 @@ inline bool ladder(LadderState& state,const scene::glb::Map& map,scene::Vec3& po
                 target.z=map.navigationGroundHeight(target.x,target.y,volume.maximum.z+40-45.f,-1e9f,radius*.7f);
                 const float settle=scene::course::kStepHeight+8.f;
                 if(target.z<position.z-settle||target.z>position.z+height*.8f)continue;
-                if(auto path=mantle::findClimbTo(map,position,target,radius,height,scene::course::kStepHeight,height*.8f,radius*4,-settle)){
+                if(auto path=rectangular?mantle::findClimbTo(map,position,target,footprint,height,scene::course::kStepHeight,height*.8f,radius*4,-settle):mantle::findClimbTo(map,position,target,radius,height,scene::course::kStepHeight,height*.8f,radius*4,-settle)){
                     if(mantle::clear(*path,sweep)){state.exitPath=*path;state.elapsed=0;state.exiting=true;break;}
                 }
                 for(float clearance=0;clearance<=settle;clearance+=8){
@@ -81,12 +108,12 @@ inline bool ladder(LadderState& state,const scene::glb::Map& map,scene::Vec3& po
             }
             if(state.exiting)continue;
         }
-        auto target=position+scene::Vec3{0,0,input*160.f*tick};
+        auto target=position+scene::Vec3{0,0,input*climbSpeed*tick};
         target.z=std::min(target.z,volume.maximum.z+8);
         const auto hit=sweep(position,target);position=hit.end;
         if(input<-.1f){const float ground=map.groundHeight(position.x,position.y,position.z-43.f,-1e9f);
             if(ground>=position.z-3&&ground<=position.z+2){position.z=ground;grounded=true;state.active=false;state.cooldown=.35f;return true;}
         }
-    }velocity={0,0,input*160.f};return true;
+    }velocity={0,0,input*climbSpeed};return true;
 }
 }

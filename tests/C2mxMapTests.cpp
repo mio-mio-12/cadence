@@ -4,6 +4,8 @@
 #include <cassert>
 #include <fstream>
 #include <set>
+#include <sstream>
+#include <iomanip>
 using scene::codm::Json;
 static Json meta(){return {{"schema","codm.c2mx/1"},{"collisionPolicy","authored_only"},{"collisionComplete",true}};}
 static Json nav(){return {{"schema","codm.navigation/1"},{"status","settings_only"},{"runtimeReady",false},{"assets",Json::array()}};}
@@ -18,12 +20,12 @@ static std::vector<std::uint8_t> envelope(std::vector<std::uint8_t> bytes=std::v
  for(const auto* tag:{"META","COLL","NAVM"}){bytes.insert(bytes.end(),tag,tag+4);put(bytes,1,4);put(bytes,spans[i][0],8);put(bytes,spans[i++][1],8);}
  for(char c:std::string("C2MX"))bytes.push_back(c);put(bytes,1,4);put(bytes,directory,8);put(bytes,72,8);put(bytes,3,4);put(bytes,0,4);return bytes;
 }
-static std::vector<std::uint8_t> legacyFloor(){
+static std::vector<std::uint8_t> legacyFloor(std::string material="plain_floor"){
  std::vector<std::uint8_t> bytes{'C','2','M',3,5};const auto str=[&](std::string s){bytes.push_back(1);bytes.insert(bytes.end(),s.begin(),s.end());bytes.push_back(0);};const auto f=[&](float value){std::uint32_t raw;std::memcpy(&raw,&value,4);put(bytes,raw,4);};
  str("test_floor");str("");const auto table=bytes.size();bytes.resize(table+80);const auto object=bytes.size();str("mapGeometry");put(bytes,4,4);put(bytes,1,4);put(bytes,2,4);put(bytes,0,4);f(0);
  for(auto v:{scene::Vec3{0,0,0},scene::Vec3{40,0,0},scene::Vec3{40,40,0},scene::Vec3{0,40,0}}){f(v.x);f(v.y);f(v.z);}for(int i=0;i<4;++i){f(0);f(0);f(1);}for(int i=0;i<4;++i){put(bytes,1,4);f(0);f(0);}for(int i=0;i<16;++i)bytes.push_back(255);
  str("floor");put(bytes,0,8);put(bytes,1,1);put(bytes,1,1);put(bytes,0,2);put(bytes,2,4);for(auto i:{0,1,2,0,2,3})put(bytes,i,4);
- const auto materials=bytes.size();str("plain_floor");str("opaque");str("");for(int i=0;i<4;++i)put(bytes,0,1);const auto ents=bytes.size();str("");
+ const auto materials=bytes.size();str(material);str("opaque");str("");for(int i=0;i<4;++i)put(bytes,0,1);const auto ents=bytes.size();str("");
  std::vector<std::uint8_t> header;put(header,1,4);put(header,object,8);put(header,0,4);put(header,0,4);put(header,materials,8);put(header,0,4);put(header,materials,8);put(header,1,4);put(header,materials,8);put(header,0,4);put(header,ents,8);put(header,ents,8);assert(header.size()==72);std::copy(header.begin(),header.end(),bytes.begin()+table);return bytes;
 }
 int main(int argc,char** argv){
@@ -41,6 +43,23 @@ int main(int argc,char** argv){
     assert(testCollision(fallback,Json::array()));assert(!fallback.hasDefaultSpawnPoint&&!fallback.collisionPreviewPoint);
  }
  scene::glb::Map map;std::string error;
+ {
+  auto sourceMeta=meta();sourceMeta["collisionComplete"]=false;sourceMeta["cs2m"]={{"schema","cs2m.map/1"},{"game","cs2"},{"issues",Json::array()}};
+  auto floor=box();floor["size"]={400,400,10};
+  floor["source"]={{"collisionAttribute",{{"m_CollisionGroupString","Default"}}},{"queryPolicy",{{"schema","cs2m.source2-collision-filter/1"},{"m_InteractAsStrings",Json::array()},{"m_InteractWithStrings",Json::array()},{"m_InteractExcludeStrings",Json::array()}}}};
+  auto check=[&]{return scene::c2mx::applyCollision(coll(Json::array({floor})),sourceMeta,nav(),map,error);};
+  assert(check()&&map.authoredCollision.physicsReady&&!map.authoredCollision.complete&&map.hasDefaultSpawnPoint);
+  floor["source"]["collisionAttribute"]["m_CollisionGroupString"]="default";assert(check()&&map.authoredCollision.physicsReady);
+  floor["source"]["queryPolicy"]["m_InteractExcludeStrings"]={"player"};assert(check()&&!map.authoredCollision.physicsReady&&map.collision.empty());
+  floor["source"]["queryPolicy"]["m_InteractExcludeStrings"]=Json::array();
+  floor["source"]["collisionAttribute"]["m_CollisionGroupString"]="ConditionallySolid";
+  floor["source"]["queryPolicy"]["m_InteractAsStrings"]={"playerclip","npcclip"};assert(check()&&map.authoredCollision.physicsReady);
+  floor["source"]["queryPolicy"]["m_InteractAsStrings"]={"csgo_grenadeclip"};assert(check()&&map.collision.empty());
+  floor["source"]["queryPolicy"]["m_InteractAsStrings"]={"unknown"};assert(check()&&!map.authoredCollision.physicsReady);
+  floor["source"]["queryPolicy"]["m_InteractAsStrings"]={"playerclip"};
+  sourceMeta["cs2m"]["issues"]=Json::array({{{"code","SOURCE2_ENTITY_PHYSICS_SHAPE"}}});assert(check()&&!map.authoredCollision.physicsReady);
+  sourceMeta["cs2m"]["issues"]=Json::array();floor["trigger"]=true;assert(check()&&map.collision.empty()&&!map.authoredTriggerTriangles.empty());
+ }
  assert(testCollision(map,Json::array({box()})));assert(map.collision.size()==12&&map.authoredCollision.physicsReady&&map.authoredCollision.colliderCount==1);assert(!map.hasDefaultSpawnPoint); // Too narrow for a standing capsule.
  const float top=50*2.54f;assert(std::abs(map.groundHeight(25.4f,50.8f,1000,-999)-top)<.01f);assert(map.authoredColliders[0].layer==14);
  // Mirrored, rotated and nonuniform local box: compare actual transformed corners.
@@ -71,6 +90,38 @@ int main(int argc,char** argv){
   const auto folder=std::filesystem::temp_directory_path()/("cadence_c2mx_test_"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));std::filesystem::create_directory(folder);const auto legacy=legacyFloor();
   const auto write=[&](const auto& p,const auto& b){std::ofstream f(p,std::ios::binary);f.write(reinterpret_cast<const char*>(b.data()),b.size());};write(folder/"old.c2m",legacy);
   assert(scene::c2m::load(folder/"old.c2m",map,error));assert(map.collision.size()==2&&!map.authoredCollision.present&&map.hasDefaultSpawnPoint);
+  for(const auto* name:{"concrete_panel_gravel_grass_001","asphalt_gravel_grass_001","roof_tile_mossy_blend","metal_painted_debris_blend"}){
+   auto materialMeta=meta();materialMeta["visualMaterials"]=Json::array({{{"c2mMaterialName",name},{"alpha","OPAQUE"}}});
+   scene::c2m::LoadOptions visible;visible.renderGeometryCollision=true;
+   write(folder/"named_floor.c2m",envelope(legacyFloor(name),materialMeta));
+   assert(scene::c2m::load(folder/"named_floor.c2m",map,error,1,nullptr,visible));
+   assert(map.collision.size()==2&&std::abs(map.groundHeight(50,50,10,-999))<.01f);
+   materialMeta["visualMaterials"][0]["alpha"]="BLEND";
+   write(folder/"named_floor.c2m",envelope(legacyFloor(name),materialMeta));
+   assert(scene::c2m::load(folder/"named_floor.c2m",map,error,1,nullptr,visible));assert(map.collision.empty());
+  }
+  {
+   std::filesystem::create_directories(folder/"native/collision_parts");
+   const auto part=coll(Json::array({box()})).dump();
+   const auto partPath=folder/"native/collision_parts/part_0000.json";
+   write(partPath,std::vector<std::uint8_t>(part.begin(),part.end()));
+   std::uint64_t hash=14695981039346656037ull;for(unsigned char c:part)hash=(hash^c)*1099511628211ull;
+   std::ostringstream digest;digest<<std::hex<<std::setw(16)<<std::setfill('0')<<hash;
+   auto external=coll(Json::array());external["externalColliderParts"]=Json::array({{{"path","native/collision_parts/part_0000.json"},{"schema","codm.collision/1"},{"bytes",std::uint64_t(part.size())},{"hash",digest.str()},{"colliderCount",std::uint64_t(1)}}});
+   auto newerNav=nav();newerNav["status"]="decoded_graph_consumer_pending";
+   map.sourcePath=folder/"external.c2m";
+   assert(scene::c2mx::applyCollision(external,meta(),newerNav,map,error));
+   assert(map.authoredColliders.size()==1&&map.collision.size()==12&&!map.authoredCollision.nativeNavigationReady);
+   auto corrupt=external;corrupt["externalColliderParts"][0]["hash"]="0000000000000000";
+   assert(!scene::c2mx::applyCollision(corrupt,meta(),newerNav,map,error));
+   assert(map.collision.size()==12); // Failure is atomic.
+   corrupt=external;corrupt["externalColliderParts"][0]["path"]="native/collision_parts/../../escape.json";
+   assert(!scene::c2mx::applyCollision(corrupt,meta(),newerNav,map,error));
+   corrupt=external;corrupt["externalColliderParts"][0]["colliderCount"]=std::uint64_t(2);
+   assert(!scene::c2mx::applyCollision(corrupt,meta(),newerNav,map,error));
+   newerNav["status"]="excluded_by_option";assert(scene::c2mx::applyCollision(external,meta(),newerNav,map,error));
+   newerNav["runtimeReady"]=true;assert(!scene::c2mx::applyCollision(external,meta(),newerNav,map,error));
+  }
   auto metadata=meta();metadata["visualMaterials"]=Json::array({{{"c2mMaterialName","plain_floor"},{"alpha","OPAQUE"}}});write(folder/"empty.c2m",envelope(legacy,metadata));
   assert(scene::c2m::load(folder/"empty.c2m",map,error));assert(map.collision.empty()&&map.authoredCollision.present&&!map.hasDefaultSpawnPoint&&map.scene.meshes[0].indices.size()==6);
   scene::c2m::LoadOptions generated;generated.renderGeometryCollision=true;

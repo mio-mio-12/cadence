@@ -12,6 +12,43 @@ namespace {bool expect(bool value,const char* message){if(!value)std::cerr<<"FAI
 
 int main(){int failures{};
     {
+        const auto stand=assets::imported::nativeBodyAction("cso2","diagnostic_native_ct_707_Idle_Shoot_AK_clip12817639355955314948.cast");
+        failures+=!expect(!stand,"CSO2 bind-baked standing delta must not become absolute fire");
+        const auto crouch=assets::imported::nativeBodyAction("cso2","diagnostic_native_ct_707_Crouch_Idle_Shoot_AK_clip6740506176757693694.cast");
+        failures+=!expect(!crouch,"CSO2 bind-baked crouched delta requires authored base");
+        const auto other=assets::imported::nativeBodyAction("cso2","diagnostic_native_other_actor_Idle_Shoot_akm_clip12.cast");
+        failures+=!expect(!other,"CSO2 delta rejection is not restricted to one actor");
+        failures+=!expect(assets::imported::additionalBodySemantic("cso2","diagnostic_native_ct_707_Idle_Shoot_AK_clip1.cast").empty(),"shared discovery cannot bypass CSO2 delta guard");
+        for(const auto name:{
+            "diagnostic_native_ct_707_Run_Shoot_AK_clip1.cast",
+            "diagnostic_native_ct_707_Walk_Shoot_AK_clip1.cast",
+            "diagnostic_native_ct_707_Idle_Shoot_AK_blend4_clip1.cast",
+            "diagnostic_native_ct_707_Idle_Shoot_KNIFE_clip1.cast",
+            "diagnostic_native_ct_707_Idle_Shoot_AK_stab_clip1.cast",
+            "diagnostic_native_ct_707_Idle_Shoot_C4_clip1.cast",
+            "diagnostic_native_ct_707_Idle_Shoot_unknown_clip1.cast",
+            "diagnostic_native_ct_707_Idle_Shoot_Deagle_clip1.cast",
+            "diagnostic_native_ct_707_Idle_Shoot_AWP_clip1.cast",
+            "diagnostic_native_ct_707_Idle_Shoot_AK_clip.cast",
+            "diagnostic_native_ct_707_Idle_Shoot_AK_clip1x.cast",
+            "diagnostic_native__Idle_Shoot_AK_clip1.cast",
+            "diagnostic_native_ct_707_Idle_Shoot_AK_clip1.png"})
+            failures+=!expect(!assets::imported::nativeBodyAction("cso2",name),"reject unsupported CSO2 native action rather than infer rifle");
+        for(const auto game:{"cs1.6","css","csnz","cs2"})
+            failures+=!expect(!assets::imported::nativeBodyAction(game,"diagnostic_native_ct_707_Idle_Shoot_AK_clip1.cast"),"CSO2 naming policy is game scoped");
+    }
+    {
+        const auto action=assets::imported::nativeBodyAction("cs1.6","diagnostic_native_arctic_crouch_shoot_ak47_blend4_clip123.cast");
+        failures+=!expect(action&&action->identity=="arctic"&&action->semantic=="pt_rifle_crouch_fire","native center shooting identity and torso label");
+        const auto stand=assets::imported::nativeBodyAction("cs1.6","diagnostic_native_urban_ref_shoot_deagle_blend4_clip9.cast");
+        failures+=!expect(stand&&stand->identity=="urban"&&stand->semantic=="pt_pistol_stand_fire","native standing pistol fire");
+        const auto aim=assets::imported::nativeBodyAction("cs1.6","diagnostic_native_arctic_crouch_aim_ak47_blend4_clip123.cast");
+        failures+=!expect(aim&&aim->semantic=="pt_rifle_crouch_idle","center aim is holding torso posture");
+        for(const auto name:{"diagnostic_native_arctic_crouch_shoot_ak47_blend0_clip123.cast","diagnostic_native_arctic_crouch_shoot_ak47_blend4_clip.cast","diagnostic_native_arctic_crouch_aim_ak47_blend0_clip123.cast","diagnostic_native_arctic_crouch_shoot_unknown_blend4_clip123.cast"})
+            failures+=!expect(!assets::imported::nativeBodyAction("cs1.6",name),"reject noncenter/unknown native body action");
+        for(const auto game:{"cs2","css","cso2","csnz"})failures+=!expect(!assets::imported::nativeBodyAction(game,"diagnostic_native_arctic_crouch_shoot_ak47_blend4_clip123.cast"),"do not infer foreign blend conventions");
+    }
+    {
         namespace fs=std::filesystem;using namespace cadence::content;
         const auto root=fs::temp_directory_path()/("cadence_nested_catalog_"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         const auto packRoot=root/"exported_files/tools/Cadence/packs/a";
@@ -50,8 +87,30 @@ int main(){int failures{};
         failures+=!expect(assets::imported::dewBodySemantic(transition).empty(),"Halo transition or unrecognized suffix cannot become a locomotion loop");
     failures+=!expect(assets::imported::dewBodySemantic("ignored.cast","combat:rifle:idle:var0")=="pb_rifle_stand_idle","embedded native graph label supports exact idle variant");
     failures+=!expect(assets::imported::dewBodySemantic("ignored.cast","combat:dual:move_right")=="pb_dualwield_stand_run_right","embedded native graph label supports directional dual-wield movement");
+    failures+=!expect(assets::imported::dewBodySemantic("ignored.cast","combat:rifle:fire_1")=="pt_rifle_stand_fire","Halo rifle fire is a torso action");
+    failures+=!expect(assets::imported::dewBodySemantic("ignored.cast","combat:dual:fire_2")=="pt_dualwield_stand_fire","Halo dual fire retains weapon category");
+    failures+=!expect(assets::imported::dewBodySemantic("ignored.cast","combat:rifle:reload_1")=="pt_rifle_stand_reload","Halo ordinary reload is a torso action");
+    failures+=!expect(assets::imported::dewBodySemantic("ignored.cast","combat:rifle:br:fire_1")=="pt_rifle_stand_fire","Halo graph subtype preserves native firing");
+    failures+=!expect(assets::imported::dewBodySemantic("ignored.cast","combat:rifle:pr:fire_1:var3")=="pt_rifle_stand_fire","Halo subtype action variant preserved");
+    failures+=!expect(assets::imported::dewBodySemantic("ignored.cast","combat:dual:smg:reload_1_left")=="pt_dualwield_stand_reload","Halo subtype left reload retains dual family");
+    failures+=!expect(assets::imported::dewBodySemantic("ignored.cast","combat:rifle:br:fire_1:2:combat:idle").empty(),"Halo action transition is not ordinary fire");
+    failures+=!expect(assets::imported::dewBodySemantic("mp_elite_26901_combat_rifle_surprise_front_463.cast","combat:rifle:surprise_front").empty(),"Halo surprise is not idle");
     failures+=!expect(assets::imported::dewBodySemantic("masterchief_21000_combat_rifle_idle_353.cast","combat:rifle:idle:2:combat:walk_right").empty(),"embedded transition label overrides misleading filename");
     failures+=!expect(assets::imported::dewBodySemantic("ignored.cast","act:guard:idle:2:combat:unarmed:idle").empty(),"embedded nested combat scope is not locomotion");
+    for(const auto* label:{"any:unarmed:h_kill:front:gut:var1","s_kill:front:chest:var0","h_kill:back:head","any:unarmed:s_kill:right:gut:var0"})
+        failures+=!expect(assets::imported::dewBodySemantic("ignored.cast",label)=="pb_generic_stand_death","native directional fatal reaction admitted");
+    for(const auto* identity:{"masterchief_21000","mp_masterchief_6262","mp_elite_26901"})for(const auto* graph:{"any_unarmed_h_kill_front_gut_var1","s_kill_front_chest_var0","h_kill_back_head"}){
+        const auto filename=std::string(identity)+"_"+graph+"_1174.cast";
+        failures+=!expect(assets::imported::dewBodySemantic(filename)=="pb_generic_stand_death","strict exported fatal reaction discovered");
+        failures+=!expect(assets::imported::dewBodyIdentity(filename)==identity,"fatal reaction preserves exact native donor identity");
+    }
+    for(const auto* label:{"any:any:any:sync_actions:svs_ground_phonebooth_kill:victim","any:unarmed:h_kill:front:gut:var1:2:combat:idle","h_kill:up:head","h_kill:front:head:attacker","h_kill:front:gut:var","combat:rifle:kill","s_kill:front:chest:var0:extra"})
+        failures+=!expect(assets::imported::dewBodySemantic("ignored.cast",label).empty(),"synced contextual and malformed kill labels rejected");
+    for(const auto* filename:{"masterchief_bad_h_kill_front_gut_var1_1174.cast","masterchief_21000_h_kill_front_gut_var1_bad.cast","masterchief_21000_any_any_sync_actions_h_kill_front_gut_var1_1174.cast","masterchief_21000_h_kill_front_gut_var1_2_combat_idle_1174.cast","masterchief_21000_h_kill_front_gut_var1_extra_1174.cast"}){
+        failures+=!expect(assets::imported::dewBodySemantic(filename).empty(),"malformed fatal reaction filename rejected");
+        failures+=!expect(assets::imported::dewBodyIdentity(filename).empty(),"malformed fatal reaction cannot select donor");
+    }
+    failures+=!expect(assets::imported::dewBodySemantic("masterchief_21000_h_kill_front_gut_var1_1174.cast","sync:kill:attacker").empty(),"embedded native label takes priority over valid-looking filename");
     for(const auto* game:{"cs1.6","cz","cscz","css","csnz","cso2"}){
         const auto path=std::filesystem::path(game)/"models"/"flat.cast";
         failures+=!expect(assets::classifyModelPath(path,"v_ak47_hands")==assets::Role::ViewHands,"Source-family native hands classified in flat exports");

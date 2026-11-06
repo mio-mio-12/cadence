@@ -1,5 +1,6 @@
 #include "scene/PointBlankNative.h"
 #include "scene/PointBlankAdapter.h"
+#include "scene/ImportedViewRetarget.h"
 #include "render/StageRenderer.h"
 #include <GLFW/glfw3.h>
 #include <iostream>
@@ -9,7 +10,13 @@ int main(int argc,char**argv){
  const auto clipPath=std::filesystem::path(argv[3]);const auto idlePath=clipPath.parent_path()/(s.pointBlankWeaponStem+"_AttackIdle.cast");
  if(idlePath!=clipPath&&std::filesystem::exists(idlePath)){scene::appendAnimations(cast::Document::load(idlePath),s);s.animations.clear();}
  scene::appendAnimations(cast::Document::load(argv[3]),s);
- if(argc>5){if(std::string(argv[5])=="flip"){for(auto& m:s.meshes)for(auto& v:m.vertices)v.uv.y=1.f-v.uv.y;}else if(std::string(argv[5])!="native"&&!scene::pointblank::fitHands(s,cast::Document::load(argv[2]),cast::Document::load(argv[5]),error)){std::cerr<<error;return 8;}}
+ if(argc>5){if(std::string(argv[5])=="flip"){for(auto& m:s.meshes)for(auto& v:m.vertices)v.uv.y=1.f-v.uv.y;}else if(std::string(argv[5])!="native"){
+  const auto target=cast::Document::load(argv[5]);
+  const bool ok=argc>8&&std::string_view(argv[8])=="anatomical"
+   ?scene::imported::fitForeignViewSkin(s,scene::buildScene(target,false),error)
+   :scene::pointblank::fitHands(s,cast::Document::load(argv[2]),target,error);
+  if(!ok){std::cerr<<error;return 8;}
+ }}
  if(s.animations.empty()||s.animations[0].tracks.empty())return 3;
  if(argc>7&&std::string(argv[7])=="bind-owners"){
   auto reference=s;reference.animations.clear();scene::appendAnimations(cast::Document::load(idlePath),reference);auto local=reference.sampleLocalPose(0,0);std::vector<scene::Mat4> bind;

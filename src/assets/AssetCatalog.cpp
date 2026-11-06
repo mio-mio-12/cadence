@@ -177,6 +177,7 @@ Role classifyModelName(std::string_view input){const auto name=lower(input);
 }
 
 std::string categoryFromPath(const std::filesystem::path& path){
+    if(const auto category=imported::additionalCategory(gameFromPath(path),path.stem().string());!category.empty())return category;
     bool inWeapons=false;
     for(auto it=path.begin();it!=path.end();++it){
         const auto part=lower(it->string());
@@ -209,6 +210,7 @@ Role classifyModelPath(const std::filesystem::path& path,std::string_view stem){
         }catch(...){/* Missing/invalid metadata is not evidence of a hand rig. */}
     }
     const auto name=lower(stem);
+    if(gameFromPath(path)=="cs2"&&name.starts_with("worldmodel_"))return Role::WorldWeapon;
     if(const auto game=gameFromPath(path);imported::supported(game)){
         if(const auto role=imported::role(game,name))return *role;
         for(const auto& part:path)if(lower(part.string())=="player"||lower(part.string())=="playermodels")return Role::PlayerModel;

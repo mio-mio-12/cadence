@@ -2,6 +2,7 @@
 
 #include "gameplay/IwPresentation.h"
 #include "gameplay/AirborneAnimation.h"
+#include "gameplay/BotActionPlayback.h"
 #include "gameplay/BotSpVariety.h"
 #include "scene/TestCourse.h"
 #include "weapon/WeaponProfile.h"
@@ -156,6 +157,8 @@ struct Actor {
     bool spMotionOpportunity{},spAmbientScenario{};
     float spMotionDamagePending{};
     std::uint32_t id{};
+    bool experimentalRoam{};float experimentalRoamTime{};
+    std::uint32_t experimentalRoamSequence{};scene::Vec3 experimentalRoamGoal{};
     int modelVariant{};
     int weaponSlot{};
     std::size_t viewWeaponAsset{std::numeric_limits<std::size_t>::max()};
@@ -176,7 +179,9 @@ struct Actor {
     float mantleClearanceZ{-std::numeric_limits<float>::max()};
     float mantleElapsed{},mantleDuration{};
     Input input;
-    std::size_t animation{};
+    // No clip has been presented yet. Clip zero is a real library entry, not
+    // a safe spawn pose (it may be a mantle, death, or another one-shot).
+    std::size_t animation{std::numeric_limits<std::size_t>::max()};
     float animationFrame{};
     presentation::AirborneAnimation airborneAnimation;
     BehaviorState behavior{BehaviorState::Idle};
@@ -191,7 +196,13 @@ struct Actor {
     int recoveryDirection{1};
     bool targetVisible{};
     float health{100.0f},respawnTime{};
+    // World-space standing body top, independent of weapon bounds and eye height.
+    float standingCollisionHeight{iw::worldUnits(72)};
+    scene::Vec2 collisionHalfExtents{}; // Zero retains legacy rounded hull.
     bool alive{true};
+    double deathEffectStart{-1e9};
+    scene::Vec3 deathVelocity{},deathShotDirection{};
+    scene::Vec3 deathEffectPosition{};
     scene::Vec3 spawnPosition{};
     int ammo{30};
     float reloadTime{};
@@ -200,6 +211,7 @@ struct Actor {
     float fireCooldown{},firePoseTime{},muzzleFlashTime{};
     std::size_t actionAnimation{std::numeric_limits<std::size_t>::max()};
     float actionFrame{},actionBlendWeight{};
+    ActionCrossfade actionCrossfade;
     float lastActionShotTime{-1e9f};
     const NavigationGraph* navigation{};
     float movementIntentTime{},groundGrace{};
@@ -241,12 +253,49 @@ struct Actor {
 };
 
 // A new life retains identity and loadout, never an old action or trajectory.
+inline float collisionHeight(const Actor& actor,scene::Stance stance){
+    const float standing=std::isfinite(actor.standingCollisionHeight)&&actor.standingCollisionHeight>0?actor.standingCollisionHeight:iw::worldUnits(72);
+    return standing*(stance==scene::Stance::Stand?1.f:stance==scene::Stance::Crouch?40.f/72.f:20.f/72.f);
+}
+inline float collisionHeight(const Actor& actor){return collisionHeight(actor,actor.stance);}
+inline bool rectangularCollision(const Actor& actor){return std::isfinite(actor.collisionHalfExtents.x)&&std::isfinite(actor.collisionHalfExtents.y)&&actor.collisionHalfExtents.x>0&&actor.collisionHalfExtents.y>0;}
+template<class Map> inline scene::Vec3 constrainActorMove(const Map& map,const Actor& actor,scene::Vec3 from,scene::Vec3 to,float step,scene::Vec3* contact=nullptr){
+    if constexpr(requires {map.constrainMove(from,to,actor.collisionHalfExtents,collisionHeight(actor),step,contact);})
+        if(rectangularCollision(actor))return map.constrainMove(from,to,actor.collisionHalfExtents,collisionHeight(actor),step,contact);
+    if constexpr(requires {map.constrainMove(from,to,scene::course::kPlayerRadius,collisionHeight(actor),step,contact);})
+        return map.constrainMove(from,to,scene::course::kPlayerRadius,collisionHeight(actor),step,contact);
+    else return map.constrainMove(from,to,scene::course::kPlayerRadius,collisionHeight(actor),step);
+}
+template<class Map> inline bool navigationActorClear(const Map& map,const Actor& actor,scene::Vec3 from,scene::Vec3 to,float step){
+    if constexpr(requires {map.navigationSegmentClear(from,to,actor.collisionHalfExtents,collisionHeight(actor),step);})
+        if(rectangularCollision(actor))return map.navigationSegmentClear(from,to,actor.collisionHalfExtents,collisionHeight(actor),step);
+    return map.navigationSegmentClear(from,to,scene::course::kPlayerRadius,collisionHeight(actor),step);
+}
+inline bool selectLocomotionAnimation(Actor& actor,std::size_t selected,const std::vector<scene::Animation>& clips,bool preserveGaitPhase){
+    if(selected>=clips.size()||selected==actor.animation)return false;
+    const bool hasPrevious=actor.animation<clips.size();
+    actor.previousAnimation=hasPrevious?actor.animation:std::numeric_limits<std::size_t>::max();
+    actor.previousAnimationFrame=hasPrevious?actor.animationFrame:0.f;
+    actor.animation=selected;actor.animationFrame=0;
+    if(preserveGaitPhase&&hasPrevious){
+        const auto& before=clips[actor.previousAnimation];const auto& next=clips[selected];
+        const auto gait=[](scene::MotionRole motion){return motion==scene::MotionRole::Walk||motion==scene::MotionRole::Run||motion==scene::MotionRole::Sprint;};
+        if(gait(before.motion)&&gait(next.motion)&&before.durationFrames&&next.durationFrames)
+            actor.animationFrame=std::fmod(actor.previousAnimationFrame/static_cast<float>(before.durationFrames),1.f)*next.durationFrames;
+    }
+    actor.animationBlendElapsed=0;
+    return true;
+}
 inline void respawnActor(Actor& actor,scene::Vec3 spawn){
+    if(actor.experimentalRoam)spawn=actor.spawnPosition;
     Actor fresh;
     fresh.id=actor.id;fresh.modelVariant=actor.modelVariant;fresh.weaponSlot=actor.weaponSlot;
     fresh.viewWeaponAsset=actor.viewWeaponAsset;fresh.worldWeaponAsset=actor.worldWeaponAsset;
     fresh.weaponClass=actor.weaponClass;fresh.team=actor.team;
+    fresh.experimentalRoam=actor.experimentalRoam;
     fresh.cachedWeaponStats=actor.cachedWeaponStats;fresh.navigation=actor.navigation;
+    fresh.standingCollisionHeight=actor.standingCollisionHeight;
+    fresh.collisionHalfExtents=actor.collisionHalfExtents;
     fresh.perceptionScale=actor.perceptionScale;fresh.pursuitCommitment=actor.pursuitCommitment;
     fresh.routePersonality=actor.routePersonality;
     fresh.position=fresh.spawnPosition=fresh.previousPhysicsPosition=spawn;
@@ -575,7 +624,10 @@ inline void step(Actor& actor,float deltaSeconds,float moveScale=1.0f,bool useCo
         if(actor.grounded&&actor.spMovingScenario&&!actor.spScenarioInterrupted){actor.velocity.x=wishVelocity.x;actor.velocity.y=wishVelocity.y;}
         actor.velocity.z-=iw::kGravity*fixedStep;
         if(useCourseCollision){
-            actor.position=scene::course::constrainMove(oldPosition,actor.position+actor.velocity*fixedStep);const float ground=scene::course::groundHeight(actor.position.x,actor.position.y);const bool snapDown=actor.velocity.z<=0&&actor.position.z-ground<=scene::course::kStepHeight+iw::worldUnits(4.0f);if(actor.position.z<=ground||snapDown){actor.position.z=ground;if(actor.velocity.z<0)actor.velocity.z=0;actor.grounded=true;actor.groundGrace=0.12f;}else actor.grounded=false;
+            const auto proposed=actor.position+actor.velocity*fixedStep;
+            const bool customHull=rectangularCollision(actor)||actor.standingCollisionHeight!=iw::worldUnits(72);
+            const auto hull=rectangularCollision(actor)?actor.collisionHalfExtents:scene::Vec2{scene::course::kPlayerRadius,scene::course::kPlayerRadius};
+            actor.position=customHull?scene::course::constrainMove(oldPosition,proposed,hull,collisionHeight(actor)):scene::course::constrainMove(oldPosition,proposed);const float ground=scene::course::groundHeight(actor.position.x,actor.position.y);const bool snapDown=actor.velocity.z<=0&&actor.position.z-ground<=scene::course::kStepHeight+iw::worldUnits(4.0f);if(actor.position.z<=ground||snapDown){actor.position.z=ground;if(actor.velocity.z<0)actor.velocity.z=0;actor.grounded=true;actor.groundGrace=0.12f;}else actor.grounded=false;
         }else{
             actor.position=actor.position+actor.velocity*fixedStep;
         }

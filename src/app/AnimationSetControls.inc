@@ -76,7 +76,7 @@ void performPending(AppState& app,const std::filesystem::path& presetDirectory=d
         // Never leave its previously bound preview visible until the reload.
         e.pendingLoad=true;app.actionPreviewReady=false;app.actionPreviewPlaying=false;app.actionPreviewClip=SIZE_MAX;
     }
-    e.pendingOperation=0;e.pendingPreset.clear();
+    e.history.reset(e.draft);e.pendingOperation=0;e.pendingPreset.clear();
 }
 void request(AppState& app,int operation,const std::string& preset={}){
     auto& e=app.animationEditor;e.pendingOperation=operation;e.pendingPreset=preset;
@@ -84,6 +84,10 @@ void request(AppState& app,int operation,const std::string& preset={}){
 }
 void presets(AppState& app){
     auto& e=app.animationEditor;
+    e.history.observe(e.draft,ImGui::IsAnyItemActive());
+    ImGui::BeginDisabled(e.history.previous.empty());bool undo=ImGui::Button("Undo##animation");ImGui::EndDisabled();uiSameLine(60);
+    ImGui::BeginDisabled(e.history.next.empty());bool redo=ImGui::Button("Redo##animation");ImGui::EndDisabled();
+    if((undo&&e.history.undo(e.draft))||(redo&&e.history.redo(e.draft))){dirty(app);e.pendingLoad=true;}
     ImGui::SetNextItemWidth(220);
     const std::string label=(e.preset.empty()?"Unsaved set":e.preset)+(e.dirty?" *":"");
     if(ImGui::BeginCombo("##animation_preset",label.c_str())){const auto files=uiFileLists().get(directory(),"|.cfg|");for(const auto& file:*files)if(ImGui::Selectable(file.stem().string().c_str(),e.preset==file.stem().string()))request(app,1,file.stem().string());ImGui::EndCombo();}
@@ -165,7 +169,7 @@ void load(AppState& app){
 void browser(AppState& app){
     auto& e=app.animationEditor;const auto games=rippedGames(app);
     ImGui::SetNextItemWidth(-1);
-    if(ImGui::BeginCombo("##source_game",e.sourceGame.empty()?"Source game":e.sourceGame.c_str())){for(const auto& game:games)if(game!="cs2"&&ImGui::Selectable(game.c_str(),e.sourceGame==game)){e.sourceGame=game;e.pendingLoad=true;}ImGui::EndCombo();}
+    if(ImGui::BeginCombo("##source_game",e.sourceGame.empty()?"Source game":e.sourceGame.c_str())){for(const auto& game:games)if(ImGui::Selectable(game.c_str(),e.sourceGame==game)){e.sourceGame=game;e.pendingLoad=true;}ImGui::EndCombo();}
     const auto actionName=[](int i){return i?scene::actionRoleName(static_cast<scene::ActionRole>(i)):"Locomotion";};
     ImGui::SetNextItemWidth(-1);if(ImGui::BeginCombo("##action",actionName(e.action))){for(int i=0;i<=static_cast<int>(scene::ActionRole::Inspect);++i)if(ImGui::Selectable(actionName(i),e.action==i))e.action=i;ImGui::EndCombo();}
     if(e.action==0){ImGui::SetNextItemWidth(-1);if(ImGui::BeginCombo("##motion_filter",e.motionFilter<0?"All locomotion":scene::motionRoleName(static_cast<scene::MotionRole>(e.motionFilter)))){if(ImGui::Selectable("All locomotion",e.motionFilter<0))e.motionFilter=-1;for(int i=1;i<=int(scene::MotionRole::Ladder);++i)if(ImGui::Selectable(scene::motionRoleName(static_cast<scene::MotionRole>(i)),e.motionFilter==i))e.motionFilter=i;ImGui::EndCombo();}}
@@ -241,7 +245,7 @@ void viewport(AppState& app){
     auto& e=app.animationEditor;const auto games=rippedGames(app);
     if(ImGui::Checkbox("Match source game",&e.matchSource))e.pendingLoad=true;
     if(e.model<app.assetCatalog.entries.size()&&app.assetCatalog.entries[e.model].game==e.sourceGame){if(ImGui::Button("Use as source reference")){e.draft.models[e.sourceGame]=app.assetCatalog.entries[e.model].name;dirty(app);e.pendingLoad=true;e.status="Source reference: "+app.assetCatalog.entries[e.model].name;}}
-    if(!e.matchSource){ImGui::SetNextItemWidth(-1);if(ImGui::BeginCombo("##preview_game",e.modelGame.empty()?"Model game":e.modelGame.c_str())){for(const auto& g:games)if(g!="cs2"&&ImGui::Selectable(g.c_str(),e.modelGame==g)){e.modelGame=g;e.model=SIZE_MAX;e.pendingLoad=true;}ImGui::EndCombo();}}
+    if(!e.matchSource){ImGui::SetNextItemWidth(-1);if(ImGui::BeginCombo("##preview_game",e.modelGame.empty()?"Model game":e.modelGame.c_str())){for(const auto& g:games)if(ImGui::Selectable(g.c_str(),e.modelGame==g)){e.modelGame=g;e.model=SIZE_MAX;e.pendingLoad=true;}ImGui::EndCombo();}}
     ImGui::SetNextItemWidth(-1);
     const char* model=e.model<app.assetCatalog.entries.size()?app.assetCatalog.entries[e.model].name.c_str():"Choose model";
     if(ImGui::BeginCombo("##preview_model",model)){for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto& a=app.assetCatalog.entries[i];if(a.game==e.modelGame&&a.role==assets::Role::PlayerModel&&ImGui::Selectable(a.name.c_str(),e.model==i)){e.model=i;e.pendingLoad=true;}}ImGui::EndCombo();}
@@ -314,7 +318,7 @@ void applyBotAnimationSet(AppState& app,scene::CastScene& actor,const std::strin
     // Reference overrides are local to this application pass, including caches.
     ImportedBodyPreparationCache referenceCache;auto* previousCache=activeImportedBodyPreparation;activeImportedBodyPreparation=&referenceCache;
     struct RestoreCache {ImportedBodyPreparationCache* previous;~RestoreCache(){activeImportedBodyPreparation=previous;}} restoreCache{previousCache};
-    for(const auto& [key,enabled]:app.animationSet.requested()){if(!enabled)continue;const auto& game=std::get<0>(key);const auto& file=std::get<2>(key);if(game=="cs2"||missingReferences.contains(game))continue;
+    for(const auto& [key,enabled]:app.animationSet.requested()){if(!enabled)continue;const auto& game=std::get<0>(key);const auto& file=std::get<2>(key);if(missingReferences.contains(game))continue;
         std::string reference;const auto setup=app.gameReferenceSetups.find(game);if(setup!=app.gameReferenceSetups.end()&&setup->second.playermodelAsset<app.assetCatalog.entries.size())reference=app.assetCatalog.entries[setup->second.playermodelAsset].path.string();
         const auto cacheKey=std::make_pair(key,reference);
         const auto matches=[&](const scene::Animation& a){return a.sourceGame==game&&int(a.action)==std::get<1>(key)&&cadence::AnimationSet::file(a.sourceName)==file&&animationui::available(a);};

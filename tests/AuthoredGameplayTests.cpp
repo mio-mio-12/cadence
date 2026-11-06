@@ -52,6 +52,12 @@ int main(int argc,char** argv){try{
     gameplay::authored::LadderState s;Vec3 p{20,0,0},v{};bool grounded=true;
     check(gameplay::authored::ladder(s,map,p,v,grounded,{-1,0,0},1,false,.02f,10,100)&&s.active&&p.z>0,"ladder ascent");
     const float z=p.z;gameplay::authored::ladder(s,map,p,v,grounded,{-1,0,0},0,false,.02f,10,100);check(p.z==z,"ladder hold drifts");
+    check(std::abs(z-12.8f)<.001f,"default ladder speed must be four times legacy");
+    {gameplay::authored::LadderState slow;Vec3 pos{20,0,0},vel{};bool ground=true;
+     gameplay::authored::ladder(slow,map,pos,vel,ground,{-1,0,0},1,false,.02f,10,100,{},1.f);
+     check(std::abs(pos.z-3.2f)<.001f,"custom ladder multiplier ignored");
+     gameplay::authored::ladder(slow,map,pos,vel,ground,{-1,0,0},-1,false,.02f,10,100,{},1.f);
+     check(std::abs(pos.z)<.001f,"ladder descent multiplier ignored");}
     gameplay::authored::ladder(s,map,p,v,grounded,{-1,0,0},1,true,.02f,10,100);check(!s.active&&v.z>0&&v.x>0,"ladder jump off");
     check(!gameplay::authored::ladder(s,map,p,v,grounded,{-1,0,0},1,false,.01f,10,100),"ladder instantly regrabs");
     gameplay::bot::Actor a;gameplay::bot::BehaviorConfig c;std::vector<authored::Destination> goals={{{1000,0,0},1,"BOTNaviSpot"},{{0,1000,0},1,"CampSpot"}};

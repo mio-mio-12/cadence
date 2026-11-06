@@ -1,0 +1,2 @@
+Name: mc/test_solid
+Techset: mc_l_sm_r0c0d0n0s0p0_sat

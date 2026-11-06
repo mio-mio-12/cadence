@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
 #undef main
@@ -11,24 +10,28 @@ int main(int argc,char** argv){try{
     glfwMakeContextCurrent(window);ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;
     auto state=std::make_unique<AppState>();auto& app=*state;app.window=window;app.deferSceneUpload=true;
     std::string error;require(app.renderer.initialize(error),error);
-    app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
-    for(const auto game:{"bo2","cs1.6","css","csnz","cso2","eldewrito"})require(assets::appendScan(app.defaultSalukiDirectory/game,game,app.assetCatalog,error),error);
+    app.defaultSalukiDirectory="exported_files";
+    for(const auto game:{"bo2","cs1.6","css","csnz","cso2","eldewrito","gitsfa","dirtybomb","blacksquad"})require(assets::appendScan(app.defaultSalukiDirectory/game,game,app.assetCatalog,error),error);
     const auto pick=[&](std::string_view game,assets::Role role,std::string_view wanted){
         for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto& a=app.assetCatalog.entries[i];if(a.game==game&&a.role==role&&a.name==wanted)return i;}
         return SIZE_MAX;
     };
     const auto out=argc>1?std::filesystem::path(argv[1]):std::filesystem::path("diagnostics/world-replay");std::filesystem::create_directories(out);
     std::ofstream report(out/"results.txt");int failures{};
-    struct Case{const char* game;const char* name;};
+    struct Case{std::string game;std::string name;};
+    const bool newImports=std::getenv("CADENCE_AUDIT_NEW_IMPORTS")!=nullptr;
     const bool eldControls=std::getenv("CADENCE_AUDIT_ELD_WORLD_CONTROLS")!=nullptr;
     const bool explicitGripControl=std::getenv("CADENCE_AUDIT_EXPLICIT_WORLD_GRIP")!=nullptr;
     std::vector<Case> cases={{"cs1.6","viewmodel_rifle_v_ak47"},{"css","viewmodel_rifle_v_rif_ak47"},{"csnz","viewmodel_v_luger"},{"cso2","viewmodel_rifle_v_ak47"},{"eldewrito","assault_rifle_3467_fp_0_20976_weapon"}};
     if(eldControls)cases={{"eldewrito","assault_rifle_3467_fp_0_20976_weapon"},{"eldewrito","battle_rifle_7748_fp_0_20976_weapon"},{"eldewrito","covenant_carbine_1622_fp_0_20976_weapon"},{"eldewrito","magnum_7952_fp_0_20976_weapon"}};
-    for(const auto& fixture:cases)for(const auto bodyGame:{"bo2","cso2"})for(bool forcePlaceholder:{false,true}){
+    if(newImports){cases.clear();for(const auto& a:app.assetCatalog.entries)if(assets::imported::additionalFamily(a.game)&&a.role==assets::Role::ViewWeapon&&a.category=="rifle"&&std::none_of(cases.begin(),cases.end(),[&](const auto& c){return c.game==a.game;}))cases.push_back({a.game,a.name});}
+    const std::vector<std::string> bodies=newImports?std::vector<std::string>{"bo2","cso2","gitsfa","dirtybomb","blacksquad"}:std::vector<std::string>{"bo2","cso2"};
+    for(const auto& fixture:cases)for(const auto& bodyGame:bodies)for(bool forcePlaceholder:{false,true}){
         const std::string label=std::string(eldControls?fixture.name:fixture.game)+"_on_"+bodyGame+(forcePlaceholder?"_placeholder":"_selected");
         try{
             const auto viewIndex=pick(fixture.game,assets::Role::ViewWeapon,fixture.name);
-            const auto bodyIndex=pick(bodyGame,assets::Role::PlayerModel,std::string_view(bodyGame)=="bo2"?"c_chn_mp_pla_assault_fb_LOD0":"ct_sas");
+            auto bodyIndex=pick(bodyGame,assets::Role::PlayerModel,std::string_view(bodyGame)=="bo2"?"c_chn_mp_pla_assault_fb_LOD0":"ct_sas");
+            if(assets::imported::additionalFamily(bodyGame))for(std::size_t i=0;i<app.assetCatalog.entries.size();++i)if(app.assetCatalog.entries[i].game==bodyGame&&app.assetCatalog.entries[i].role==assets::Role::PlayerModel){bodyIndex=i;break;}
             require(viewIndex!=SIZE_MAX&&bodyIndex!=SIZE_MAX,"Exact fixture asset not in catalog");
             const auto& view=app.assetCatalog.entries[viewIndex];const auto& body=app.assetCatalog.entries[bodyIndex];
             auto live=scene::buildScene(cast::Document::load(body.path));

@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #include "cast/CastDocument.h"
 #include "scene/CastScene.h"
 
@@ -23,7 +22,7 @@ bool finite(const Mat4& value){return std::all_of(value.v.begin(),value.v.end(),
 }
 
 int main(int argc,char** argv){
-    const std::filesystem::path root=argc>1?std::filesystem::u8path(argv[1]):std::filesystem::path{cadence::local_assets::exportPath("")};
+    const std::filesystem::path root=argc>1?std::filesystem::u8path(argv[1]):std::filesystem::path{R"(exported_files)"};
     const auto sourceDocument=cast::Document::load(root/R"(cs2\models\viewhands\viewhands_model.cast)");
     const auto targetDocument=cast::Document::load(root/R"(bo2\models\viewhands\seal6\c_usa_mp_seal6_longsleeve_viewhands\c_usa_mp_seal6_longsleeve_viewhands_LOD0.cast)");
     if(!sourceDocument.valid()||!targetDocument.valid()){std::cerr<<"Missing authoritative CS2 or BO2 viewhands\n";return 2;}

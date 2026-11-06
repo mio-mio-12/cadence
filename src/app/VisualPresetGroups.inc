@@ -12,6 +12,7 @@ template<class App> auto water_placementValues(App& app){return std::tie(app.wat
 template<class App> auto map_alphaValues(App& app){return std::tie(app.ignoreMapTextureAlpha);}
 template<class App> auto sky_calibrationValues(App& app){return std::tie(app.skyFaceSources[0],app.skyFaceQuarterTurns[0],app.skyFaceSources[1],app.skyFaceQuarterTurns[1],app.skyFaceSources[2],app.skyFaceQuarterTurns[2],app.skyFaceSources[3],app.skyFaceQuarterTurns[3],app.skyFaceSources[4],app.skyFaceQuarterTurns[4],app.skyFaceSources[5],app.skyFaceQuarterTurns[5]);}
 template<class App,class F> void forEachExtendedVisualGroup(App& app,F&& visit){
+    visit("metal_shader",render::metal::values(app.metalShader));
     visit("map_alpha",map_alphaValues(app));
     visit("hitmarker_shape",hitmarker_shapeValues(app));
     visit("hitmarker_colors",hitmarker_colorsValues(app));

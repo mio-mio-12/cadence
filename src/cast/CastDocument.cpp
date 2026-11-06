@@ -10,9 +10,13 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <mutex>
 
 namespace cast {
 namespace {
+struct ResidentDocument { std::shared_ptr<const Document> document; std::filesystem::file_time_type stamp; std::uintmax_t size; };
+std::mutex residentMutex;
+std::unordered_map<std::string,ResidentDocument> residentDocuments;
 
 constexpr std::size_t kFileHeaderSize = 16;
 constexpr std::size_t kNodeHeaderSize = 24;
@@ -227,6 +231,10 @@ std::string Node::displayName() const {
 
 Document Document::load(const std::filesystem::path& original) {
     const auto path=cadence::content::resolve(original);
+    std::optional<ResidentDocument> cached;
+    {std::lock_guard lock(residentMutex);const auto it=residentDocuments.find(cadence::content::key(path));if(it!=residentDocuments.end())cached=it->second;}
+    if(cached){std::error_code ec;const auto stamp=std::filesystem::last_write_time(path,ec);const auto size=std::filesystem::file_size(path,ec);
+        if(!ec&&cached->stamp==stamp&&cached->size==size){cadence::content::observeDocument(path);return *cached->document;}}
     std::ifstream stream(path, std::ios::binary | std::ios::ate);
     if (!stream) {
         Document result;
@@ -255,6 +263,27 @@ Document Document::load(const std::filesystem::path& original) {
     auto result=parse(std::move(bytes), path.string());
     if(result.valid())cadence::content::observeDocument(path);
     return result;
+}
+
+std::size_t Document::residentBytes() const {
+    std::size_t total=sizeof(Document)+bytes_->capacity()+sourceName_.capacity();
+    const auto visit=[&](auto&& self,const std::vector<Node>& nodes)->void{
+        total+=nodes.capacity()*sizeof(Node);
+        for(const auto& node:nodes){total+=node.properties.capacity()*sizeof(Property);for(const auto& p:node.properties){total+=p.name.capacity()+p.type.capacity();if(p.stringValue)total+=p.stringValue->capacity();}self(self,node.children);}
+    };visit(visit,roots_);for(const auto& d:diagnostics_)total+=sizeof(d)+d.message.capacity();return total;
+}
+std::size_t Document::preload(const std::filesystem::path& original){
+    const auto path=cadence::content::resolve(original);std::error_code ec;
+    const auto stamp=std::filesystem::last_write_time(path,ec);if(ec)return 0;
+    const auto size=std::filesystem::file_size(path,ec);if(ec)return 0;
+    auto doc=std::make_shared<Document>(load(path));if(!doc->valid())return 0;
+    if(std::filesystem::last_write_time(path,ec)!=stamp||ec||std::filesystem::file_size(path,ec)!=size||ec)return 0;
+    const auto bytes=doc->residentBytes();std::lock_guard lock(residentMutex);
+    residentDocuments.insert_or_assign(cadence::content::key(path),ResidentDocument{std::move(doc),stamp,size});return bytes;
+}
+void Document::releasePreload(const std::filesystem::path& original){
+    std::shared_ptr<const Document> removed;
+    {std::lock_guard lock(residentMutex);const auto it=residentDocuments.find(cadence::content::key(original));if(it!=residentDocuments.end()){removed=std::move(it->second.document);residentDocuments.erase(it);}}
 }
 
 Document Document::parse(std::vector<std::byte> bytes, std::string sourceName) {

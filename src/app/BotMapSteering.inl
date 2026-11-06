@@ -11,6 +11,7 @@ void steerSpBotOnMap(AppState& app,gameplay::bot::Actor& bot,float delta,float y
     const bool workTurn=static_cast<std::size_t>(&bot-app.bots.data())==app.botRouteWorkTurn;
     std::uint64_t probeRevision=app.loadedMap->collisionRevision;
     const auto addRevision=[&](float v){probeRevision=(probeRevision*1099511628211ULL)^std::bit_cast<std::uint32_t>(v);};
+    addRevision(app.playerClipWidthCm);addRevision(app.playerClipDepthCm);addRevision(app.playerClipHeightCm);
     for(const auto& block:activeBotNavigation(app).blocks)for(float v:{block.minimum.x,block.minimum.y,block.minimum.z,block.maximum.x,block.maximum.y,block.maximum.z})addRevision(v);
     addRevision(float(activeBotNavigation(app).boundary.enabled));addRevision(activeBotNavigation(app).boundary.floorZ);addRevision(activeBotNavigation(app).boundary.ceilingZ);
     for(const auto& p:activeBotNavigation(app).boundary.points){addRevision(p.x);addRevision(p.y);}
@@ -39,25 +40,25 @@ void steerSpBotOnMap(AppState& app,gameplay::bot::Actor& bot,float delta,float y
                 if(landing.z<from.z-gameplay::iw::worldUnits(128)||landing.z>from.z||horizontalDistance(from,landing)>180.f||navigationBlocked(activeBotNavigation(app),landing))return std::nullopt;
                 if(boundary.enabled&&(landing.z<boundary.floorZ||landing.z>boundary.ceilingZ||(!boundary.points.empty()&&!pointInPolygon({landing.x,landing.y},boundary.points))))return std::nullopt;
                 const scene::Vec3 over{landing.x,landing.y,from.z};
-                const auto across=gameplay::mantle::sweepRounded(*app.loadedMap,from,over,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72));
-                const auto down=gameplay::mantle::sweepRounded(*app.loadedMap,over,landing,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72));
+                const auto across=actorCollisionSweep(app,*app.loadedMap,from,over,scene::course::kPlayerRadius,collisionHeight(bot,scene::Stance::Stand),true);
+                const auto down=actorCollisionSweep(app,*app.loadedMap,over,landing,scene::course::kPlayerRadius,collisionHeight(bot,scene::Stance::Stand),true);
                 if(across.startSolid||across.fraction<.9999f||down.startSolid||down.fraction<.9999f)return std::nullopt;
                 return landing;
             }
             // A level segment can be validated by one continuous full-body
             // sweep. Avoid the legacy step solver inventing a raised landing
             // while merely moving away from an existing wall contact.
-            const bool authoredCrouch=app.loadedMap->gameplay.crouch(from,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72))||app.loadedMap->gameplay.crouch(next,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72));
-            const float routeHeight=gameplay::iw::worldUnits(authoredCrouch?40:72);
+            const bool authoredCrouch=app.loadedMap->gameplay.crouch(from,scene::course::kPlayerRadius,collisionHeight(bot,scene::Stance::Stand))||app.loadedMap->gameplay.crouch(next,scene::course::kPlayerRadius,collisionHeight(bot,scene::Stance::Stand));
+            const float routeHeight=collisionHeight(bot,authoredCrouch?scene::Stance::Crouch:scene::Stance::Stand);
             if(std::abs(rise)<.1f){
-                const auto clear=gameplay::mantle::sweepRounded(*app.loadedMap,from+scene::Vec3{0,0,.04f},next+scene::Vec3{0,0,.04f},scene::course::kPlayerRadius,routeHeight);
+                const auto clear=actorCollisionSweep(app,*app.loadedMap,from+scene::Vec3{0,0,.04f},next+scene::Vec3{0,0,.04f},scene::course::kPlayerRadius,routeHeight,true);
                 if(!clear.startSolid&&clear.fraction>=.9999f){from=next;continue;}
             }
             // Support was checked above. Do not run navigationSegmentClear's
             // second, looser ground-height query: an overlaid lip can mask the
             // supported lower floor there. Physics' capsule solver below owns
             // blockers, body clearance and permitted steps.
-            const auto constrained=app.loadedMap->constrainMove(from,next,scene::course::kPlayerRadius,routeHeight,scene::course::kStepHeight/1.25f);
+            const auto constrained=constrainCollisionMap(app,*app.loadedMap,from,next,scene::course::kPlayerRadius,routeHeight,scene::course::kStepHeight/1.25f);
             if(horizontalDistance(constrained,next)>1.f||constrained.z>from.z+scene::course::kStepHeight+.1f)return std::nullopt;
             from=next;
         }
@@ -69,9 +70,9 @@ void steerSpBotOnMap(AppState& app,gameplay::bot::Actor& bot,float delta,float y
         const float top=app.loadedMap->groundHeight(desired.x,desired.y,from.z+gameplay::iw::worldUnits(57)-45.f,-1e9f);
         if(top<from.z+scene::course::kStepHeight||top>from.z+gameplay::iw::worldUnits(57))return {};
         const auto direction=scene::normalize(scene::Vec3{desired.x-from.x,desired.y-from.y,0});
-        auto climb=gameplay::mantle::findClimbTo(*app.loadedMap,from,{desired.x,desired.y,top},scene::course::kPlayerRadius,gameplay::iw::worldUnits(72),scene::course::kStepHeight,gameplay::iw::worldUnits(57),gameplay::iw::worldUnits(42),gameplay::iw::worldUnits(24));
-        if(!climb)climb=gameplay::authored::climb(*app.loadedMap,from,direction,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72),scene::course::kStepHeight,gameplay::iw::worldUnits(57),gameplay::iw::worldUnits(42),gameplay::iw::worldUnits(24),1,false);
-        if(!climb)climb=gameplay::mantle::findClimb(*app.loadedMap,from,direction,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72),scene::course::kStepHeight,gameplay::iw::worldUnits(57),gameplay::iw::worldUnits(42),gameplay::iw::worldUnits(24));
+        auto climb=gameplay::mantle::findClimbTo(*app.loadedMap,from,{desired.x,desired.y,top},scene::course::kPlayerRadius,collisionHeight(bot,scene::Stance::Stand),scene::course::kStepHeight,gameplay::iw::worldUnits(57),gameplay::iw::worldUnits(42),gameplay::iw::worldUnits(24));
+        if(!climb)climb=gameplay::authored::climb(*app.loadedMap,from,direction,scene::course::kPlayerRadius,collisionHeight(bot,scene::Stance::Stand),scene::course::kStepHeight,gameplay::iw::worldUnits(57),gameplay::iw::worldUnits(42),gameplay::iw::worldUnits(24),1,false);
+        if(!climb)climb=gameplay::mantle::findClimb(*app.loadedMap,from,direction,scene::course::kPlayerRadius,collisionHeight(bot,scene::Stance::Stand),scene::course::kStepHeight,gameplay::iw::worldUnits(57),gameplay::iw::worldUnits(42),gameplay::iw::worldUnits(24));
         if(climb){
             const auto& boundary=activeBotNavigation(app).boundary;
             const bool inside=!boundary.enabled||(climb->target.z>=boundary.floorZ&&climb->target.z<=boundary.ceilingZ&&(boundary.points.empty()||pointInPolygon({climb->target.x,climb->target.y},boundary.points)));
@@ -110,7 +111,7 @@ void steerSpBotOnMap(AppState& app,gameplay::bot::Actor& bot,float delta,float y
             if(boundary.enabled&&(candidate.z<boundary.floorZ||candidate.z>boundary.ceilingZ||(!boundary.points.empty()&&!pointInPolygon({candidate.x,candidate.y},boundary.points))))continue;
             const float support=app.loadedMap->navigationGroundHeight(candidate.x,candidate.y,candidate.z+scene::course::kStepHeight+1,-1e9f,scene::course::kPlayerRadius*.55f);
             if(std::abs(support-candidate.z)>20.f)continue;
-            if(gameplay::mantle::sweepRounded(*app.loadedMap,candidate,candidate,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72)).startSolid)continue;
+            if(actorCollisionSweep(app,*app.loadedMap,candidate,candidate,scene::course::kPlayerRadius,collisionHeight(bot,scene::Stance::Stand),true).startSolid)continue;
             if(scene::length(candidate-goal)>1.f)route.reset();
             goal=bot.spMoveGoal=candidate;break;
         }
@@ -144,10 +145,12 @@ void steerSpBotOnMap(AppState& app,gameplay::bot::Actor& bot,float delta,float y
     // this frame. All bots still advance steering, physics and poses each frame.
     // Endpoint validation is owned by the resumable search, not repeated here.
     const MapRouteBudget budget{workTurn?256u:0u,std::chrono::steady_clock::now()+std::chrono::microseconds(1200),500.f,true};
-    const auto cachedProbe=[&](scene::Vec3 from,scene::Vec3 to){return app.botRouteProbeCache.query(from,to,probe);};
+    const auto cachedProbe=[&](scene::Vec3 from,scene::Vec3 to){return app.botRouteProbeCache.query(from,to,probe,collisionHeight(bot,scene::Stance::Stand));};
     if(workTurn&&route.status!=MapRouteStatus::Following){
         unsigned attempts=0;
         for(const auto& peer:app.botSpRoutes){
+            const auto peerIndex=static_cast<std::size_t>(&peer-app.botSpRoutes.data());
+            if(peerIndex>=app.bots.size()||collisionHeight(app.bots[peerIndex],scene::Stance::Stand)!=collisionHeight(bot,scene::Stance::Stand))continue;
             if(std::chrono::steady_clock::now()>=budget.deadline||attempts>=4)break;
             const auto joinProbe=[&](scene::Vec3 from,scene::Vec3 to){++attempts;return cachedProbe(from,to);};
             if(joinMapRoute(route,bot.position,goal,peer,joinProbe))break;
@@ -160,7 +163,7 @@ void steerSpBotOnMap(AppState& app,gameplay::bot::Actor& bot,float delta,float y
         if(result.status==MapRouteStatus::Following&&workTurn&&bot.spMantleProbeTime<=0&&bot.grounded&&bot.reloadTime<=0&&!bot.spMovingScenario&&to.z>scene::course::kStepHeight&&horizontalDistance(bot.position,*result.waypoint)<180.f){
             bot.spMantleProbeTime=.2f;const auto direction=scene::normalize(scene::Vec3{to.x,to.y,0});
             if(scene::dot(direction,scene::Vec3{std::cos(bot.yaw),std::sin(bot.yaw),0})>.85f)
-            if(auto climb=gameplay::mantle::findClimbTo(*app.loadedMap,bot.position,*result.waypoint,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72),scene::course::kStepHeight,gameplay::iw::worldUnits(57),gameplay::iw::worldUnits(42),gameplay::iw::worldUnits(24))){
+            if(auto climb=gameplay::mantle::findClimbTo(*app.loadedMap,bot.position,*result.waypoint,scene::course::kPlayerRadius,collisionHeight(bot,scene::Stance::Stand),scene::course::kStepHeight,gameplay::iw::worldUnits(57),gameplay::iw::worldUnits(42),gameplay::iw::worldUnits(24))){
                 bot.mantling=true;bot.mantleStart=bot.position;bot.mantleEnd=climb->target;bot.mantleClearanceZ=climb->clearanceZ;bot.mantleDuration=climb->duration;bot.mantleElapsed=0;bot.velocity={};bot.input={};return;
             }
         }

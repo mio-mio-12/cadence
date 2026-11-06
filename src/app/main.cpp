@@ -1,4 +1,16 @@
 #include "cast/CastDocument.h"
+#include "gameplay/ScoreDisplay.h"
+#include "gameplay/ScorePreview.h"
+#include "app/FontBrowser.h"
+#include "render/NativeReShade.h"
+#include "gameplay/CameraShake.h"
+#include "scene/PointBlankActionIdentity.h"
+#include "scene/ImportedDirtyBomb.h"
+#include "app/CameraEditHistory.h"
+#include "gameplay/YyV5.h"
+#include <functional>
+#include "render/ViewmodelProjection.h"
+#include "render/GlApi.h"
 #include "app/DemoLibrary.h"
 #include "app/AnimationSet.h"
 #include "app/AnimationSetRuntime.h"
@@ -8,11 +20,13 @@
 #include "app/VisualRandomizer.h"
 #include "app/DualWield.h"
 #include "app/LiveViewportRecorder.h"
+#include "app/ProResExportStream.h"
 #include <tuple>
 #include "app/WorldWeaponAssembly.h"
 #include "app/ReplayVisibility.h"
 #include "app/ReplayPresentation.h"
 #include "app/ReplayAssetRelocation.h"
+#include "app/ReferenceViewhands.h"
 #include "app/ReplayRecoil.h"
 #include "app/WorldActionBlend.h"
 #include "app/BackgroundLoad.h"
@@ -30,23 +44,31 @@
 #include "scene/ImportedBodyRetarget.h"
 #include "scene/ImportedBodyMotion.h"
 #include "scene/ImportedViewRetarget.h"
+#include "scene/NativeSupportAssembly.h"
 #include "scene/ImportedWorldGrip.h"
 #include "app/ImportedAnimationPolicy.h"
 #include "assets/CharacterParts.h"
 #include "assets/CharacterHands.h"
+#include "scene/Source2BodyPolicy.h"
 #include "scene/CharacterBounds.h"
 #include "gameplay/SurfacePenetration.h"
 #include "TakeRecordingCost.h"
 #include "assets/AnimationFileIndex.h"
 #include "TimedSnapshotCache.h"
 #include "app/UiFileLists.h"
+#include "app/SkyLibrary.h"
 #include "WeaponPickerCache.h"
 #include "DiagnosticLog.h"
 #include "gameplay/IwPresentation.h"
+#include "gameplay/WeaponTurn.h"
 #include "gameplay/WorldActorPresentation.h"
+#include "gameplay/BodyPresentation.h"
+#include "gameplay/CharacterCollision.h"
+#include "gameplay/PlayerCollisionControls.h"
 #include "gameplay/BotRouteProbeCache.h"
 #include "gameplay/SourceMovement.h"
 #include "gameplay/ReferenceMovement.h"
+#include "gameplay/CssMovement.h"
 #include "gameplay/Iw4Switch.h"
 #include "gameplay/ExoInput.h"
 #include "gameplay/ActionCancelPolicy.h"
@@ -58,6 +80,9 @@
 #include "gameplay/BotActor.h"
 #include "gameplay/BotAreaPing.h"
 #include "gameplay/BotPresentation.h"
+#include "gameplay/DeathRagdoll.h"
+#include "gameplay/DeathRagdollContact.h"
+#include "gameplay/WeaponDrop.h"
 #include "gameplay/BotMapRouting.h"
 #include "gameplay/BotMapPhysics.h"
 #include "gameplay/BotSpVariety.h"
@@ -87,6 +112,7 @@
 #include "scene/TestCourse.h"
 #include "take/Take.h"
 #include "take/MemoryUsage.h"
+#include "take/TrimHistory.h"
 #include "take/DollyCamera.h"
 #include "weapon/WeaponProfile.h"
 #include "gameplay/KnifeHit.h"
@@ -94,6 +120,7 @@
 #include "BotAnimationQueryKey.h"
 #include "Bo2LoadoutDefaults.h"
 #include "PreparedAnimationLibrary.h"
+#include "GamePreload.h"
 #include "IwReloadSequence.h"
 #include "CatalogRemap.h"
 #include "BotDeathPolicy.h"
@@ -132,6 +159,7 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 #endif
+#include "Gamepad.h"
 
 #include <filesystem>
 #include <fstream>
@@ -139,6 +167,7 @@
 #include <iomanip>
 #include <memory>
 #include <iostream>
+#include "gameplay/PracticeTools.h"
 #include <limits>
 #include <optional>
 #include <string>
@@ -246,6 +275,14 @@ struct PlayerInputRecorder {
 
 struct PreparedTakeOpen;
 struct AppState {
+    bool runtimePaused{},runtimeResumePending{};
+    ImVec2 lastViewportImageSize{};
+    bool takeDirty{},allowTakeReplace{},closeRequested{};
+    std::filesystem::path takeFilePath;
+    std::function<void()> pendingTakeAction;
+    std::string uiOperationError;
+    std::string takeLoadError;
+    cadence::ui::History<cadence::ui::CameraEdits> cameraHistory;
     mutable cadence::WeaponPickerCache weaponPickerCache;
     // Set only on a background class-load worker; never survives a load request.
     std::unique_ptr<assets::AnimationFileIndex> classAnimationIndex;
@@ -271,12 +308,29 @@ struct AppState {
     std::size_t yyLiveAnimation{SIZE_MAX};
     float yyLiveFrame{},yyLiveRate{1.f};
     bool yyLiveLoop{};
+    bool interruptUsesYyCurve{};
+    gameplay::view::ResponseCurve interruptYyCurve{};
     std::vector<scene::Mat4> yyLiveReference;
     float interruptPoseElapsed{},interruptPoseDuration{};
     scene::Mat4 viewmodelRigAnchor{scene::Mat4::identity()};
     bool viewmodelRigAnchorValid{},interruptPoseCameraRelative{};
     float actionBlendTime{0.045f};
     float viewBobScale{0.05f};
+    bool experimentalWeaponTurning{true};
+    float weaponTurningHipMultiplier{1.f},weaponTurningAdsMultiplier{1.f};
+    bool killer7Deaths{};
+    gameplay::ragdoll::Settings deathRagdoll;
+    std::vector<gameplay::ragdoll::State> botRagdolls;
+    gameplay::ragdoll::Bodies retainedBodies;
+    gameplay::ragdoll::WeaponDropSettings weaponDrop;
+    std::shared_ptr<gameplay::ragdoll::DropWorld> weaponDropWorld;
+    std::vector<std::pair<std::size_t,std::size_t>> botWeaponAttachmentRanges;
+    const void* ragdollRigIdentity{};
+    const void* ragdollMapIdentity{};
+    bool heavenSmileKeepDeathAnimations{};
+    bool heavenSmileBloodStreams{};
+    scene::Vec3 heavenSmileColor{1.f,0.f,0.f};
+    gameplay::weapon_turn::State weaponTurn;
     bool transitioning{};
     float playbackSpeed{1.0f};
     bool playing{true};
@@ -320,7 +374,7 @@ struct AppState {
     float cameraPitch{0.38f};
     float cameraDistance{5.0f};
     int attachmentBone{};
-    bool previewAttachmentBone{true};
+    bool previewAttachmentBone{};
     std::array<char,128> animationSearch{};
     int domainFilter{};
     int actionFilter{};
@@ -356,6 +410,9 @@ struct AppState {
     take::Take recordedTake;
     cadence::content::DemoLibrary demoLibrary;
     std::shared_ptr<PreparedTakeOpen> pendingPreparedTakeOpen;
+    std::shared_ptr<AppState> takePreparationWorker;
+    std::optional<std::future<std::shared_ptr<PreparedTakeOpen>>> takePreparationFuture;
+    bool takePreparationSetMap{};
     take::MemoryUsage takeMemory;
     int takeMemoryWarningMiB{2048};
     bool takeRecording{};
@@ -370,7 +427,8 @@ struct AppState {
     float takeTime{};
     float takeAccumulator{};
     float takePlaybackSpeed{1.0f};
-    float takeTrimStart{},takeTrimEnd{};
+    int takeTrimStart{},takeTrimEnd{};
+    take::TrimHistory takeTrimHistory;
     std::array<char,64> campathName{};
     int selectedCampath{-1};
     bool showCampathSpline{true},forceCampathSpline{false};
@@ -391,16 +449,16 @@ struct AppState {
     bool graphShowPosX{true},graphShowPosY{true},graphShowPosZ{true},graphShowPitch{true},graphShowYaw{true},graphShowRoll{true},graphShowFov{true};
     bool experimentalAutoBotSetup{true};
     bool sniperTrailEnabled{true};
-    float sniperTrailLifetime{0.75f};
+    float sniperTrailLifetime{1.80f};
     float sniperTrailWidth{1.8f};
-    scene::Vec3 sniperTrailColor{0.95f, 0.85f, 0.40f};
+    scene::Vec3 sniperTrailColor{50.f/255.f, 50.f/255.f, 50.f/255.f};
     float sniperTrailEmissive{3.5f};
     float sniperTrailFeathering{0.30f};
     bool sniperTrailEmissiveEnabled{true};
     float sniperTrailStartTaper{1.0f};
     float sniperTrailEndTaper{1.0f};
     bool sniperTrailSprite{false};
-    gameplay::view::ResponseCurve sniperTrailTaper{};
+    gameplay::view::ResponseCurve sniperTrailTaper{1.f,5,{{{0.f,0.10f},{0.056f,1.f},{0.31f,1.64f},{0.498f,1.f},{1.f,0.90f}}}};
     bool projectileTrailEnabled{true};
     float projectileTrailSpeed{14000.0f};
     float projectileTrailLength{65.0f};
@@ -417,6 +475,7 @@ struct AppState {
     float bulletTrailEdgePower{2.5f};
     scene::Vec3 bulletTrailEdgeTint{0.80f, 0.35f, 0.08f};
     bool csgoClassicCrosshair{false};
+    bool crosshairHideWhileAds{true};
     bool csgoCrosshairCenterDot{true};
     bool csgoCrosshairDynamic{true};
     float csgoCrosshairScale{1.0f};
@@ -466,14 +525,11 @@ struct AppState {
     float exportEnd{};
     std::filesystem::path exportFolder;
     std::filesystem::path exportMoviePath;
-    FILE* exportMoviePipe{};
-    FILE* exportDepthPipe{};
-    FILE* exportViewmodelPipe{};
-    FILE* exportNavigationPipe{};
+    std::unique_ptr<cadence::capture::ProResExportStream> exportMoviePipe,exportDepthPipe,
+        exportViewmodelPipe,exportPlayermodelPipe,exportNavigationPipe;
     bool exportProRes{};
     bool exportBeautyPass{true},exportDepthPass{},exportViewmodelPass{};
-    bool exportViewmodelAlpha{};
-    scene::Vec3 exportViewmodelBackground{0.0f,1.0f,0.0f};
+    bool exportPlayermodelPass{},exportWorldDepthOnly{};
     int exportDepthFormat{1}; // ProRes color is limited to 10-bit; PNG/TIFF precision is separate.
     bool exportDepthXq{true},exportDepthDither{true},exportDepthFullRange{false};
     float exportDepthDitherStrength{1.f};
@@ -481,8 +537,14 @@ struct AppState {
     bool exportBeautyReshade{},exportDepthReshade{},exportViewmodelReshade{};
     std::uint64_t exportFrame{};
     std::uint64_t exportFrameCount{};
+    double exportStartedAt{};
+    bool presentVsync{true};
+    double lastExportPresent{};
     assets::Catalog assetCatalog;
     std::vector<std::pair<std::string,bool>> catalogGameChoices;
+    std::unique_ptr<cadence::GamePreload> gamePreload; // Session-owned background residency.
+    float gamePreloadBudgetGiB{4.f};
+    bool gamePreloadPauseDuringPlay{true};
     std::optional<std::future<CatalogLoadResult>> catalogScanFuture;
     bool catalogPromptPending{},catalogPromptOpened{},catalogForceRescan{};
     bool assetFirstPerson{};
@@ -491,6 +553,7 @@ struct AppState {
     std::array<char,128> assetSearch{};
     std::string assetGame;
     std::unordered_set<std::string> animationLoadGames;
+    std::vector<std::filesystem::path> weaponAnimationChoices;
     int assetWeaponCategory{};
     bool showAllWeaponVariants{false};
     std::vector<std::filesystem::path> animationSources;
@@ -659,8 +722,8 @@ struct AppState {
     float scopeOverlayScale{0.90f};
     bool ignoreViewmodelTextureAlpha{true},ignoreMapTextureAlpha{};
     bool viewmodelCamera{};
-    float viewmodelFov{80.0f};
-    float viewmodelFovScale{1.125f};
+    float viewmodelFov{85.0f};
+    float viewmodelFovScale{0.75f};
     int fovSystem{};
     float cameraNearClipCm{0.10f};
     float cameraFarClipMeters{1000.0f};
@@ -669,8 +732,8 @@ struct AppState {
     int mountGizmoAxis{-1};
     std::filesystem::path defaultSalukiDirectory;
     bool salukiSetupPending{};
-    std::filesystem::path t5WeaponRoot{R"(G:\SteamLibrary\steamapps\common\Call of Duty Black Ops\main\extract\weapons\mp)"};
-    std::filesystem::path iw5WeaponRoot{R"(G:\SteamLibrary\steamapps\common\Call of Duty Modern Warfare 3\zone\english\zone_dump\zone_raw\common_mp\weapons)"};
+    std::filesystem::path t5WeaponRoot{};
+    std::filesystem::path iw5WeaponRoot{};
     bool actorMode{};
     bool actorInputCaptured{};
     bool actorCaptureRequested{},actorCapturePending{};
@@ -696,9 +759,33 @@ struct AppState {
     float actorPresentationZ{};
     bool actorPresentationZValid{};
     float actorYaw{};
+    cadence::gamepad::GamepadState gamepad;
+    cadence::gamepad::GamepadConfig gamepadConfig;
+    bool actorGamepadSprintLatched{};
     float actorFixedAccumulator{};
     double sourceFixedAccumulator{};
     gameplay::reference::State referenceMovement{};
+    gameplay::css::State cssMovement{};
+    mutable gameplay::collision::CharacterHeightCache playerCollisionHeightCache;
+    float playerClipHeightCm{150.f};
+    bool scoreEditorEnabled{},scoresOnKills{};
+    gameplay::score::Settings scoreSettings;
+    gameplay::score::State scoreState;
+    gameplay::score::Preview scorePreview;
+    std::array<char,128> scorePresetName{"Default"};
+    gameplay::shake::Settings screenShake;
+    render::metal::Settings metalShader;
+    std::string pendingScoreFont;
+    cadence::fonts::Browser scoreFontBrowser;
+    render::reshade_native::Settings nativeReShade;
+    render::reshade_native::Runtime nativeReShadeRuntime;
+    std::array<char,128> nativeReShadePresetName{"Default"};
+    float playerClipWidthCm{};
+    float playerClipDepthCm{};
+    bool playerClipPreview{};
+    mutable const void* collisionBodyBoneStorage{};
+    mutable std::size_t collisionBodyBoneCount{};
+    mutable bool collisionSceneIsBody{};
     int previousMovementAlgorithm{-1};
     bool sourceJumpHeld{}, sourceAutoJump{true}, sourceUnlimitedBunnyhop{};
     float sourceAirAccelerate{150.0f};
@@ -759,6 +846,9 @@ struct AppState {
     scene::Vec3 actorSlideDirection{1,0,0};
     float actorSlideBufferTime{0.0f};
     bool actorOnLadder{false};
+    float ladderSpeedMultiplier{4.f};
+    bool experimentalYyReloadBlend{};
+    bool adsStartedDuringPullout{};
     gameplay::authored::LadderState authoredLadder;
     bool authoredCrouch{};
     scene::Vec3 ladderNormal{0, 0, 1};
@@ -803,19 +893,25 @@ struct AppState {
     std::size_t classPrimaryAsset{static_cast<std::size_t>(-1)};
     std::size_t classSecondaryAsset{static_cast<std::size_t>(-1)};
     std::size_t classThirdAsset{static_cast<std::size_t>(-1)};
+    std::size_t classMeleeAsset{static_cast<std::size_t>(-1)};
     bool experimentalThirdWeapon{};
     int experimentalWallbangSurfaces{};
+    bool experimentalLocationKeys{},previousSaveLocation{},previousLoadLocation{},savedLocationValid{};
+    scene::Vec3 savedLocation{};float savedLocationYaw{},savedLocationPitch{};
+    std::filesystem::path savedLocationMap;
+    std::string locationNotice;double locationNoticeUntil{};
+    int experimentalEbRange{};bool experimentalEbHeadshot{};
+    float experimentalRoamRadius{500.f};
     int lastClassSlot{1};
     std::array<bool,3> previousDirectSlot{};
-    bool holdingThirdWeapon{};
-    int heldThirdReturnSlot{};
+    bool previousThirdWeaponKey{};
     std::size_t classWorldModelAsset{static_cast<std::size_t>(-1)};
     std::size_t classWorldWeaponAsset{static_cast<std::size_t>(-1)};
     std::size_t classHandsAsset{static_cast<std::size_t>(-1)};
     std::size_t classViewhandsOverride{static_cast<std::size_t>(-1)};
-    std::string classPrimaryGame,classSecondaryGame,classThirdGame;
-    std::array<char,128> classPrimarySearch{},classSecondarySearch{},classThirdSearch{};
-    int classPrimaryCategory{},classSecondaryCategory{},classThirdCategory{};
+    std::string classPrimaryGame,classSecondaryGame,classThirdGame,classMeleeGame;
+    std::array<char,128> classPrimarySearch{},classSecondarySearch{},classThirdSearch{},classMeleeSearch{};
+    int classPrimaryCategory{},classSecondaryCategory{},classThirdCategory{},classMeleeCategory{9};
     int classFaction{};
     int activeClassSlot{-1};
     bool previousPrimarySlot{},previousSecondarySlot{};
@@ -885,6 +981,7 @@ struct AppState {
     std::uint32_t botProcessedPlayerShot{};
     std::uint32_t playerKnifeAttack{},botProcessedKnifeAttack{};
     float botModelScale{1.0f},botHeadHeight{64.0f};
+    std::vector<float> botCollisionBaseHeights;
     float playerMuzzleFlashTime{},hitmarkerTime{};bool debugMuzzleFlash{true},debugMuzzleLine{false};float muzzleFlashSize{1.0f},muzzleFlashRayLength{1.0f};
     bool hitmarkerEnabled{true},hitmarkerProcedural{false},hitmarkerDot{};
     int hitmarkerArms{4};
@@ -907,7 +1004,7 @@ struct AppState {
     std::filesystem::path smokeTrailTexturePath;
     float smokeTrailFeathering{1.0f};
     int smokeCurveResolution{3};
-    float botRespawnTime{3.0f};
+    float botRespawnTime{3.0f},botSpawnScatter{.65f};
     std::filesystem::path hitmarkerTexturePath, killmarkerTexturePath;
     unsigned hitmarkerTextureId{}, killmarkerTextureId{};
     bool gameplayReloadEmpty{false}, gameplayPutawayEmpty{false};
@@ -954,6 +1051,7 @@ struct AppState {
     std::optional<std::array<std::optional<CachedClassRig>,3>> liveClassBeforeTake;
     std::optional<StandaloneLiveRig> liveStandaloneBeforeTake;
     int liveClassSlotBeforeTake{-1};
+    std::optional<bool> liveThirdWeaponBeforeTake;
     bool classGpuResident{};
     bool previousSwap{};
     int weaponSwitchStage{},weaponSwitchTarget{};
@@ -966,7 +1064,11 @@ struct AppState {
     std::size_t yyPutawayAnimation{static_cast<std::size_t>(-1)};
     float yyPutawayFrameLimit{};
     bool yyReverse{};
-    int weaponSwitchAlgorithm{1};
+    gameplay::yyv5::Return yyV5Return;
+    gameplay::yyv5::Resume yyV5Resume;
+    float yyV5Elapsed{},yyV5Velocity{};
+    bool yyV5Resuming{};
+    int weaponSwitchAlgorithm{5};
     int iw4PendingSlot{-1};
     gameplay::iw4switch::FireCycle iw4FireCycle;
     float yyCancelDuration{};
@@ -1085,6 +1187,7 @@ struct AppState {
         std::string error;
     };
     std::optional<std::future<MapLoadResult>> pendingMapFuture;
+    std::optional<std::filesystem::path> queuedMapPath;
     int mapTextureResolution{1024};
     bool mapTextureCompression{true};
     bool showC2mPromptModal{false};
@@ -1133,6 +1236,13 @@ void logLoading(AppState& app, std::string_view msg, float progress = -1.0f) {
     std::cout << fullMsg << std::endl;
 }
 
+bool guardTakeReplacement(AppState& app,std::function<void()> action){
+    if(!app.allowTakeReplace&&app.takeDirty&&!app.recordedTake.samples.empty()){
+        if(!app.pendingTakeAction){app.takeRecording=false;app.takePlaying=false;app.pendingTakeAction=std::move(action);app.uiOperationError.clear();}
+        return false;
+    }
+    return true;
+}
 bool uploadMainScene(AppState& app, render::ProgressCallback progressCallback = nullptr){
     app.renderer.setMapTextureResolution(app.mapTextureResolution);
     app.renderer.setHardwareTextureCompression(app.mapTextureCompression);
@@ -1144,7 +1254,7 @@ bool uploadMainScene(AppState& app, render::ProgressCallback progressCallback = 
         return mainReady;
     }
     const bool mainReady=app.renderer.loadScene(app.scene,app.rendererError);app.botActorGpuReady=false;app.worldActorGpuReady=false;app.mapGpuReady=false;
-    if(mainReady&&(app.loadedMap||app.hiddenWorldActor||app.botActorScene)){std::string actorError;const bool actorsReady=app.renderer.loadAuxiliaryScenes(app.loadedMap?&app.loadedMap->scene:nullptr,app.hiddenWorldActor?&*app.hiddenWorldActor:nullptr,app.botActorScene?&*app.botActorScene:nullptr,actorError,progressCallback);app.mapGpuReady=actorsReady&&app.loadedMap.has_value();app.worldActorGpuReady=actorsReady&&app.hiddenWorldActor.has_value();app.botActorGpuReady=actorsReady&&app.botActorScene.has_value();if(!actorsReady&&app.rendererError.empty())app.rendererError=actorError;}
+    if(mainReady&&(app.loadedMap||app.hiddenWorldActor||app.botActorScene)){std::string actorError;const bool actorsReady=app.renderer.loadAuxiliaryScenes(app.loadedMap?&app.loadedMap->scene:nullptr,app.hiddenWorldActor?&*app.hiddenWorldActor:nullptr,app.botActorScene?&*app.botActorScene:nullptr,actorError,progressCallback);app.mapGpuReady=actorsReady&&app.loadedMap.has_value();app.worldActorGpuReady=actorsReady&&app.hiddenWorldActor.has_value();app.botActorGpuReady=actorsReady&&app.botActorScene.has_value();if(!actorsReady){if(app.rendererError.empty())app.rendererError=actorError;return false;}}
     return mainReady;
 }
 
@@ -1183,17 +1293,60 @@ scene::Vec3 localNavigationGround(const AppState& app,scene::Vec3 position){
     if(std::isfinite(ground)&&ground>-1e8f&&position.z-ground<=scene::course::kStepHeight+2.f)position.z=ground;
     return position;
 }
-scene::Vec3 constrainActorMove(const AppState& app,scene::Vec3 oldPosition,scene::Vec3 proposed,scene::Vec3* outContactNormal = nullptr){return app.loadedMap?app.loadedMap->constrainMove(oldPosition,proposed,scene::course::kPlayerRadius,gameplay::iw::worldUnits(app.gameplayStance==scene::Stance::Stand?72.f:app.gameplayStance==scene::Stance::Crouch?40.f:20.f),scene::course::kStepHeight,outContactNormal):scene::course::constrainMove(oldPosition,proposed);}
+float actorCollisionHeight(const AppState& app,scene::Stance stance,float legacyStanding=72.f,float legacyCrouch=40.f,float legacyProne=20.f){
+    const float fallback=gameplay::iw::worldUnits(legacyStanding);
+    const auto& bones=app.scene.skeleton.bones;
+    if(app.collisionBodyBoneStorage!=bones.data()||app.collisionBodyBoneCount!=bones.size()){
+        app.collisionBodyBoneStorage=bones.data();app.collisionBodyBoneCount=bones.size();
+        app.collisionSceneIsBody=scene::imported::completeBodyLayout(scene::imported::bodyOrCodLayout(app.scene.skeleton));
+    }
+    // The direct body viewer uses a centimetre lift, whereas the gameplay
+    // proxy uses IW units. Never derive a player hull from a gun or map.
+    const bool directBody=!app.assetFirstPerson&&!scene::isViewmodelSkeleton(app.scene.skeleton)&&app.collisionSceneIsBody;
+    const auto* body=directBody?&app.scene:app.hiddenWorldActor?&*app.hiddenWorldActor:nullptr;
+    const float standing=body?app.playerCollisionHeightCache.standingHeight(*body,-1,1.f,
+        directBody?.25f:gameplay::iw::worldUnits(.25f),fallback):fallback;
+    return gameplay::collision::stanceHeight(gameplay::collision::playerStandingHeight(standing,app.playerClipHeightCm),stance,legacyStanding,legacyCrouch,legacyProne);
+}
+float playerCurrentCollisionHeight(const AppState& app,scene::Stance stance){
+    if(app.movementAlgorithm==3||app.movementAlgorithm==4)return actorCollisionHeight(app,stance,72.f,36.f,36.f);
+    if(app.movementAlgorithm==5)return actorCollisionHeight(app,stance,70.f,50.f,30.f);
+    return actorCollisionHeight(app,stance);
+}
+bool customCollisionFootprint(const AppState& app){return app.playerClipWidthCm>0||app.playerClipDepthCm>0;}
+scene::Vec2 actorCollisionHalfExtents(const AppState& app,float radius=scene::course::kPlayerRadius){
+    return {app.playerClipWidthCm>0?app.playerClipWidthCm*.5f:radius,app.playerClipDepthCm>0?app.playerClipDepthCm*.5f:radius};
+}
+scene::Vec3 constrainCollisionMap(const AppState& app,const scene::glb::Map& map,scene::Vec3 start,scene::Vec3 end,float radius,float height,float step,scene::Vec3* normal=nullptr){
+    return customCollisionFootprint(app)?map.constrainMove(start,end,actorCollisionHalfExtents(app,radius),height,step,normal):map.constrainMove(start,end,radius,height,step,normal);
+}
+bool collisionNavigationClear(const AppState& app,const scene::glb::Map& map,scene::Vec3 start,scene::Vec3 end,float radius,float height,float step){
+    return customCollisionFootprint(app)?map.navigationSegmentClear(start,end,actorCollisionHalfExtents(app,radius),height,step):map.navigationSegmentClear(start,end,radius,height,step);
+}
+template<class F> auto withCollisionHull(const AppState& app,float radius,F&& operation){
+    if(customCollisionFootprint(app))return operation(actorCollisionHalfExtents(app,radius));
+    return operation(radius);
+}
+gameplay::movement::Trace actorCollisionSweep(const AppState& app,const scene::glb::Map& map,scene::Vec3 start,scene::Vec3 end,float radius,float height,bool rounded=false){
+    if(customCollisionFootprint(app))return gameplay::movement::sweep(map,start,end,actorCollisionHalfExtents(app,radius),height);
+    return rounded?gameplay::mantle::sweepRounded(map,start,end,radius,height):gameplay::movement::sweep(map,start,end,radius,height);
+}
+scene::Vec3 constrainActorMove(const AppState& app,scene::Vec3 oldPosition,scene::Vec3 proposed,scene::Vec3* outContactNormal = nullptr){
+    if(!app.loadedMap)return customCollisionFootprint(app)||app.playerClipHeightCm>0?scene::course::constrainMove(oldPosition,proposed,actorCollisionHalfExtents(app),actorCollisionHeight(app,app.gameplayStance)):scene::course::constrainMove(oldPosition,proposed);
+    if(customCollisionFootprint(app))return app.loadedMap->constrainMove(oldPosition,proposed,actorCollisionHalfExtents(app),actorCollisionHeight(app,app.gameplayStance),scene::course::kStepHeight,outContactNormal);
+    return app.loadedMap->constrainMove(oldPosition,proposed,scene::course::kPlayerRadius,actorCollisionHeight(app,app.gameplayStance),scene::course::kStepHeight,outContactNormal);
+}
 
 bool retargetNewAnimations(AppState& app,const std::filesystem::path& animationPath,std::size_t firstAnimation,const cast::Document* parsedDocument=nullptr);
 void restoreWeaponAnimationFiles(AppState& app);
 void restoreEngineViewHeight(AppState& app);
+float minimumBotCollisionHeight(const AppState& app);
 std::string gameFromExportPath(const std::filesystem::path& path);
 std::string lowerText(std::string value);
 std::vector<std::string> viewmodelKeys(const assets::Asset& weapon);
 std::string animationPrefixForWeapon(const assets::Asset& weapon);
 std::filesystem::path cadenceAssetsDirectory();
-bool auditedWeaponGame(std::string game){game=lowerText(game);return game=="bo2"||game=="aw"||game=="ghosts"||game=="mwr"||game=="mw";}
+bool auditedWeaponGame(std::string game){game=lowerText(game);return game=="bo"||game=="t5"||game=="iw_sp"||game=="iw7"||game=="iw"||game=="bo2"||game=="aw"||game=="ghosts"||game=="mwr"||game=="mw";}
 void tagAnimationGame(scene::CastScene& target,std::size_t first,const std::filesystem::path& path){const auto game=gameFromExportPath(path);for(std::size_t i=first;i<target.animations.size();++i)target.animations[i].sourceGame=game;}
 
 std::filesystem::path settingsFilePath(){
@@ -1349,7 +1502,7 @@ void invalidateCatalogSelections(AppState& app,const assets::Catalog* previous=n
     if(previous){
         const cadence::CatalogRemap remap(*previous,app.assetCatalog);
         const auto update=[&](std::size_t& index){index=remap(index);};
-        for(auto* index:{&app.selectedBaseAsset,&app.selectedWeaponAsset,&app.classPrimaryAsset,&app.classSecondaryAsset,&app.classThirdAsset,&app.classViewhandsOverride,&app.classWorldModelAsset,&app.classWorldWeaponAsset,&app.botModelAsset,&app.manualPlayerModelAsset})update(*index);
+        for(auto* index:{&app.selectedBaseAsset,&app.selectedWeaponAsset,&app.classPrimaryAsset,&app.classSecondaryAsset,&app.classThirdAsset,&app.classMeleeAsset,&app.classViewhandsOverride,&app.classWorldModelAsset,&app.classWorldWeaponAsset,&app.botModelAsset,&app.manualPlayerModelAsset})update(*index);
         for(auto& index:app.equippedRigAssets)update(index);
         for(auto& index:app.botWeaponChoices)update(index);
         for(auto& bot:app.bots){update(bot.viewWeaponAsset);update(bot.worldWeaponAsset);}
@@ -1366,7 +1519,7 @@ void invalidateCatalogSelections(AppState& app,const assets::Catalog* previous=n
         }
     }
     if(!keepClass){
-        app.selectedBaseAsset=app.selectedWeaponAsset=app.classPrimaryAsset=app.classSecondaryAsset=app.classThirdAsset=app.classViewhandsOverride=static_cast<std::size_t>(-1);
+        app.selectedBaseAsset=app.selectedWeaponAsset=app.classPrimaryAsset=app.classSecondaryAsset=app.classThirdAsset=app.classMeleeAsset=app.classViewhandsOverride=static_cast<std::size_t>(-1);
         app.classSlotRigs={};app.activeClassSlot=-1;
         // A resident two-slot GPU layout must never be interpreted as one rig.
         if(app.classGpuResident)uploadMainScene(app);
@@ -1400,7 +1553,8 @@ void drawC2mPromptModal(AppState& app) {
         ImGui::Text("Maximum Texture Resolution:");
         ImGui::RadioButton("512 x 512   (Fastest loading, lowest VRAM)", &app.c2mPromptResolution, 512);
         ImGui::RadioButton("1024 x 1024 (Default - Recommended balance)", &app.c2mPromptResolution, 1024);
-        ImGui::RadioButton("2048 x 2048 (Maximum fidelity - Higher VRAM)", &app.c2mPromptResolution, 2048);
+        ImGui::RadioButton("2048 x 2048", &app.c2mPromptResolution, 2048);
+        ImGui::RadioButton("Original texture size", &app.c2mPromptResolution, 0);
         ImGui::Spacing();
         ImGui::Checkbox("Hardware Block Compression (BC1/BC3)", &app.c2mPromptCompression);
         ImGui::Separator();
@@ -1441,6 +1595,7 @@ void loadFile(AppState& app, const std::filesystem::path& path,const std::string
     app.document = cast::Document::load(path);
     app.selectedNode = nullptr;
     app.scene = {};
+    app.playerCollisionHeightCache.invalidate();app.collisionBodyBoneStorage=nullptr;app.collisionBodyBoneCount=0;app.collisionSceneIsBody=false;
     app.animationIndex = 0;
     app.animationFrame = 0;
     app.previousAnimationIndex = 0;
@@ -1527,6 +1682,8 @@ bool animationMatchesProfileKey(const scene::Animation&,std::string);
 bool matchesAnimationImportAction(const std::filesystem::path& path,const std::string& key){
     if(key.empty())return true;
     const auto name=lowerText(path.filename().string());if(name.ends_with("_camera.cast"))return false;
+    const auto importedAction=assets::imported::additionalAction(scene::imported::gameForPath(path),name);
+    if(!importedAction.empty())return importedAction==key||(key=="first_raise"&&importedAction=="pullout");
     for(const auto& part:path)if(lowerText(part.string())=="codm")return cadence::codm_actions::slotForName(name)==key;
     scene::Animation clip;clip.sourceName=name;scene::classifyAnimationName(name,clip);
     if(clip.domain!=scene::AnimationDomain::ViewModel)return false;
@@ -1542,12 +1699,26 @@ bool matchesAnimationImportAction(const std::filesystem::path& path,const std::s
     if((key=="rechamber"||key=="ads_rechamber")&&name.find("fire_bolt")!=std::string::npos)return (key=="ads_rechamber")== (name.find("ads")!=std::string::npos);
     return animationMatchesProfileKey(clip,key);
 }
-void queueAnimationFolders(AppState& app,const std::vector<std::filesystem::path>& folders,const std::string& actionKey={}){
+void queueAnimationFolders(AppState& app,const std::vector<std::filesystem::path>& folders,const std::string& actionKey={},bool weaponsOnly=false,const std::string& filenameFilter={}){
     app.pendingAnimationFiles.clear();std::error_code error;
     for(const auto& folder:folders)for(std::filesystem::recursive_directory_iterator it(folder,std::filesystem::directory_options::skip_permission_denied,error),end;it!=end;it.increment(error)){
-        if(error){error.clear();continue;}if(it->is_regular_file(error)&&it->path().extension()==".cast"&&matchesAnimationImportAction(it->path(),actionKey)&&std::find(app.animationSources.begin(),app.animationSources.end(),it->path())==app.animationSources.end())app.pendingAnimationFiles.push_back(it->path());
+        if(error){error.clear();continue;}
+        const auto name=lowerText(it->path().filename().string());
+        if(!filenameFilter.empty()&&name.find(lowerText(filenameFilter))==std::string::npos)continue;
+        if(weaponsOnly){
+            if(name.starts_with("pb_")||name.starts_with("pt_")||name.starts_with("mp_")||name.starts_with("diagnostic_native_"))continue;
+            scene::Animation metadata;scene::classifyAnimationName(name,metadata);
+            auto pathText=lowerText(it->path().generic_string());
+            if(metadata.domain!=scene::AnimationDomain::ViewModel&&pathText.find("/viewmodel/")==std::string::npos&&assets::imported::additionalAction(scene::imported::gameForPath(it->path()),name).empty())continue;
+        }
+        if(it->is_regular_file(error)&&it->path().extension()==".cast"&&matchesAnimationImportAction(it->path(),actionKey)&&std::find(app.animationSources.begin(),app.animationSources.end(),it->path())==app.animationSources.end())app.pendingAnimationFiles.push_back(it->path());
     }
     std::sort(app.pendingAnimationFiles.begin(),app.pendingAnimationFiles.end());app.pendingAnimationFiles.erase(std::unique(app.pendingAnimationFiles.begin(),app.pendingAnimationFiles.end()),app.pendingAnimationFiles.end());app.pendingAnimationCursor=app.pendingAnimationClips=app.pendingAnimationMapped=app.pendingAnimationFailed=0;
+    if(weaponsOnly||!actionKey.empty()){
+        app.weaponAnimationChoices=std::move(app.pendingAnimationFiles);app.pendingAnimationFiles.clear();
+        app.loadingActive=false;app.status="Found "+std::to_string(app.weaponAnimationChoices.size())+" weapon animation files; choose a file to load";
+        return;
+    }
     app.loadingActive=true;app.loadingProgress=0;app.loadingLabel="Loading animations";app.loadingDetail=folders.size()==1?folders.front().filename().string():std::to_string(folders.size())+" games";app.status="Queued "+std::to_string(app.pendingAnimationFiles.size())+" Cast animation files from "+std::to_string(folders.size())+" source(s)";
     if(app.pendingAnimationFiles.empty()){app.loadingActive=false;app.loadingVisibleUntil=glfwGetTime()+0.75;app.status="No Cast animation files found in selected sources";}
 }
@@ -1565,6 +1736,61 @@ void processPendingAnimationLoad(AppState& app){
     if(app.pendingAnimationCursor==app.pendingAnimationFiles.size()){app.loadingActive=false;app.loadingVisibleUntil=glfwGetTime()+1.0;app.status="Loaded "+std::to_string(app.pendingAnimationClips)+" animation clip(s), "+std::to_string(app.pendingAnimationMapped)+" mapped track(s)"+(app.pendingAnimationFailed?", "+std::to_string(app.pendingAnimationFailed)+" unreadable":"");app.pendingAnimationFiles.clear();app.pendingAnimationCursor=0;}
 }
 
+std::vector<take::AttachedModel> replayAttachmentSnapshot(const AppState& app){
+    std::vector<take::AttachedModel> result;
+    for(std::size_t i=0;i<std::min(app.scene.attachments.size(),app.loadedAttachmentPaths.size());++i){
+        const auto& att=app.scene.attachments[i];
+        if(att.boneIndex>=app.scene.skeleton.bones.size())continue;
+        result.push_back({app.loadedAttachmentPaths[i].string(),app.scene.skeleton.bones[att.boneIndex].name,att.position,att.rotationDegrees,att.scale});
+    }
+    return result;
+}
+void commitReplayAttachmentEdits(AppState& app,const std::vector<take::AttachedModel>& before){
+    if(!app.takePreview||app.recordedTake.samples.empty())return;
+    const int slot=app.takePlaybackSlot>=0?app.takePlaybackSlot:app.activeClassSlot;
+    if(slot<0||slot>=int(app.recordedTake.actorSlots.size()))return;
+    auto after=replayAttachmentSnapshot(app);
+    const auto vec=[](scene::Vec3 a,scene::Vec3 b){return a.x==b.x&&a.y==b.y&&a.z==b.z;};
+    if(std::equal(before.begin(),before.end(),after.begin(),after.end(),[&](const auto& a,const auto& b){
+        return a.path==b.path&&a.bone==b.bone&&vec(a.position,b.position)&&vec(a.rotationDegrees,b.rotationDegrees)&&vec(a.scale,b.scale);
+    }))return;
+    auto& actor=app.recordedTake.actorSlots[slot];
+    if(actor.empty())actor=app.recordedTake.actor;
+    if(actor.empty())return;
+    actor.attachedModels=std::move(after);app.takeDirty=true;
+}
+
+void commitReplayTagEdits(AppState& app,const std::unordered_set<std::size_t>& before){
+    if(!app.takePreview||app.recordedTake.samples.empty()||before==app.scene.hiddenBones)return;
+    const int slot=app.takePlaybackSlot>=0?app.takePlaybackSlot:app.activeClassSlot;
+    if(slot<0||slot>=int(app.recordedTake.actorSlots.size()))return;
+    std::vector<std::pair<std::uint32_t,bool>> edits;
+    const auto add=[&](std::size_t bone,bool hidden){
+        if(bone<app.scene.skeleton.bones.size()&&scene::canonicalName(app.scene.skeleton.bones[bone].name).starts_with("tag_"))
+            edits.emplace_back(static_cast<std::uint32_t>(bone),hidden);
+    };
+    for(const auto bone:before)if(!app.scene.hiddenBones.contains(bone))add(bone,false);
+    for(const auto bone:app.scene.hiddenBones)if(!before.contains(bone))add(bone,true);
+    if(edits.empty())return;
+    const auto edit=[&](take::Sample& sample){
+        if(sample.weaponSlot!=slot)return;
+        for(const auto& [bone,hidden]:edits){
+            if(!hidden)std::erase(sample.hiddenBones,bone);
+            else if(bone<sample.pose.size()&&std::find(sample.hiddenBones.begin(),sample.hiddenBones.end(),bone)==sample.hiddenBones.end())sample.hiddenBones.push_back(bone);
+        }
+    };
+    for(auto& sample:app.recordedTake.samples)edit(sample);
+    app.takeTrimHistory.visitRemoved(edit);
+    auto& actor=app.recordedTake.actorSlots[slot];
+    if(actor.empty())actor=app.recordedTake.actor;
+    if(!actor.empty())for(const auto& [bone,hidden]:edits){
+        const auto& name=app.scene.skeleton.bones[bone].name;
+        if(!hidden)std::erase(actor.hiddenBones,name);
+        else if(std::find(actor.hiddenBones.begin(),actor.hiddenBones.end(),name)==actor.hiddenBones.end())actor.hiddenBones.push_back(name);
+    }
+    app.takeDirty=true;
+}
+
 void addAttachmentFile(AppState& app,const std::filesystem::path& path) {
     auto document=cast::Document::load(path);
     if(!document.valid()){app.status="Could not load attachment "+path.filename().string();return;}
@@ -1580,16 +1806,25 @@ void addAttachmentFile(AppState& app,const std::filesystem::path& path) {
     else app.status="Attached "+path.filename().string()+" to "+app.scene.skeleton.bones[app.attachmentBone].name;
 }
 
-void addGlbAttachmentFile(AppState& app,const std::filesystem::path& path){scene::glb::Map imported;std::string error;if(!scene::glb::load(path,imported,error)){app.status="GLB attachment failed: "+error;return;}const auto firstSourceMesh=app.scene.meshes.size();scene::Attachment attachment;attachment.name=path.stem().string();attachment.boneIndex=static_cast<std::size_t>(std::clamp(app.attachmentBone,0,static_cast<int>(app.scene.skeleton.bones.size()-1)));attachment.firstMesh=firstSourceMesh;attachment.meshCount=imported.scene.meshes.size();const auto attachmentIndex=static_cast<std::int32_t>(app.scene.attachments.size());for(auto& mesh:imported.scene.meshes){mesh.skinned=false;mesh.attachmentIndex=attachmentIndex;for(auto& vertex:mesh.vertices){vertex.bones={};vertex.weights={1,0,0,0};}app.scene.meshes.push_back(std::move(mesh));}if(!attachment.meshCount){app.status="GLB contains no renderable attachment meshes";return;}app.scene.attachments.push_back(std::move(attachment));app.loadedAttachmentPaths.push_back(path);app.rendererError.clear();bool uploaded=!app.classGpuResident&&app.renderer.appendMainSceneMeshes(app.scene,firstSourceMesh,app.rendererError);if(uploaded&&(app.loadedMap||app.hiddenWorldActor||app.botActorScene)){std::string auxiliaryError;uploaded=app.renderer.loadAuxiliaryScenes(app.loadedMap?&app.loadedMap->scene:nullptr,app.hiddenWorldActor?&*app.hiddenWorldActor:nullptr,app.botActorScene?&*app.botActorScene:nullptr,auxiliaryError);}if(!uploaded)uploaded=uploadMainScene(app);app.status=uploaded?"Attached GLB "+path.filename().string():"GLB attached, but GPU upload failed";}
+void addGlbAttachmentFile(AppState& app,const std::filesystem::path& path){scene::glb::Map imported;std::string error;if(!scene::glb::load(path,imported,error)){app.status="GLB attachment failed: "+error;return;}const auto firstSourceMesh=app.scene.meshes.size();scene::Attachment attachment;attachment.name=path.stem().string();attachment.boneIndex=static_cast<std::size_t>(std::clamp(app.attachmentBone,0,static_cast<int>(app.scene.skeleton.bones.size()-1)));attachment.firstMesh=firstSourceMesh;attachment.meshCount=imported.scene.meshes.size();const auto attachmentIndex=static_cast<std::int32_t>(app.scene.attachments.size());for(auto& mesh:imported.scene.meshes){mesh.skinned=false;mesh.attachmentIndex=attachmentIndex;for(auto& vertex:mesh.vertices){vertex.bones={};vertex.weights={1,0,0,0};}app.scene.meshes.push_back(std::move(mesh));}if(!attachment.meshCount){app.status="GLB contains no renderable attachment meshes";return;}app.scene.attachments.push_back(std::move(attachment));app.loadedAttachmentPaths.push_back(path);if(app.deferSceneUpload)return;app.rendererError.clear();bool uploaded=!app.classGpuResident&&app.renderer.appendMainSceneMeshes(app.scene,firstSourceMesh,app.rendererError);if(uploaded&&(app.loadedMap||app.hiddenWorldActor||app.botActorScene)){std::string auxiliaryError;uploaded=app.renderer.loadAuxiliaryScenes(app.loadedMap?&app.loadedMap->scene:nullptr,app.hiddenWorldActor?&*app.hiddenWorldActor:nullptr,app.botActorScene?&*app.botActorScene:nullptr,auxiliaryError);}if(!uploaded)uploaded=uploadMainScene(app);app.status=uploaded?"Attached GLB "+path.filename().string():"GLB attached, but GPU upload failed";}
 
 void addStickerDecal(AppState& app,const std::filesystem::path& image){
     if(app.scene.skeleton.bones.empty())return;const float half=4.0f;scene::Mesh mesh;mesh.name="sticker_"+image.stem().string();mesh.albedoPath=image;mesh.forceAlpha=true;mesh.decal=true;mesh.skinned=false;mesh.vertices={{{-half,-half,0},{0,0,1},{0,1}},{{half,-half,0},{0,0,1},{1,1}},{{half,half,0},{0,0,1},{1,0}},{{-half,half,0},{0,0,1},{0,0}}};mesh.indices={0,1,2,0,2,3};scene::Attachment attachment;attachment.name="Sticker · "+image.stem().string();attachment.boneIndex=static_cast<std::size_t>(std::clamp(app.attachmentBone,0,static_cast<int>(app.scene.skeleton.bones.size()-1)));attachment.firstMesh=app.scene.meshes.size();attachment.meshCount=1;attachment.position.z=.05f;mesh.attachmentIndex=static_cast<std::int32_t>(app.scene.attachments.size());app.scene.meshes.push_back(std::move(mesh));app.scene.attachments.push_back(std::move(attachment));app.loadedAttachmentPaths.push_back(image);app.classGpuResident=false;if(uploadMainScene(app))app.status="Added editable sticker decal";else app.status="Sticker added, but GPU upload failed";
 }
 
 bool animationSourceMatchesWeapon(const std::filesystem::path& path,const assets::Asset& weapon,const assets::Catalog* catalog=nullptr){
+    // Shared melee is a dependency of the assembled rig, not a gun-family clip.
+    // Keep it through the final remap as well as the initial import.
+    if(lowerText(weapon.game)!="cs2"){
+        const auto file=lowerText(path.filename().string());
+        if(file=="viewmodel_m4m203_knife_melee_1.cast"||file=="viewmodel_m4m203_knife_melee_2.cast"||
+           file=="viewmodel_knife_melee_slice.cast"||file=="viewmodel_knife_melee_stab.cast")return true;
+    }
     if(assets::imported::supported(lowerText(weapon.game))){
         const auto game=lowerText(weapon.game),file=assets::imported::utf8(path.filename());
         if(assets::imported::matchesAnimation(game,weapon.name,file))return true;
+        if(game=="dirtybomb"&&lowerText(file).find("_sk_viewarms_")!=std::string::npos&&!assets::imported::additionalAction(game,file).empty())
+            return scene::imported::dbShared(cast::Document::load(path),assets::imported::additionalCategory(game,weapon.name)=="pistol");
         if(assets::imported::diagnosticAction(game,weapon.name,file).empty())return false;
         // v_ak47_gold's native sequences must not leak into v_ak47.
         const auto stem=assets::imported::weaponStem(game,weapon.name);
@@ -1626,6 +1861,8 @@ void reloadAnimationSources(AppState& app,const assets::Asset* weaponFilter=null
     std::size_t clips{},mapped{},skipped{};for(std::size_t documentIndex=0;documentIndex<app.animationDocuments.size();++documentIndex){const auto& document=app.animationDocuments[documentIndex];if(!document.valid())continue;if(weaponFilter&&(documentIndex>=app.animationSources.size()||(!animationSourceMatchesWeapon(app.animationSources[documentIndex],*weaponFilter,&app.assetCatalog)&&!std::any_of(app.weaponProfile.animationFiles.begin(),app.weaponProfile.animationFiles.end(),[&](const auto& dep){return std::filesystem::u8path(dep.second)==app.animationSources[documentIndex];})))){++skipped;continue;}const auto before=app.scene.animations.size();clips+=scene::appendAnimations(document,app.scene);if(documentIndex<app.animationSources.size()){tagAnimationGame(app.scene,before,app.animationSources[documentIndex]);retargetNewAnimations(app,app.animationSources[documentIndex],before,&document);}
         for(std::size_t i=before;i<app.scene.animations.size();++i)mapped+=app.scene.animations[i].tracks.size();}
     cadence::codm_actions::prepare(app.scene);
+    scene::imported::completeDirtyBombActions(app.scene);
+    scene::imported::completeBlackSquadActions(app.scene);
     cadence::pointblank_actions::prepare(app.scene);
     if(weaponFilter&&lowerText(weaponFilter->game)=="mw")cadence::iw_reload::prepare(app.scene,animationPrefixForWeapon(*weaponFilter));
     restoreWeaponAnimationFiles(app);
@@ -1672,17 +1909,23 @@ std::string activeViewhandsGame(const AppState& app){
 }
 
 const scene::Skeleton* sourceViewhandsSkeletonForGame(AppState& app,std::string_view requestedGame){
-    const auto game=lowerText(std::string(requestedGame));std::size_t sourceHands=static_cast<std::size_t>(-1);
-    const std::pair<std::string_view,std::string_view> preferred[]={
-        {"mw","viewmodel_base_viewhands"},{"mw2","viewmodel_base_viewhands"},{"mw3","viewmodel_base_viewhands"},{"aw","viewmodel_base_viewhands"},
-        {"iw_sp","viewmodel_base_viewhands_iw7"},{"iw7","viewmodel_base_viewhands_iw7"},{"ghosts","viewmodel_base_viewhands"},{"bo","viewhands_usmc"},
-        {"bo2","c_usa_mp_seal6_longsleeve_viewhands"},{"cs2","viewhands_model"}
-    };
-    for(const auto& [preferredGame,name]:preferred)if(game==preferredGame)for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto& asset=app.assetCatalog.entries[i];auto model=lowerText(asset.name);if(model.ends_with("_lod0"))model.resize(model.size()-5);if(asset.role==assets::Role::ViewHands&&lowerText(asset.game)==game&&model==name){sourceHands=i;break;}}
-    if(sourceHands>=app.assetCatalog.entries.size())for(std::size_t i=0;i<app.assetCatalog.entries.size();++i)if(app.assetCatalog.entries[i].role==assets::Role::ViewHands&&lowerText(app.assetCatalog.entries[i].game)==game){sourceHands=i;break;}
-    if(sourceHands>=app.assetCatalog.entries.size())return nullptr;
-    const auto& sourceAsset=app.assetCatalog.entries[sourceHands];const auto cacheKey=lowerText(sourceAsset.path.string());auto cached=app.animationSourceSkeletons.find(cacheKey);
-    if(cached==app.animationSourceSkeletons.end()){const auto document=cast::Document::load(sourceAsset.path);if(!document.valid())return nullptr;auto sourceScene=scene::buildScene(document);cached=app.animationSourceSkeletons.emplace(cacheKey,std::move(sourceScene.skeleton)).first;}
+    if(requestedGame=="cs2"&&app.selectedWeaponAsset<app.assetCatalog.entries.size()){
+        const auto& weapon=app.assetCatalog.entries[app.selectedWeaponAsset];
+        if(lowerText(weapon.game)=="cs2"){
+            const auto key="cs2-driver:"+weapon.path.string();auto it=app.animationSourceSkeletons.find(key);
+            if(it==app.animationSourceSkeletons.end()){const auto doc=cast::Document::load(weapon.path);if(doc.valid()){auto s=scene::buildScene(doc);it=app.animationSourceSkeletons.emplace(key,std::move(s.skeleton)).first;}}
+            if(it!=app.animationSourceSkeletons.end())return &it->second;
+        }
+    }
+    const auto sourcePath=cadence::reference_hands::resolve(app.assetCatalog,requestedGame,
+        [&](const std::string& game,bool fresh){
+            assets::Catalog local;if(app.defaultSalukiDirectory.empty())return local;
+            if(!fresh){if(loadCatalogCaches(app.defaultSalukiDirectory,{game},local))return local;return assets::Catalog{};}
+            std::string error;if(!assets::appendScan(salukiExportRoot(app.defaultSalukiDirectory)/game,game,local,error))return assets::Catalog{};return local;
+        },[](const std::filesystem::path& path){std::error_code error;return std::filesystem::is_regular_file(path,error);});
+    if(!sourcePath)return nullptr;
+    const auto cacheKey=lowerText(sourcePath->string());auto cached=app.animationSourceSkeletons.find(cacheKey);
+    if(cached==app.animationSourceSkeletons.end()){const auto document=cast::Document::load(*sourcePath);if(!document.valid())return nullptr;auto sourceScene=scene::buildScene(document);cached=app.animationSourceSkeletons.emplace(cacheKey,std::move(sourceScene.skeleton)).first;}
     return &cached->second;
 }
 
@@ -1739,9 +1982,9 @@ bool retargetNewAnimations(AppState& app,const std::filesystem::path& animationP
     }
     const bool isCs2 = (game == "cs2" || targetGame == "cs2");
     const bool isIw7 = (game == "iw7" || game == "iw_sp" || game == "iw");
-    const bool reverseIw = (game=="bo2"||game=="t6"||game=="aw"||game=="s1") && (targetGame=="iw_sp"||targetGame=="iw7"||targetGame=="iw");
-    const bool calibratedIwTarget=targetGame=="bo2"||targetGame=="t6"||targetGame=="mw"||targetGame=="ghosts"||targetGame=="aw";
-    const bool coldWarLegacy=(game=="bocw_sp"||game=="bocw"||game=="t9")&&(targetGame=="mw"||targetGame=="iw3"||targetGame=="bo2"||targetGame=="t6")&&lowerText(animationPath.filename().string()).starts_with("vm_");
+    const bool legacyCodSource = game=="bo2"||game=="t6"||game=="aw"||game=="s1"||game=="mw"||game=="mw2"||game=="mw3"||game=="ghosts"||game=="mwr"||game=="bo"||game=="bo2_sp";
+    const bool reverseIw = legacyCodSource && (targetGame=="iw_sp"||targetGame=="iw7"||targetGame=="iw");
+    const bool coldWarLegacy=(game=="bocw_sp"||game=="bocw"||game=="t9")&&targetGame!="cs2"&&scene::coldWarLegacyTarget(app.scene.skeleton)&&lowerText(animationPath.filename().string()).starts_with("vm_");
     const bool targetLacksClavicles = !app.scene.skeleton.boneByName.contains("j_clavicle_le");
     if(!isCs2 && !reverseIw && !coldWarLegacy && !(isIw7 && targetLacksClavicles)) return false;
 
@@ -1779,7 +2022,9 @@ bool retargetNewAnimations(AppState& app,const std::filesystem::path& animationP
     }
 
     if(game=="cs2"&&targetGame!="cs2"){
-        const auto sourceDocument=cast::Document::load(sourceAsset.path);
+        auto driverPath=sourceAsset.path;
+        if(app.selectedWeaponAsset<app.assetCatalog.entries.size()&&lowerText(app.assetCatalog.entries[app.selectedWeaponAsset].game)=="cs2")driverPath=app.assetCatalog.entries[app.selectedWeaponAsset].path;
+        const auto sourceDocument=cast::Document::load(driverPath);
         const auto animationDocument=cast::Document::load(animationPath);
         if(!sourceDocument.valid()||!animationDocument.valid())return false;
         auto sourceScene=scene::buildScene(sourceDocument);
@@ -1788,7 +2033,7 @@ bool retargetNewAnimations(AppState& app,const std::filesystem::path& animationP
         return scene::retargetSource2AnimationRange(app.scene,firstAnimation,sourceScene,firstSource);
     }
 
-    if(!isCs2 && (reverseIw || (isIw7 && targetLacksClavicles && calibratedIwTarget))){
+    if(!isCs2 && (reverseIw || (isIw7 && targetLacksClavicles))){
         // Reuse precisely the document just appended to the target. No copy,
         // lifetime extension or persistent cache; source/target math is unchanged.
         std::optional<cast::Document> loaded;
@@ -1824,21 +2069,6 @@ bool retargetNewAnimations(AppState& app,const std::filesystem::path& animationP
         return false;
     }
 
-    // Leave other cross-game routes, including CS2, outside this IW7->T6 fix.
-    if(isIw7 && targetLacksClavicles){
-        const auto sourceDocument=cast::Document::load(sourceAsset.path);
-        std::optional<cast::Document> loaded;
-        if(isCs2||!parsedDocument)loaded=cast::Document::load(animationPath);
-        const auto& sourceAnimDoc=(!isCs2&&parsedDocument)?*parsedDocument:*loaded;
-        if(!sourceDocument.valid()||!sourceAnimDoc.valid())return false;
-        auto sourceScene=scene::buildScene(sourceDocument);
-        const auto firstSourceAnim=scene::appendAnimations(sourceAnimDoc,sourceScene);
-        if(firstSourceAnim<sourceScene.animations.size()){
-            scene::retargetAnimationRange(app.scene,firstAnimation,sourceScene,firstSourceAnim);
-            return true;
-        }
-        return false;
-    }
     const auto cacheKey=lowerText(sourceAsset.path.string());
     auto cached=app.animationSourceSkeletons.find(cacheKey);
     if(cached==app.animationSourceSkeletons.end()){
@@ -1978,6 +2208,9 @@ std::string animationPrefixForWeapon(const assets::Asset& weapon){
     };
     auto name=lowerText(weapon.name);if(name.ends_with("_lod0"))name.resize(name.size()-5);const auto game=lowerText(weapon.game);
     if(assets::imported::supported(game))return assets::imported::animationPrefix(game,name);
+    if(game=="bo"||game=="t5"){
+        if(name.starts_with("t5_weapon_1911"))return "viewmodel_colt1911_sw_";
+    }
     if(game=="bocw_sp"||game=="bocw"||game=="t9"){
         const auto family=assets::coldWarWeaponFamily(name);return family.empty()?std::string{}:"vm_"+family+"_t9_";
     }
@@ -2081,6 +2314,7 @@ std::string animationPrefixForWeapon(const assets::Asset& weapon){
     if((game=="iw_sp"||game=="iw7"||game=="iw")){
         if(name=="weapon_erad_camo")return "vm_erad_";
         if(name=="weapon_revolver_camo")return "vm_revolver_";
+        if(name.starts_with("weapon_ump_vm"))return "vm_ump45_";
         if(name.find("m8garandscope")!=std::string::npos||name.find("garand")!=std::string::npos)return "vm_m1_";
         if(name.find("launcher")!=std::string::npos)return "vm_grenadelauncher_";
         if(name.starts_with("weapon_")){
@@ -2418,9 +2652,18 @@ std::optional<assets::Asset> coldWarBaseWeaponAsset(const AppState& app,const as
     auto base=asset;base.name="wpn_t9_"+family+"_view_LOD0";return base;
 }
 
+void populateDefaultDiscoveredAnimations(AppState& app,weapon::Profile& profile,const assets::Asset& asset){
+    if(assets::imported::supported(lowerText(asset.game))){cadence::imported_actions::populate(app.scene,profile,asset);return;}
+    populateDefaultDiscoveredAnimations(static_cast<const AppState&>(app),profile,asset);
+}
 weapon::Profile generatedWeaponProfile(const AppState& app,const assets::Asset& asset,const std::filesystem::path& defaultsDirectory={},bool discoverAnimations=true){
     auto profile=weapon::makeGenerated(asset.name,weapon::inferArchetype(asset.name),animationPrefixForWeapon(asset));const auto game=lowerText(asset.game);const auto assetName=lowerText(asset.name);profile.meleeWeapon=game=="cs2"&&(assetName.find("knife_")!=std::string::npos||assetName.find("karambit")!=std::string::npos||assetName.find("butterfly")!=std::string::npos||assetName.find("talon")!=std::string::npos);bool loadedDefault=false;
     const auto relocated=[&](const std::filesystem::path& path){return defaultsDirectory.empty()||path.empty()?path:defaultsDirectory/path.parent_path().filename()/path.filename();};
+    if(assets::imported::additionalFamily(game)){
+        const auto category=assets::imported::additionalCategory(game,asset.name);auto archetype=profile.archetype;
+        if(category=="pistol")archetype=weapon::Archetype::Pistol;else if(category=="shotgun")archetype=weapon::Archetype::Shotgun;else if(category=="smg")archetype=weapon::Archetype::Smg;else if(category=="lmg")archetype=weapon::Archetype::Lmg;else if(category=="sniper"&&!weapon::isSniper(archetype))archetype=weapon::Archetype::BoltSniper;else if(category=="knives"||category=="grenade")archetype=weapon::Archetype::Equipment;
+        profile=weapon::makeGenerated(asset.name,archetype,animationPrefixForWeapon(asset));profile.meleeWeapon=category=="knives";
+    }
     const auto defaultPath=cadence::content::resolve(relocated(weaponDefaultProfilePath(asset)));if(std::filesystem::is_regular_file(defaultPath)){std::string error;weapon::Profile saved;if(weapon::load(defaultPath,saved,error)){profile=std::move(saved);loadedDefault=true;}}
     if(!loadedDefault)if(const auto source=legacyWeaponFileForAsset(app,asset)){std::string error;weapon::Profile imported;if(weapon::importLegacyWeaponFile(imported,*source,error)){imported.name=asset.name;profile=std::move(imported);}}
     else if(game=="bo2")profile.stats=loadT6WeaponTiming(asset);
@@ -2443,6 +2686,14 @@ weapon::Profile generatedWeaponProfile(const AppState& app,const assets::Asset& 
         if(!loadedDefault){if(assetName.starts_with("viewmodel_sniper_"))profile.archetype=weapon::Archetype::BoltSniper;cadence::pointblank_actions::populate(app.scene,profile,asset.name);cadence::pointblank_actions::defaults(app.scene,profile);}
     }
     if(profile.internalName.empty()){profile.internalName=profile.animationPrefix;if(profile.internalName.starts_with("viewmodel_"))profile.internalName.erase(0,10);if(!profile.internalName.empty()&&profile.internalName.back()=='_')profile.internalName.pop_back();}
+    if(!loadedDefault&&game!="cs2"){
+        profile.stats.quickDropTime=profile.stats.dropTime;
+        profile.stats.quickRaiseTime=profile.stats.raiseTime;
+    }
+    if(game=="cs2"&&!loadedDefault){
+        profile.stats.raiseTime=profile.stats.quickRaiseTime=profile.stats.firstRaiseTime=1.f;
+        profile.viewmodelFovMultiplier=.8f;profile.gunPosition.x=-5.f;
+    }
     if(profile.source=="generated")profile.source=game=="bo2"?"BO2 weapon file + archetype defaults":"archetype defaults + discovered animations";
     return profile;
 }
@@ -2468,6 +2719,7 @@ void activateWeaponProfile(AppState& app,weapon::Profile profile,std::filesystem
     app.jumpFeedbackAnimation=static_cast<std::size_t>(-1);app.jumpFeedbackElapsed=0;app.codmReleasedFireReference=static_cast<std::size_t>(-1);
     app.weaponProfile=std::move(profile);app.weaponProfilePath=std::move(path);app.weaponTiming=app.weaponProfile.stats;if(!app.weaponProfile.animationPrefix.empty())app.viewmodelAnimationPrefix=app.weaponProfile.animationPrefix;const auto& material=app.weaponProfile.materials;app.camoLumaMask=material.useBaseColorLumaMask;app.camoInvert=material.invertCamoMask;app.camoAlphaLow=material.camoAlphaLow;app.camoAlphaHigh=material.camoAlphaHigh;app.camoLumaLow=material.camoLumaLow;app.camoLumaHigh=material.camoLumaHigh;app.camoLumaGamma=material.camoLumaGamma;app.camoLumaContrast=material.camoLumaContrast;app.weaponSpecularMultiplier=material.specularMultiplier;app.weaponCubemapMultiplier=material.cubemapSpecularIntensity;app.weaponSpecularLow=material.specularColorLow;app.weaponSpecularHigh=material.specularColorHigh;app.weaponProfileDirty=false;resetAnimationVariantCursors(app);if(app.weaponProfile.meleeWeapon){app.playerMuzzleFlashTime=0.0f;app.smokeEmissionCooldown=0.0f;}syncWeaponProfileEditor(app);
     restoreWeaponAnimationFiles(app);
+    cadence::imported_actions::restoreAdsEndpoints(app.scene,app.weaponProfile);
     if(app.scene.codmNativeCentimetres){
         cadence::codm_actions::populate(app.scene,app.weaponProfile,app.scene.codmNativeWeaponStem);
         app.weaponTiming=app.weaponProfile.stats;
@@ -2482,6 +2734,24 @@ void resetWeaponAimState(AppState& app){
     app.viewmodelAdsBaseAnimation=static_cast<std::size_t>(-1);
     app.viewmodelAdsBaseFrame=app.viewmodelAdsTransitionElapsed=0;
     app.adsCameraBlend=0;
+}
+std::string weaponHandRigKey(const AppState& app){
+    auto key=cadence::content::exportKey(app.loadedBaseModelPath);
+    if(key.empty())key=gameFromExportPath(app.loadedBaseModelPath)+"/"+lowerText(app.loadedBaseModelPath.filename().string());
+    return key;
+}
+scene::Mat4 weaponRigTransform(const AppState& app,const std::vector<scene::Mat4>& pose){
+    const auto* value=weapon::rigTransformFor(app.weaponProfile,weaponHandRigKey(app));
+    if(!value)return scene::Mat4::identity();
+    for(float v:{value->position.x,value->position.y,value->position.z,value->rotationDegrees.x,value->rotationDegrees.y,value->rotationDegrees.z,value->scale})if(!std::isfinite(v))return scene::Mat4::identity();
+    if(value->scale<=0)return scene::Mat4::identity();
+    scene::Mat4 anchor=app.viewmodelRigAnchorValid?app.viewmodelRigAnchor:scene::Mat4::identity();
+    for(const char* name:{"j_gun","tag_weapon_right","tag_weapon","wpn","weapon","j_wrist_ri","r_hand","hand_r","bip01 r hand"}){
+        const auto bone=app.scene.skeleton.boneByCanonicalName.find(name);
+        if(bone!=app.scene.skeleton.boneByCanonicalName.end()&&bone->second<pose.size()){anchor=pose[bone->second];break;}
+    }
+    scene::Vec3 p,s;scene::Quat q;scene::decomposeAffine(anchor,p,q,s);anchor=scene::trs(p,q,{1,1,1});
+    return anchor*scene::trs(value->position,scene::fromEulerRadians(value->rotationDegrees*(scene::kPi/180.f)),scene::Vec3{1,1,1}*value->scale)*scene::inverseAffine(anchor);
 }
 void selectViewmodelIdle(AppState& app,const assets::Asset& weapon){
     if(app.activeClassSlot>=0&&app.activeClassSlot<3&&app.classSlotRigs[app.activeClassSlot]){
@@ -2606,7 +2876,10 @@ void installIwSharedSprint(AppState& app,const assets::Asset& weaponAsset){
         std::size_t composed=base;
         if(offsetDoc.valid()){composed=source.animations.size();scene::appendAnimations(offsetDoc,source);if(composed<source.animations.size()){scene::composeIwSprintOffset(source,composed,base);source.animations[composed].sourceName=name;source.animations[composed].looping=std::string_view(stage)=="loop";}else composed=base;}
         const auto index=app.scene.animations.size();scene::appendAnimations(doc,app.scene);if(index==app.scene.animations.size())continue;
-        if(target==game){
+        // Foreign skins fitted onto this game's native driver already use its
+        // joint hierarchy. Rebaking those driver channels as another rig can
+        // preserve endpoints but change the local rotations used by blends.
+        if(target==game||lowerText(app.scene.viewHandsDriverGame)==game){
             auto baked=source.animations[composed];std::vector<scene::Track> tracks;
             for(auto track:baked.tracks)if(track.boneIndex<source.skeleton.bones.size()){const auto found=app.scene.skeleton.boneByName.find(source.skeleton.bones[track.boneIndex].name);if(found!=app.scene.skeleton.boneByName.end()){track.boneIndex=found->second;tracks.push_back(std::move(track));}}
             baked.tracks=std::move(tracks);app.scene.animations[index]=std::move(baked);
@@ -2616,8 +2889,12 @@ void installIwSharedSprint(AppState& app,const assets::Asset& weaponAsset){
         for(std::size_t old=0;old<index;++old)if(app.scene.animations[old].sourceName==name)
             app.scene.animations[old]=app.scene.animations[index];
         const auto mapped=app.weaponProfile.animations.find(slot);
+        const bool mappedLoaded=mapped!=app.weaponProfile.animations.end()&&std::any_of(app.scene.animations.begin(),app.scene.animations.end(),[&](const auto& clip){
+            return clip.domain==scene::AnimationDomain::ViewModel&&!clip.tracks.empty()&&
+                lowerText(std::filesystem::path(clip.sourceName).filename().string())==lowerText(std::filesystem::path(mapped->second).filename().string());
+        });
         if(mapped==app.weaponProfile.animations.end()||mapped->second.empty()||
-           mapped->second.find("sprint_offset")!=std::string::npos){
+           !mappedLoaded||mapped->second.find("sprint_offset")!=std::string::npos){
             app.weaponProfile.animations[slot]=name;
             app.weaponProfile.animationVariants[slot]={name};
         }
@@ -2631,24 +2908,31 @@ void finishRigMerge(AppState& app,const assets::Asset* weaponFilter=nullptr){cal
     app.scene.dualWield=false;
     if(app.scene.skeleton.boneByName.contains("dew2cast_weapon__left__gun")){std::string error;if(!cadence::dual::prepare(app.scene,app.weaponProfile,weaponFilter?animationPrefixForWeapon(*weaponFilter):app.weaponProfile.animationPrefix,false,error))app.scene.warnings.push_back(error);}
     if(app.weaponProfile.archetype==weapon::Archetype::DualWield){const auto mw3=app.scene.skeleton.boneByName.contains("dual_left_j_gun");if(mw3||app.scene.skeleton.boneByName.contains("j_gun1")||!app.scene.pointBlankWeaponStem.empty()){std::string error;cadence::dual::prepare(app.scene,app.weaponProfile,weaponFilter?animationPrefixForWeapon(*weaponFilter):app.weaponProfile.animationPrefix,mw3,error);}}
-    app.meleeKnifeBone=static_cast<std::size_t>(-1);for(const auto& part:app.scene.rigParts)if(lowerText(part.name).find("wpn_knife_base_view")!=std::string::npos&&!part.rootBones.empty()){app.meleeKnifeBone=part.rootBones.front();break;}
+    app.meleeKnifeBone=static_cast<std::size_t>(-1);
+    for(const auto& part:app.scene.rigParts){
+        const auto partName=lowerText(part.name);
+        if(!part.rootBones.empty()&&part.rootBones.front()<app.scene.skeleton.bones.size()&&app.scene.skeleton.bones[part.rootBones.front()].name.starts_with("melee_knife_")){
+            app.meleeKnifeBone=part.rootBones.front();break;
+        }
+    }
     if(app.meleeKnifeBone<app.scene.skeleton.bones.size())app.scene.hiddenBones.insert(app.meleeKnifeBone);app.rendererError.clear();if(app.deferSceneUpload)app.status="Composite rig prepared ("+std::to_string(app.scene.skeleton.bones.size())+" bones)";else if(!uploadMainScene(app))app.status="Rig merged, but GPU upload failed";else app.status="Composite rig ready ("+std::to_string(app.scene.skeleton.bones.size())+" bones)";}
 
-void addRigModelFile(AppState& app,const std::filesystem::path& path,bool finalize=true,std::optional<scene::Mat4> sourceMount=std::nullopt,float uniformScale=1.0f){
+void addRigModelFile(AppState& app,const std::filesystem::path& path,bool finalize=true,std::optional<scene::Mat4> sourceMount=std::nullopt,float uniformScale=1.0f,bool auxiliaryMelee=false){
     if(gameFromExportPath(path)=="mw3"&&std::find(app.loadedRigModelPaths.begin(),app.loadedRigModelPaths.end(),path)!=app.loadedRigModelPaths.end()){
         if(cadence::dual::duplicateMw3(app.scene)){app.loadedRigModelPaths.push_back(path);if(finalize)finishRigMerge(app);return;}
     }
     auto document=cast::Document::load(path);if(!document.valid()){app.status="Could not load rig model "+path.filename().string();return;}
     std::size_t meshes{};
-    if(scene::pointblank::exportedByPb2cast(document)&&path.stem().string().starts_with("viewmodel_")&&app.document&&assets::classifyModelPath(std::filesystem::path(app.document->sourceName()),std::filesystem::path(app.document->sourceName()).stem().string())==assets::Role::ViewHands){
+    if(auxiliaryMelee)meshes=scene::appendRigModel(document,app.scene,path.stem().string(),std::nullopt,uniformScale,true);
+    else if(scene::pointblank::exportedByPb2cast(document)&&path.stem().string().starts_with("viewmodel_")&&app.document&&assets::classifyModelPath(std::filesystem::path(app.document->sourceName()),std::filesystem::path(app.document->sourceName()).stem().string())==assets::Role::ViewHands){
         auto reference=*app.document;const bool legacy=!scene::pointblank::exportedByPb2cast(reference)||lowerText(std::filesystem::path(reference.sourceName()).stem().string())!="viewmodel_swat_male_hands";
         if(legacy){const auto ref=nativePointBlankHandsPath(app);if(ref.empty()){app.status="Point Blank reconstruction needs native SWAT Male hands";return;}reference=cast::Document::load(ref);}
         scene::CastScene assembled;std::string error;
         if(!scene::pointblank::assemble(document,reference,assembled,error)){app.status=error;return;}
         if(legacy){
             const auto skinGame=gameFromExportPath(std::filesystem::path(app.document->sourceName()));
-            const bool importedSkin=assets::imported::supported(scene::imported::gameForPath(std::filesystem::path(app.document->sourceName())))||skinGame=="bocw_sp"||skinGame=="cs2";
-            if(!(importedSkin?scene::imported::fitForeignViewSkin(assembled,scene::buildScene(*app.document),error):scene::pointblank::fitHands(assembled,reference,*app.document,error))){app.status=error;return;}
+            const bool importedSkin=scene::pointblank::exportedByPb2cast(*app.document)||assets::imported::supported(scene::imported::gameForPath(std::filesystem::path(app.document->sourceName())))||skinGame=="bocw_sp"||skinGame=="cs2";
+            if(!(importedSkin?scene::imported::fitPoseOnlyViewSkin(assembled,scene::buildScene(*app.document),error):scene::pointblank::fitHands(assembled,reference,*app.document,error))){app.status=error;return;}
         }
         // Replay reconstruction does not reload the live action library. Apply
         // the same rigid-mesh idle bind reference before recorded poses are skinned.
@@ -2691,7 +2975,7 @@ void rebuildFirstPersonRig(AppState& app,const std::vector<std::size_t>& rigAsse
 }
 
 void dropCallback(GLFWwindow*, int count, const char** paths) {
-    if (!gAppState || count <= 0) return;
+    if (!gAppState || count <= 0 || gAppState->runtimePaused || gAppState->takePreparationFuture || gAppState->loadingActive) return;
 if(!cadence::workspace::runtime(gAppState->workspaceMode))return; // Benchmark never routes dropped assets into Play/Replay.
     const auto path = std::filesystem::u8path(paths[0]);
     const auto ext = lowerText(path.extension().string());
@@ -2751,7 +3035,7 @@ std::optional<std::filesystem::path> chooseImageFile() {
 std::optional<std::filesystem::path> chooseEnvironmentFile() {
 #ifdef _WIN32
     wchar_t path[32768]{};OPENFILENAMEW dialog{};dialog.lStructSize=sizeof(dialog);
-    dialog.lpstrFilter=L"Environment maps (*.hdr;*.png;*.jpg;*.jpeg;*.webp)\0*.hdr;*.png;*.jpg;*.jpeg;*.webp\0All files (*.*)\0*.*\0";dialog.lpstrFile=path;dialog.nMaxFile=static_cast<DWORD>(std::size(path));
+    dialog.lpstrFilter=L"Sky textures (*.iwi;*.dds;*.hdr;*.png;*.jpg;*.jpeg;*.webp;skybox.json)\0*.iwi;*.dds;*.hdr;*.png;*.jpg;*.jpeg;*.webp;skybox.json\0All files (*.*)\0*.*\0";dialog.lpstrFile=path;dialog.nMaxFile=static_cast<DWORD>(std::size(path));
     dialog.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST;if(GetOpenFileNameW(&dialog))return std::filesystem::path(path);
 #endif
     return std::nullopt;
@@ -2904,10 +3188,41 @@ void selectAnimation(AppState& app,std::size_t index,bool restart=false,bool pre
 void beginInterruptPoseBlend(AppState& app,float duration);
 float authoredClipDuration(const AppState& app,std::size_t animation);
 
-std::optional<std::size_t> findViewmodelClip(const AppState& app,const std::string& suffix){
-    const auto allowed=[&](const scene::Animation& clip){return app.selectedWeaponAsset>=app.assetCatalog.entries.size()||validIwSprintSlot(lowerText(app.assetCatalog.entries[app.selectedWeaponAsset].game),lowerText(app.assetCatalog.entries[app.selectedWeaponAsset].name),suffix,lowerText(clip.sourceName));};
+bool allowedMeleeClip(const AppState& app,const scene::Animation& clip){
+    if(activeWeaponIsCs2(app))return true;
+    const auto name=lowerText(clip.sourceName);
+    const bool tactical=name.find("tactical")!=std::string::npos||name.find("_tac_")!=std::string::npos||name.find("tacknife")!=std::string::npos;
+    return !tactical||std::any_of(app.viewmodelAttachmentTokens.begin(),app.viewmodelAttachmentTokens.end(),[](const auto& token){const auto t=lowerText(token);return t=="tactical"||t=="tac_knife"||t=="tacknife";});
+}
+std::vector<std::size_t> defaultMeleeClips(const AppState& app){
+    std::vector<std::size_t> result;if(activeWeaponIsCs2(app)||isKnifeWeapon(app))return result;
+    for(const auto* name:{"viewmodel_m4m203_knife_melee_1.cast","viewmodel_m4m203_knife_melee_2.cast","viewmodel_knife_melee_slice.cast","viewmodel_knife_melee_stab.cast"}){
+        if(!result.empty()&&std::string_view(name)=="viewmodel_knife_melee_slice.cast")break;
+        for(std::size_t i=0;i<app.scene.animations.size();++i){const auto& clip=app.scene.animations[i];
+            if(clip.domain==scene::AnimationDomain::ViewModel&&!clip.tracks.empty()&&lowerText(std::filesystem::path(clip.sourceName).filename().string())==name){result.push_back(i);break;}}
+    }
+    return result;
+}
+std::optional<std::size_t> findViewmodelClip(const AppState& app,const std::string& suffix);
+std::optional<std::size_t> findNativeViewmodelClip(const AppState& app,const std::string& suffix){
+    const auto allowed=[&](const scene::Animation& clip){return (suffix!="melee"||allowedMeleeClip(app,clip))&&(app.selectedWeaponAsset>=app.assetCatalog.entries.size()||validIwSprintSlot(lowerText(app.assetCatalog.entries[app.selectedWeaponAsset].game),lowerText(app.assetCatalog.entries[app.selectedWeaponAsset].name),suffix,lowerText(clip.sourceName)));};
     if(const auto overrideName=weapon::animationFor(app.weaponProfile,suffix)){const auto wanted=lowerText(*overrideName);for(std::size_t i=0;i<app.scene.animations.size();++i){const auto& clip=app.scene.animations[i];const auto source=lowerText(clip.sourceName);if(allowed(clip)&&clip.domain==scene::AnimationDomain::ViewModel&&!clip.tracks.empty()&&(source==wanted||lowerText(std::filesystem::path(source).filename().string())==lowerText(std::filesystem::path(wanted).filename().string())))return i;}}
     if(app.scene.dualWield||app.scene.codmNativeCentimetres||!app.scene.pointBlankWeaponStem.empty())return std::nullopt; // Exact native/paired mappings only.
+    const auto importedGame=app.scene.viewHandsDriverGame.empty()&&app.selectedWeaponAsset<app.assetCatalog.entries.size()?lowerText(app.assetCatalog.entries[app.selectedWeaponAsset].game):app.scene.viewHandsDriverGame;
+    if(assets::imported::additionalFamily(importedGame)){
+        std::optional<std::size_t> selected;std::size_t best=SIZE_MAX;
+        for(std::size_t i=0;i<app.scene.animations.size();++i){const auto& clip=app.scene.animations[i];if(!allowed(clip)||clip.domain!=scene::AnimationDomain::ViewModel||clip.tracks.empty()||assets::imported::additionalAction(importedGame,clip.sourceName)!=suffix)continue;
+            const auto n=lowerText(clip.sourceName);const std::size_t score=n.size()+(n.find("add_")!=std::string::npos?10000:0)+(n.find("_part_02_")!=std::string::npos?1000:0)+(clip.name.starts_with("shared: ")?100000:0);if(score<best){selected=i;best=score;}}
+        if(selected)return selected;
+        // Imported sprint slots must retain their classified semantics. Generic
+        // substring fallback can mistake sprint_jump for a sustained loop.
+        if(suffix=="sprint_loop"||suffix=="sprint_in"||suffix=="sprint_out")return std::nullopt;
+        if(suffix=="ads_fire")return findViewmodelClip(app,"fire");
+        if(suffix=="first_raise")return findViewmodelClip(app,"pullout");
+        if(suffix=="ads_rechamber")return findViewmodelClip(app,"rechamber");
+        if(suffix=="melee"&&app.selectedWeaponAsset<app.assetCatalog.entries.size()&&
+           assets::imported::additionalCategory(importedGame,app.assetCatalog.entries[app.selectedWeaponAsset].name)=="knives")return findViewmodelClip(app,"fire");
+    }
     if(app.viewmodelAnimationPrefix.empty()&&suffix=="ads_fire")return findViewmodelClip(app,"fire");
     if(app.viewmodelAnimationPrefix.empty())return std::nullopt;
     std::vector<std::string> prefixes = {app.viewmodelAnimationPrefix};
@@ -2961,7 +3276,14 @@ std::optional<std::size_t> findViewmodelClip(const AppState& app,const std::stri
     return best;
 }
 
+std::optional<std::size_t> findViewmodelClip(const AppState& app,const std::string& suffix){
+    if(app.weaponProfile.disableSprintAnimations&&suffix.starts_with("sprint_"))return std::nullopt;
+    if(const auto native=findNativeViewmodelClip(app,suffix))return native;
+    if(suffix=="melee"){if(isKnifeWeapon(app)&&!activeWeaponIsCs2(app))return findNativeViewmodelClip(app,"fire");const auto fallback=defaultMeleeClips(app);if(!fallback.empty())return fallback.front();}
+    return std::nullopt;
+}
 std::vector<std::size_t> findViewmodelClips(const AppState& app,const std::string& suffix){
+    if(app.weaponProfile.disableSprintAnimations&&suffix.starts_with("sprint_"))return {};
     std::vector<std::size_t> result;
     const auto variants=weapon::animationVariantsFor(app.weaponProfile,suffix);
     const auto resolve=[&](const std::string& wanted){
@@ -2969,8 +3291,10 @@ std::vector<std::size_t> findViewmodelClips(const AppState& app,const std::strin
         for(std::size_t i=0;i<app.scene.animations.size();++i){const auto& clip=app.scene.animations[i];if(app.selectedWeaponAsset<app.assetCatalog.entries.size()&&!validIwSprintSlot(lowerText(app.assetCatalog.entries[app.selectedWeaponAsset].game),lowerText(app.assetCatalog.entries[app.selectedWeaponAsset].name),suffix,lowerText(clip.sourceName)))continue;if(clip.domain!=scene::AnimationDomain::ViewModel||clip.tracks.empty())continue;const auto source=lowerText(clip.sourceName);if(source==wantedLower||lowerText(std::filesystem::path(source).filename().string())==wantedFile)return i;}
         return static_cast<std::size_t>(-1);
     };
-    for(const auto& variant:variants)if(const auto index=resolve(variant);index!=static_cast<std::size_t>(-1)&&std::find(result.begin(),result.end(),index)==result.end())result.push_back(index);
-    if(result.empty())if(const auto one=findViewmodelClip(app,suffix))result.push_back(*one);
+    for(const auto& variant:variants)if(const auto index=resolve(variant);index!=static_cast<std::size_t>(-1)&&(suffix!="melee"||allowedMeleeClip(app,app.scene.animations[index]))&&std::find(result.begin(),result.end(),index)==result.end())result.push_back(index);
+    if(result.empty())if(const auto one=findNativeViewmodelClip(app,suffix))result.push_back(*one);
+    if(result.empty()&&suffix=="melee")result=defaultMeleeClips(app);
+    if(result.empty()&&suffix=="melee"&&isKnifeWeapon(app)&&!activeWeaponIsCs2(app))return findViewmodelClips(app,"fire");
     if(result.empty()&&suffix=="first_raise")return findViewmodelClips(app,"pullout");
     if(result.empty()&&suffix=="reload_empty")return findViewmodelClips(app,"reload");
     return result;
@@ -3030,29 +3354,32 @@ std::optional<std::size_t> findWorldMantleClip(const AppState& app,float heightI
 bool startViewmodelAimClip(AppState& app,std::size_t index){
     if(index>=app.scene.animations.size())return false;const auto& clip=app.scene.animations[index];const auto source=lowerText(clip.sourceName);
     const bool keepCodmBolt=app.scene.codmNativeCentimetres&&app.actionActive&&(app.activeAction==scene::ActionRole::Fire||(app.gameplayRechamber&&app.activeAction==scene::ActionRole::Reload));
+    const bool keepPullout=!activeWeaponIsCs2(app)&&app.actionActive&&(app.activeAction==scene::ActionRole::Equip||app.activeAction==scene::ActionRole::FirstRaise);
     const auto keptAction=app.activeAction;const auto boltIndex=app.actionAnimationIndex;const auto boltFrame=app.actionFrame,boltElapsed=app.actionElapsed,boltDuration=app.actionDurationOverride;const bool boltOverlay=app.actionOverlay;
     const bool down=weapon::isAdsDownClip(source)||(app.scene.codmNativeCentimetres&&cadence::codm_actions::isDown(source))||findViewmodelClip(app,"ads_down")==index;
     float adsAmount=app.viewmodelAdsEngaged?1.0f:0.0f;
-    if(app.viewmodelAdsBaseAnimation<app.scene.animations.size()){
+    if((app.viewmodelAdsEngaged||app.viewmodelAdsExiting)&&app.viewmodelAdsBaseAnimation<app.scene.animations.size()){
         const auto& activeClip=app.scene.animations[app.viewmodelAdsBaseAnimation];
         const float phase=activeClip.durationFrames?std::clamp(app.viewmodelAdsBaseFrame/static_cast<float>(activeClip.durationFrames),0.0f,1.0f):1.0f;
-        const bool heldHipEndpoint=!app.viewmodelAdsEngaged&&!app.viewmodelAdsExiting&&(weapon::isAdsDownClip(lowerText(activeClip.sourceName))||(app.scene.codmNativeCentimetres&&cadence::codm_actions::isDown(activeClip.sourceName)));
-        adsAmount=heldHipEndpoint?0.0f:(app.viewmodelAdsExiting?1.0f-phase:phase);
+        // A completed hip endpoint is not "100% ADS", regardless of the
+        // export's clip naming convention (e.g. Black Squad's ZoomOut).
+        adsAmount=app.viewmodelAdsExiting?1.0f-phase:phase;
     }
     if(down&&!app.viewmodelAdsEngaged&&adsAmount<=0.0f){app.status="ADS down ignored — enter ADS first";return false;}
     if(!down&&app.viewmodelAdsEngaged&&!app.viewmodelAdsExiting){app.status="Already holding ADS";return false;}
-    if(!down||app.scene.codmNativeCentimetres)beginInterruptPoseBlend(app,std::max(0.001f,down?std::min(.08f,app.weaponTiming.adsOut):app.weaponTiming.adsIn));
+    if(!down)app.adsStartedDuringPullout=keepPullout;
+    if((down&&app.adsStartedDuringPullout)||(!keepPullout&&(!down||app.scene.codmNativeCentimetres)))beginInterruptPoseBlend(app,std::max(0.001f,down?std::min(.08f,app.weaponTiming.adsOut):app.weaponTiming.adsIn));
     // Capture the old evaluated pose before changing the action's reference.
     if(down&&app.scene.codmNativeCentimetres&&app.actionActive&&(app.activeAction==scene::ActionRole::Fire||(app.activeAction==scene::ActionRole::Reload&&app.gameplayRechamber))){
         if(const auto up=findViewmodelClip(app,"ads_up")){app.codmReleasedFireReference=*up;app.codmReleasedFireSerial=app.acceptedShotSerial;}
     }else if(!down)app.codmReleasedFireReference=static_cast<std::size_t>(-1);
-    if(!down){if(const auto idle=findViewmodelClip(app,"idle")){const bool changingBase=*idle!=app.animationIndex;selectAnimation(app,*idle,false);if(changingBase){app.activeTransitionDuration=std::max(0.001f,app.weaponTiming.adsIn);app.transitionElapsed=0;app.transitioning=app.previousAnimationIndex!=app.animationIndex;}}}
+    if(!down&&!keepPullout){if(const auto idle=findViewmodelClip(app,"idle")){const bool changingBase=*idle!=app.animationIndex;selectAnimation(app,*idle,false);if(changingBase){app.activeTransitionDuration=std::max(0.001f,app.weaponTiming.adsIn);app.transitionElapsed=0;app.transitioning=app.previousAnimationIndex!=app.animationIndex;}}}
     const float phase=down?1.0f-adsAmount:adsAmount;
     const float duration=std::max(0.001f,down?app.weaponTiming.adsOut:app.weaponTiming.adsIn);
     app.viewmodelAdsBaseAnimation=index;app.viewmodelAdsBaseFrame=phase*static_cast<float>(clip.durationFrames);app.viewmodelAdsTransitionElapsed=phase*duration;app.viewmodelAdsPoseHold=!down;
     app.actionActive=true;app.actionOverlay=true;app.activeAction=scene::ActionRole::Aim;app.actionAnimationIndex=index;app.actionFrame=app.viewmodelAdsBaseFrame;app.actionElapsed=app.viewmodelAdsTransitionElapsed;app.playing=true;
     app.viewmodelAdsExiting=down;app.actionDurationOverride=duration;if(!down)app.viewmodelAdsEngaged=true;
-    if(keepCodmBolt){app.activeAction=keptAction;app.actionAnimationIndex=boltIndex;app.actionFrame=boltFrame;app.actionElapsed=boltElapsed;app.actionDurationOverride=boltDuration;app.actionOverlay=boltOverlay;}
+    if(keepCodmBolt||keepPullout){app.activeAction=keptAction;app.actionAnimationIndex=boltIndex;app.actionFrame=boltFrame;app.actionElapsed=boltElapsed;app.actionDurationOverride=boltDuration;app.actionOverlay=boltOverlay;}
     app.status=std::string(down?"ADS tag transition down — ":"ADS tag transition up — ")+clip.sourceName;return true;
 }
 
@@ -3141,14 +3468,20 @@ float yyReturnDuration(const AppState& app){
 void setActorStance(AppState& app,scene::Stance stance){
     if(app.gameplayStance==stance)return;
     if(stance==scene::Stance::Stand&&app.authoredCrouch&&app.loadedMap){
-        if(app.loadedMap->gameplay.crouch(app.actorPosition,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72))||gameplay::mantle::sweepRounded(*app.loadedMap,app.actorPosition,app.actorPosition,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72)).startSolid)return;
+        if(app.loadedMap->gameplay.crouch(app.actorPosition,scene::course::kPlayerRadius,actorCollisionHeight(app,scene::Stance::Stand))||actorCollisionSweep(app,*app.loadedMap,app.actorPosition,app.actorPosition,scene::course::kPlayerRadius,actorCollisionHeight(app,scene::Stance::Stand),true).startSolid)return;
     }
     const auto previous=app.gameplayStance;app.gameplayStance=stance;
     const float ratio=gameplay::iw::viewHeight(stance)/gameplay::iw::viewHeight(scene::Stance::Stand);app.actorViewHeightStart=app.actorViewHeight;app.actorViewHeightTarget=app.actorStandingViewHeight*ratio;
     app.actorViewHeightElapsed=0;app.actorViewHeightDuration=gameplay::iw::stanceTransitionTime(previous,stance);
 }
 
-void setMeleeKnifeVisible(AppState& app,bool visible){if(app.meleeKnifeBone>=app.scene.skeleton.bones.size())return;if(visible)app.scene.hiddenBones.erase(app.meleeKnifeBone);else app.scene.hiddenBones.insert(app.meleeKnifeBone);}
+void setMeleeKnifeVisible(AppState& app,bool visible){
+    if(app.meleeKnifeBone>=app.scene.skeleton.bones.size())return;
+    for(std::size_t i=0;i<app.scene.skeleton.bones.size();++i){
+        if(i!=app.meleeKnifeBone&&!app.scene.skeleton.bones[i].name.starts_with("melee_knife_"))continue;
+        if(visible)app.scene.hiddenBones.erase(i);else app.scene.hiddenBones.insert(i);
+    }
+}
 
 bool playExperimentalExoJump(AppState& app){
     if(!isViewmodelRig(app)||app.selectedWeaponAsset>=app.assetCatalog.entries.size())return false;
@@ -3228,7 +3561,7 @@ const gameplay::SprintMotion* sprintMotionFor(const AppState& app){
 }
 
 void updateSprintMotion(AppState& app,float delta){
-    const bool missingSprint=app.experimentalSprintMotion&&app.actorSprinting&&sprintMotionFor(app)&&
+    const bool missingSprint=!app.weaponProfile.disableSprintAnimations&&app.experimentalSprintMotion&&app.actorSprinting&&sprintMotionFor(app)&&
         !findViewmodelClip(app,"sprint_in")&&!findViewmodelClip(app,"sprint_loop")&&!findViewmodelClip(app,"sprint_out");
     const bool sprint=missingSprint&&app.actorMode&&isViewmodelRig(app)&&
         !app.gameplayAds&&!app.actionActive&&app.runtimeLayers.empty()&&!app.actorMantling&&app.weaponSwitchStage==0&&
@@ -3259,13 +3592,13 @@ std::vector<scene::Mat4> evaluateCurrentPose(AppState& app,bool neutralGunPositi
         pose=cadence::codm_actions::alignedHipBolt(app.scene,base,app.actionAnimationIndex,app.actionFrame,nativeFire?1.f:w);
     }else
 #include "app/PointBlankPose.inc"
-if(persistentAdsLayer){std::vector<scene::PoseSlot> slots;if(hasBaseTransition){scene::PoseSlot baseTransitionSlot;baseTransitionSlot.nodes.push_back({app.animationIndex,app.animationFrame,classicBlend,scene::LayerMode::Override,false});slots.push_back(std::move(baseTransitionSlot));}scene::PoseSlot adsSlot;const auto& adsClip=app.scene.animations[app.viewmodelAdsBaseAnimation];const float adsProgress=adsClip.durationFrames?std::clamp(app.viewmodelAdsBaseFrame/static_cast<float>(adsClip.durationFrames),0.0f,1.0f):1.0f;const float adsWeight=app.viewmodelAdsExiting?(app.scene.codmNativeCentimetres?cadence::codm_actions::adsDownWeight(adsProgress):1.0f):adsProgress*adsProgress*(3.0f-2.0f*adsProgress);const bool preserveMechanisms=app.actionActive&&app.activeAction==scene::ActionRole::Reload;adsSlot.nodes.push_back({app.viewmodelAdsBaseAnimation,app.viewmodelAdsBaseFrame,adsWeight,animationLayerMode(adsClip),false,preserveMechanisms});slots.push_back(std::move(adsSlot));
-        if(!app.runtimeLayers.empty()||(app.actionActive&&app.actionOverlay&&app.activeAction!=scene::ActionRole::Aim&&app.actionAnimationIndex<app.scene.animations.size())){scene::PoseSlot actionSlot;actionSlot.nodes.reserve(app.runtimeLayers.size()+1);for(const auto& layer:app.runtimeLayers)actionSlot.nodes.push_back({layer.animation,layer.frame,layer.weight,layer.mode,false,false,true});
+if(persistentAdsLayer){std::vector<scene::PoseSlot> slots;if(hasBaseTransition){scene::PoseSlot baseTransitionSlot;baseTransitionSlot.nodes.push_back({app.animationIndex,app.animationFrame,classicBlend,scene::LayerMode::Override,false});slots.push_back(std::move(baseTransitionSlot));}scene::PoseSlot adsSlot;const auto& adsClip=app.scene.animations[app.viewmodelAdsBaseAnimation];const float adsProgress=adsClip.durationFrames?std::clamp(app.viewmodelAdsBaseFrame/static_cast<float>(adsClip.durationFrames),0.0f,1.0f):1.0f;const float adsWeight=!cadence::imported_actions::useAdsPose(app.scene,app.viewmodelAdsBaseAnimation,app.viewmodelAdsEngaged,app.viewmodelAdsExiting)?0.f:app.viewmodelAdsExiting?(app.adsStartedDuringPullout?(1.f-adsProgress)*(1.f-adsProgress)*(1.f+2.f*adsProgress):app.scene.codmNativeCentimetres?cadence::codm_actions::adsDownWeight(adsProgress):1.0f):adsProgress*adsProgress*(3.0f-2.0f*adsProgress);const bool preserveMechanisms=app.actionActive&&app.activeAction==scene::ActionRole::Reload;adsSlot.nodes.push_back({app.viewmodelAdsBaseAnimation,app.viewmodelAdsBaseFrame,adsWeight,animationLayerMode(adsClip),false,preserveMechanisms});slots.push_back(std::move(adsSlot));
+        if(!app.runtimeLayers.empty()||(app.actionActive&&app.actionOverlay&&app.activeAction!=scene::ActionRole::Aim&&app.actionAnimationIndex<app.scene.animations.size())){scene::PoseSlot actionSlot;actionSlot.nodes.reserve(app.runtimeLayers.size()+1);for(const auto& layer:app.runtimeLayers)actionSlot.nodes.push_back(cadence::imported_actions::adsFireLayer(app.scene,app.weaponProfile,layer.action,{layer.animation,layer.frame,layer.weight,layer.mode,false,false,true}));
             if(app.actionActive&&app.actionOverlay&&app.activeAction!=scene::ActionRole::Aim&&app.actionAnimationIndex<app.scene.animations.size()){
                 const auto& action=app.scene.animations[app.actionAnimationIndex];const float duration=app.actionDurationOverride>0?app.actionDurationOverride:action.durationFrames/std::max(1.0f,action.framerate),fade=actionLayerBlendTime(app,app.activeAction,duration);
                 float actionWeight=(app.activeAction==scene::ActionRole::Fire)?1.0f:std::min(1.0f,app.actionElapsed/fade);
                 if(!actionRequiresHold(app.activeAction)&&!(app.scene.codmNativeCentimetres&&app.activeAction==scene::ActionRole::Fire)){const float fadeOut=std::clamp((duration-app.actionElapsed)/std::max(0.001f,fade),0.0f,1.0f);actionWeight=std::min(actionWeight,fadeOut*fadeOut*(3.0f-2.0f*fadeOut));}
-                if(releasedCodmFire||nativeHipBolt)actionSlot.nodes.push_back(fireReleaseLayer(actionWeight));else actionSlot.nodes.push_back({app.actionAnimationIndex,app.actionFrame,actionWeight,animationLayerMode(action),false,false,true});}slots.push_back(std::move(actionSlot));}
+                if(releasedCodmFire||nativeHipBolt)actionSlot.nodes.push_back(fireReleaseLayer(actionWeight));else actionSlot.nodes.push_back(cadence::imported_actions::adsFireLayer(app.scene,app.weaponProfile,app.activeAction,{app.actionAnimationIndex,app.actionFrame,actionWeight,animationLayerMode(action),false,false,true}));}slots.push_back(std::move(actionSlot));}
         pose=app.scene.samplePoseSlots(layeredBaseAnimation,layeredBaseFrame,std::move(slots));}
     else if(releasedCodmFire||nativeHipBolt){
         std::vector<scene::PoseSlot> slots;
@@ -3320,8 +3653,8 @@ if(persistentAdsLayer){std::vector<scene::PoseSlot> slots;if(hasBaseTransition){
                 }
                 if(!app.runtimeLayers.empty()||(app.actionActive&&app.actionOverlay&&app.activeAction!=scene::ActionRole::Aim&&app.actionAnimationIndex<app.scene.animations.size())){
                     scene::PoseSlot actionSlot;
-                    for(const auto& layer:app.runtimeLayers)actionSlot.nodes.push_back({layer.animation,layer.frame,layer.weight,layer.mode,false,false,true});
-                    if(app.actionActive&&app.actionOverlay&&app.activeAction!=scene::ActionRole::Aim&&app.actionAnimationIndex<app.scene.animations.size())actionSlot.nodes.push_back({app.actionAnimationIndex,app.actionFrame,1.0f,animationLayerMode(app.scene.animations[app.actionAnimationIndex]),false,false,true});
+                    for(const auto& layer:app.runtimeLayers)actionSlot.nodes.push_back(cadence::imported_actions::adsFireLayer(app.scene,app.weaponProfile,layer.action,{layer.animation,layer.frame,layer.weight,layer.mode,false,false,true}));
+                    if(app.actionActive&&app.actionOverlay&&app.activeAction!=scene::ActionRole::Aim&&app.actionAnimationIndex<app.scene.animations.size())actionSlot.nodes.push_back(cadence::imported_actions::adsFireLayer(app.scene,app.weaponProfile,app.activeAction,{app.actionAnimationIndex,app.actionFrame,1.0f,animationLayerMode(app.scene.animations[app.actionAnimationIndex]),false,false,true}));
                     cameraSlots.push_back(std::move(actionSlot));
                 }
                 const auto noAdsPose=cameraSlots.empty()?app.scene.samplePose(layeredBaseAnimation,layeredBaseFrame):app.scene.samplePoseSlots(layeredBaseAnimation,layeredBaseFrame,cameraSlots);
@@ -3341,6 +3674,12 @@ if(persistentAdsLayer){std::vector<scene::PoseSlot> slots;if(hasBaseTransition){
             auto cameraReference=hasCameraBone?app.scene.skeleton.bones[cameraBone->second].restGlobal:scene::Mat4::identity();
             if(app.animationIndex<app.scene.animations.size())
                 if(const auto& reference=app.scene.animations[app.animationIndex].viewmodelCameraReference)cameraReference=*reference;
+            // A generated GITS camera follows character-space placement so
+            // reloads remain framed. That is a rig anchor, not authored world
+            // camera motion: normalize it at the evaluated pose, including
+            // crossfades, rather than exposing root transport to the player.
+            if(hasCameraBone&&(app.scene.importedViewGame=="gitsfa"||app.scene.viewHandsDriverGame=="gitsfa")&&
+               !app.scene.skeleton.boneByName.contains("Camera_dummy"))cameraReference=cameraWithoutAds;
             const auto bindToGameplayCamera=hasCameraBone
                 ?(desiredCamera*scene::inverseAffine(cameraReference))
                 :desiredCamera;
@@ -3374,7 +3713,10 @@ if(persistentAdsLayer){std::vector<scene::PoseSlot> slots;if(hasBaseTransition){
                 app.viewmodelRigAnchor=desiredCamera*motion->sample(app.sprintMotionTime,smooth*app.sprintMotionStrength)*scene::inverseAffine(desiredCamera)*app.viewmodelRigAnchor;
             }
             const auto presentationCamera=hasCameraBone?app.viewmodelRigAnchor*pose[cameraBone->second]:desiredCamera;
-            app.viewmodelRigAnchor=desiredCamera*slide*boost*mantleMotion*scene::inverseAffine(desiredCamera)*app.viewmodelRigAnchor;
+            const auto& turning=app.weaponProfile;
+            const bool turnEnabled=turning.overrideWeaponTurning?turning.weaponTurningEnabled:app.experimentalWeaponTurning;
+            const auto weaponTurn=turnEnabled&&!app.takePreview?app.weaponTurn.transform(app.adsCameraBlend,turning.overrideWeaponTurning?turning.weaponTurningHipMultiplier:app.weaponTurningHipMultiplier,turning.overrideWeaponTurning?turning.weaponTurningAdsMultiplier:app.weaponTurningAdsMultiplier):scene::Mat4::identity();
+            app.viewmodelRigAnchor=desiredCamera*weaponTurn*slide*boost*mantleMotion*scene::inverseAffine(desiredCamera)*app.viewmodelRigAnchor;
             app.viewmodelRigAnchorValid=true;
             for(auto& bone:pose)bone=app.viewmodelRigAnchor*bone;
             // Store an unmodified camera channel for first-person take playback.
@@ -3406,10 +3748,15 @@ if(persistentAdsLayer){std::vector<scene::PoseSlot> slots;if(hasBaseTransition){
         } else {
             app.actorViewCameraValid=false;
             const bool preserveDeathRoot=app.actionActive&&app.activeAction==scene::ActionRole::Death;
-            if(!preserveDeathRoot){auto anchor=app.scene.skeleton.boneByCanonicalName.find("tag_origin");if(anchor==app.scene.skeleton.boneByCanonicalName.end())anchor=app.scene.skeleton.boneByCanonicalName.find("j_mainroot");
+            bool nativeGaitTransport=false;
+            if(!preserveDeathRoot&&app.animationIndex<app.scene.animations.size()){
+                const auto& clip=app.scene.animations[app.animationIndex];
+                nativeGaitTransport=gameplay::presentation::suppressPlayerGaitTransport(app.scene.skeleton,pose,clip.motion,clip.action);
+            }
+            if(!preserveDeathRoot&&!nativeGaitTransport){auto anchor=app.scene.skeleton.boneByCanonicalName.find("tag_origin");if(anchor==app.scene.skeleton.boneByCanonicalName.end())anchor=app.scene.skeleton.boneByCanonicalName.find("j_mainroot");
                 if(anchor!=app.scene.skeleton.boneByCanonicalName.end()&&anchor->second<pose.size()){const auto& animated=pose[anchor->second];const auto& rest=app.scene.skeleton.bones[anchor->second].restGlobal;const scene::Vec3 rootDelta{animated.v[12]-rest.v[12],animated.v[13]-rest.v[13],animated.v[14]-rest.v[14]};for(auto& bone:pose){bone.v[12]-=rootDelta.x;bone.v[13]-=rootDelta.y;bone.v[14]-=rootDelta.z;}}}
             const scene::Vec3 effectiveActorPos = app.actorMode ? app.actorRenderPosition : app.actorPosition;
-            const float groundLift=app.scene.bounds.valid?-app.scene.bounds.minimum.z+0.25f:0.25f;const auto actorTransform=scene::translation(effectiveActorPos+scene::Vec3{0,0,groundLift})*scene::rotation(scene::fromEulerRadians({0,0,app.actorYaw}));for(auto& bone:pose)bone=actorTransform*bone;
+            const float groundLift=app.scene.bounds.valid?-app.scene.bounds.minimum.z+0.25f:0.25f;const auto actorTransform=gameplay::presentation::bodyWorldTransform(app.scene.skeleton,app.actorPosition,app.actorRenderPosition,app.actorMode,app.actorYaw,groundLift);for(auto& bone:pose)bone=actorTransform*bone;
             if(!app.actorThirdPerson){
                 const float cp=std::cos(app.cameraPitch),sp=std::sin(app.cameraPitch),cy=std::cos(app.actorYaw),sy=std::sin(app.actorYaw);
                 const scene::Vec3 forward{cp*cy,cp*sy,sp};
@@ -3429,9 +3776,15 @@ if(persistentAdsLayer){std::vector<scene::PoseSlot> slots;if(hasBaseTransition){
         if(!reloading)pose[clip1->second]=scene::trs(scene::Vec3{0,0,0},scene::Quat{0,0,0,1},scene::Vec3{0,0,0});
     }
     if(app.interruptPoseDuration>0&&app.interruptPoseElapsed<app.interruptPoseDuration&&app.interruptPoseSource.size()==pose.size()){
-        float alpha=std::clamp(app.interruptPoseElapsed/app.interruptPoseDuration,0.0f,1.0f);alpha=alpha*alpha*(3.0f-2.0f*alpha);
+        float alpha=std::clamp(app.interruptPoseElapsed/app.interruptPoseDuration,0.0f,1.0f);
+        alpha=app.interruptUsesYyCurve?std::clamp(app.interruptYyCurve.sample(alpha),0.f,1.f):alpha*alpha*(3.0f-2.0f*alpha);
         const auto live=app.yyLiveAnimation<app.scene.animations.size()&&app.yyLiveReference.size()==pose.size()?app.scene.samplePose(app.yyLiveAnimation,app.yyLiveFrame):std::vector<scene::Mat4>{};
+        const auto presentationCameraBone=app.scene.skeleton.boneByCanonicalName.find("tag_camera");
         for(std::size_t i=0;i<pose.size();++i){
+            // The rig anchor includes weapon-only turning/offsets. Applying it
+            // to the captured camera again leaks those motions into replay's
+            // camera channel during interrupted actions.
+            if(app.interruptPoseCameraRelative&&presentationCameraBone!=app.scene.skeleton.boneByCanonicalName.end()&&i==presentationCameraBone->second)continue;
             auto localSource=app.interruptPoseSource[i];
             if(live.size()==pose.size()){
                 scene::Vec3 p0,p1,p,s0,s1,s;scene::Quat q0,q1,q;
@@ -3504,6 +3857,7 @@ if(persistentAdsLayer){std::vector<scene::PoseSlot> slots;if(hasBaseTransition){
 }
 
 void beginInterruptPoseBlend(AppState& app,float duration){
+    app.interruptUsesYyCurve=false;
     app.interruptPoseSource=evaluateCurrentPose(app);app.interruptPoseCameraRelative=app.actorMode&&isViewmodelRig(app)&&app.viewmodelRigAnchorValid;if(app.interruptPoseCameraRelative){const auto inverseAnchor=scene::inverseAffine(app.viewmodelRigAnchor);for(auto& bone:app.interruptPoseSource)bone=inverseAnchor*bone;}app.interruptPoseElapsed=0;app.interruptPoseDuration=std::max(0.001f,duration);
     app.yyLiveAnimation=SIZE_MAX;app.yyLiveReference.clear();
 }
@@ -3520,6 +3874,7 @@ void beginYyV4LiveBlend(AppState& app,float duration,bool carryTail=true){
         clip=app.yyLiveAnimation;frame=app.yyLiveFrame;rate=app.yyLiveRate;loop=app.yyLiveLoop;
     }
     beginInterruptPoseBlend(app,duration);
+    if(app.weaponSwitchAlgorithm==5){app.interruptUsesYyCurve=true;app.interruptYyCurve=app.weaponTiming.iw4YyCurve;app.interruptYyCurve.sanitize();app.interruptYyCurve.points[0].y=0;app.interruptYyCurve.points[app.interruptYyCurve.count-1].y=1;}
     if(clip>=app.scene.animations.size())return;
     app.yyLiveAnimation=clip;app.yyLiveFrame=frame;app.yyLiveRate=rate;app.yyLiveLoop=loop;
     app.yyLiveReference=app.scene.samplePose(clip,frame);
@@ -3566,7 +3921,7 @@ std::vector<scene::Mat4> evaluateHiddenWorldActorPose(AppState& app,std::string*
                 for(size_t b=0;b<pose.size();++b){int ancestor=static_cast<int>(b);while(ancestor>=0&&static_cast<size_t>(ancestor)!=spine->second)ancestor=actor.skeleton.bones[ancestor].parent;if(ancestor>=0)pose[b]=turn*pose[b];}
             }
         }
-        const auto transform=gameplay::presentation::worldActorTransform(app.actorPosition,app.actorRenderPosition,renderSample&&app.actorMode,app.actorYaw+app.actorWorldFacingOffset,lift);
+        const auto transform=gameplay::presentation::bodyWorldTransform(actor.skeleton,app.actorPosition,app.actorRenderPosition,renderSample&&app.actorMode,app.actorYaw+app.actorWorldFacingOffset,lift);
         for(auto& bone:pose)bone=transform*bone;
         return pose;
     };
@@ -3777,8 +4132,17 @@ std::vector<scene::Mat4> evaluateHiddenWorldActorPose(AppState& app,std::string*
         baseLocal = actor.sampleLocalPose(*base, baseFrame);
     }
 
-    if(nativeGame=="pointblank"&&!app.actorMantling&&app.gameplayStance!=scene::Stance::Prone){scene::AnimationQuery q;q.domain=scene::AnimationDomain::PlayerTorso;q.motion=effectiveSpeed>10?scene::MotionRole::Run:scene::MotionRole::Idle;q.weapon=worldWeapon;q.stance=app.gameplayStance;q.preferredGame="pointblank";if(auto idle=app.playerWorldTorsoCache.find(actor,q)){const auto& c=actor.animations[*idle];scene::pointblank::overlayTorso(actor,*idle,c.durationFrames?std::fmod(app.gameplayClock*c.framerate,static_cast<float>(c.durationFrames)):0,baseLocal);}}
-    std::optional<std::size_t> overlay;if(app.actionActive&&app.activeAction!=scene::ActionRole::None){scene::AnimationQuery actionQuery;actionQuery.domain=scene::AnimationDomain::PlayerTorso;actionQuery.action=app.activeAction;actionQuery.weapon=worldWeapon;actionQuery.stance=app.gameplayStance;actionQuery.ads=app.gameplayAds;actionQuery.preferredGame=nativeGame;actionQuery.forceT6Locomotion=app.forceT6PlayerLocomotion;overlay=app.worldSelectionCacheEnabled?app.playerWorldActionCache.find(actor,actionQuery):scene::findBestAnimation(actor,actionQuery);if(!overlay){actionQuery.weapon=scene::WeaponClass::Any;overlay=app.worldSelectionCacheEnabled?app.playerWorldActionCache.find(actor,actionQuery):scene::findBestAnimation(actor,actionQuery);}}
+    const auto pbActionFamily=app.selectedWeaponAsset<app.assetCatalog.entries.size()&&lowerText(app.assetCatalog.entries[app.selectedWeaponAsset].game)=="pointblank"?scene::pointblank::meleeFamilyFromViewmodel(app.assetCatalog.entries[app.selectedWeaponAsset].name):std::string{};
+    if(nativeGame=="pointblank"&&!app.actorMantling&&app.gameplayStance!=scene::Stance::Prone){scene::AnimationQuery q;q.domain=scene::AnimationDomain::PlayerTorso;q.motion=effectiveSpeed>10?scene::MotionRole::Run:scene::MotionRole::Idle;q.weapon=worldWeapon;q.stance=app.gameplayStance;q.preferredGame="pointblank";q.preferredWeaponFamily=pbActionFamily;if(auto idle=app.playerWorldTorsoCache.find(actor,q)){const auto& c=actor.animations[*idle];scene::pointblank::overlayTorso(actor,*idle,c.durationFrames?std::fmod(app.gameplayClock*c.framerate,static_cast<float>(c.durationFrames)):0,baseLocal);}}
+    std::optional<std::size_t> overlay;if(app.actionActive&&app.activeAction!=scene::ActionRole::None){scene::AnimationQuery actionQuery;actionQuery.domain=scene::AnimationDomain::PlayerTorso;actionQuery.action=app.activeAction;actionQuery.weapon=worldWeapon;actionQuery.stance=app.gameplayStance;actionQuery.ads=app.gameplayAds;actionQuery.preferredGame=nativeGame;actionQuery.forceT6Locomotion=app.forceT6PlayerLocomotion;actionQuery.preferredWeaponFamily=pbActionFamily;overlay=app.worldSelectionCacheEnabled?app.playerWorldActionCache.find(actor,actionQuery):scene::findBestAnimation(actor,actionQuery);if(!overlay){actionQuery.weapon=scene::WeaponClass::Any;overlay=app.worldSelectionCacheEnabled?app.playerWorldActionCache.find(actor,actionQuery):scene::findBestAnimation(actor,actionQuery);}}
+    if(scene::imported::usesNativeHoldingTorso(nativeGame)&&!app.actorMantling&&app.gameplayStance!=scene::Stance::Prone){
+        scene::AnimationQuery q;q.domain=scene::AnimationDomain::PlayerTorso;q.motion=scene::imported::holdingTorsoMotion(nativeGame,motion);q.weapon=worldWeapon;q.stance=app.gameplayStance;q.preferredGame=nativeGame;
+        if(auto hold=app.playerWorldTorsoCache.find(actor,q);hold&&scene::imported::isNativeHoldingTorso(actor.animations[*hold])){
+            const auto& h=actor.animations[*hold];const float heldFrame=nativeGame=="cso2"&&h.durationFrames?std::fmod(app.gameplayClock*h.framerate,static_cast<float>(h.durationFrames)):0;
+            const auto held=actor.sampleLocalPose(*hold,heldFrame);const auto upper=scene::imported::nativeBodyTorsoMask(actor.skeleton);
+            for(std::size_t b=0;b<baseLocal.size()&&b<held.size();++b)if(upper[b])baseLocal[b].rotation=held[b].rotation;
+        }
+    }
     bool adsHold=false;
     if(!overlay&&app.gameplayAds&&isGroundWorldMotion(motion)&&motion!=scene::MotionRole::Idle){
         auto holdQuery=query;holdQuery.motion=scene::MotionRole::Idle;holdQuery.direction=scene::Direction::Any;holdQuery.ads=true;
@@ -3791,7 +4155,9 @@ std::vector<scene::Mat4> evaluateHiddenWorldActorPose(AppState& app,std::string*
     app.actorWorldActionBlend.apply(actor,overlay,actionFrame,presentationDelta,std::max(.045f,app.actionBlendTime),baseLocal,true);
     auto pose=actor.globalPose(baseLocal);
 
-    if(const auto root=actor.skeleton.boneByCanonicalName.find("tag_origin");root!=actor.skeleton.boneByCanonicalName.end()&&root->second<pose.size()){const auto& animated=pose[root->second];const auto& rest=actor.skeleton.bones[root->second].restGlobal;const scene::Vec3 delta{animated.v[12]-rest.v[12],animated.v[13]-rest.v[13],animated.v[14]-rest.v[14]};for(auto& bone:pose){bone.v[12]-=delta.x;bone.v[13]-=delta.y;bone.v[14]-=delta.z;}}
+    const bool nativeGaitTransport=gameplay::presentation::suppressPlayerGaitTransport(actor.skeleton,pose,baseClip.motion,baseClip.action);
+
+    if(const auto root=actor.skeleton.boneByCanonicalName.find("tag_origin");!nativeGaitTransport&&root!=actor.skeleton.boneByCanonicalName.end()&&root->second<pose.size()){const auto& animated=pose[root->second];const auto& rest=actor.skeleton.bones[root->second].restGlobal;const scene::Vec3 delta{animated.v[12]-rest.v[12],animated.v[13]-rest.v[13],animated.v[14]-rest.v[14]};for(auto& bone:pose){bone.v[12]-=delta.x;bone.v[13]-=delta.y;bone.v[14]-=delta.z;}}
     // Mantles carry an authored vertical root trajectory. Removing it and
     // adding the physics arc makes the raised pelvis climb twice. Keep the
     // authored vertical presentation, fitted to the actual ledge height.
@@ -3865,11 +4231,12 @@ bool liveBotWeaponHidden(const AppState& app,std::size_t i){
     return hide;
 }
 bool importedCameraScope(const AppState& app){
+    if(app.weaponTiming.instantScope)return true;
     return app.selectedWeaponAsset<app.assetCatalog.entries.size()&&assets::imported::sourceFamily(lowerText(app.assetCatalog.entries[app.selectedWeaponAsset].game))&&weapon::isSniper(app.weaponProfile.archetype)&&!findViewmodelClip(app,"ads_up");
 }
 std::uint8_t livePlayerVisibility(const AppState& app){
     return cadence::actorVisibility(bareHandsMantleHidesWeapon(app)||(app.actionActive&&cadence::equipmentAction(app.activeAction)),
-        app.actorMode&&app.gameplayAds&&app.viewmodelAdsEngaged,app.adsCameraBlend,app.weaponTiming.hideWeaponOnAds,weapon::isSniper(app.weaponProfile.archetype));
+        app.actorMode&&app.gameplayAds&&app.viewmodelAdsEngaged,app.adsCameraBlend,app.weaponTiming.hideWeaponOnAds||app.weaponTiming.instantScope,weapon::isSniper(app.weaponProfile.archetype)||app.weaponTiming.instantScope);
 }
 bool recordedWeaponHidden(const take::RecordedActorState& actor){
     if(actor.visibility&take::VisibilityKnown)return (actor.visibility&take::HideWeapon)!=0;
@@ -3910,9 +4277,10 @@ void captureTakeSample(AppState& app,float time){
     std::sort(sample.hiddenBones.begin(),sample.hiddenBones.end());sample.hiddenBones.erase(std::unique(sample.hiddenBones.begin(),sample.hiddenBones.end()),sample.hiddenBones.end());
     if(app.recordedTake.botCount>0){
         if(!app.botActorScene||app.bots.size()!=app.recordedTake.botCount||app.botActorPoses.size()!=app.recordedTake.botCount)return;
-        sample.bots.reserve(app.recordedTake.botCount);for(std::size_t i=0;i<app.recordedTake.botCount;++i){if(app.botActorPoses[i].size()!=app.recordedTake.botBoneCount)return;const auto& bot=app.bots[i];take::RecordedActorState recorded;recorded.id=bot.id;recorded.modelVariant=bot.modelVariant;recorded.health=bot.health;recorded.alive=bot.alive;recorded.visibility=take::VisibilityKnown|(liveBotWeaponHidden(app,i)?take::HideWeapon:0);recorded.pose=app.botActorPoses[i];recorded.primaryFrame=bot.animationFrame;recorded.torsoFrame=bot.actionFrame;if(bot.animation<app.botActorScene->animations.size())recorded.primaryClip=app.botActorScene->animations[bot.animation].sourceName;if(bot.actionAnimation<app.botActorScene->animations.size())recorded.torsoClip=app.botActorScene->animations[bot.actionAnimation].sourceName;sample.bots.push_back(std::move(recorded));}
+        sample.bots.reserve(app.recordedTake.botCount);for(std::size_t i=0;i<app.recordedTake.botCount;++i){if(app.botActorPoses[i].size()!=app.recordedTake.botBoneCount)return;const auto& bot=app.bots[i];take::RecordedActorState recorded;recorded.id=bot.id;recorded.modelVariant=bot.modelVariant;recorded.health=bot.health;recorded.alive=bot.alive;recorded.visibility=take::VisibilityKnown|(liveBotWeaponHidden(app,i)?take::HideWeapon:0);recorded.pose=app.botActorPoses[i];if(i<app.botRagdolls.size()&&app.botRagdolls[i].weapon)recorded.detached=app.botRagdolls[i].weapon->pose();recorded.primaryFrame=bot.animationFrame;recorded.torsoFrame=bot.actionFrame;if(bot.animation<app.botActorScene->animations.size())recorded.primaryClip=app.botActorScene->animations[bot.animation].sourceName;if(bot.actionAnimation<app.botActorScene->animations.size())recorded.torsoClip=app.botActorScene->animations[bot.actionAnimation].sourceName;sample.bots.push_back(std::move(recorded));}
     }
     recordingProbe.stage(2);
+    for(const auto& b:app.retainedBodies.bodies)if(b.pose.size()==app.recordedTake.botBoneCount&&!app.recordedTake.botActor.empty())sample.corpses.push_back({b.id,b.state.variant,b.opacity,b.pose,b.state.weapon?b.state.weapon->pose():std::vector<scene::DetachedAttachment>{}});
     if(sample.pose.size()==slotBones){
         const auto previousBytes=app.takeMemory.estimatedBytes(app.recordedTake);
         app.recordedTake.samples.push_back(std::move(sample));app.takeMemory.update(app.recordedTake);
@@ -4029,17 +4397,29 @@ bool restoreCharacterRigParts(const AppState& app,const take::ActorManifest& man
 }
 
 scene::CastScene preparePointBlankWorldWeapon(AppState&,const cast::Document&,const scene::Skeleton&,std::size_t);
-bool attachImportedViewFallback(AppState&,const assets::Asset&,scene::CastScene&);
-bool restoreCharacterAttachments(AppState& app,const take::ActorManifest& manifest,scene::CastScene& destination,std::string& error){
+bool attachImportedViewFallback(AppState&,const assets::Asset&,scene::CastScene&,const cast::Document* nativeWorld=nullptr,bool alignCssPalm=false);
+bool restoreCharacterAttachments(AppState& app,const take::ActorManifest& manifest,scene::CastScene& destination,std::string& error,bool omitLostBotWeapons=false){
     for(const auto& part:manifest.attachedModels){
+        // Old PB proxies incorrectly saved the reference hands as their source.
+        // Only bot recovery may omit this known broken weapon; other missing
+        // assets must still fail rather than silently removing scene contents.
+        const auto storedPath=std::filesystem::u8path(part.path);
+        if(omitLostBotWeapons&&gameFromExportPath(storedPath)=="pointblank"&&
+           assets::classifyModelPath(storedPath,storedPath.stem().string())==assets::Role::ViewHands&&
+           (part.bone=="R Hand"||part.bone=="L Hand"||part.bone=="b_RightHand"||part.bone=="b_LeftHand"||scene::canonicalName(part.bone)=="j_wrist_ri"||scene::canonicalName(part.bone)=="j_wrist_le")){
+            destination.warnings.push_back("Omitted unidentified legacy bot weapon: "+part.path);
+            continue;
+        }
         const auto path=resolveTakeModelPath(app,part.path);if(!path){error="Take character attachment is missing: "+part.path;return false;}
         const auto document=cast::Document::load(*path);if(!document.valid()){error="Take attachment cannot be read: "+part.path;return false;}
         auto bone=destination.skeleton.boneByName.find(part.bone);
         if(bone==destination.skeleton.boneByName.end()){error="Take attachment socket is missing: "+part.bone;return false;}
         const auto first=destination.meshes.size(),before=destination.attachments.size();
         const bool pointBlankWorld=scene::pointblank::exportedByPb2cast(document)&&lowerText(path->stem().string()).starts_with("viewmodel_")&&(part.bone=="R Hand"||part.bone=="L Hand"||part.bone=="b_RightHand"||part.bone=="b_LeftHand"||scene::canonicalName(part.bone)=="j_wrist_ri"||scene::canonicalName(part.bone)=="j_wrist_le");
-        const auto importedGame=scene::imported::gameForPath(*path);
-        const bool importedView=assets::imported::supported(importedGame)&&assets::imported::role(importedGame,path->stem().string())==assets::Role::ViewWeapon;
+        auto importedGame=scene::imported::gameForPath(*path);
+        if(importedGame.empty()&&gameFromExportPath(*path)=="aw")importedGame="aw";
+        const bool importedView=(assets::imported::supported(importedGame)&&assets::imported::role(importedGame,path->stem().string())==assets::Role::ViewWeapon)||
+            (importedGame=="aw"&&assets::classifyModelPath(*path,path->stem().string())==assets::Role::ViewWeapon);
         if(importedView){assets::Asset view;view.path=*path;view.name=path->stem().string();view.game=importedGame;view.role=assets::Role::ViewWeapon;attachImportedViewFallback(app,view,destination);}
         else if(pointBlankWorld){auto prepared=preparePointBlankWorldWeapon(app,document,destination.skeleton,bone->second);scene::appendPreparedAttachment(std::move(prepared),destination,bone->second,path->stem().string());}
         else scene::appendAttachment(document,destination,bone->second,path->stem().string());
@@ -4068,6 +4448,8 @@ void syncSharedGunPosition(AppState& app){
         rig->profile.separateAdsPosition=app.weaponProfile.separateAdsPosition;
         rig->profile.viewmodelFovMultiplier=app.weaponProfile.viewmodelFovMultiplier;
         rig->profile.sprintBobMultiplier=app.weaponProfile.sprintBobMultiplier;
+        rig->profile.disableSprintAnimations=app.weaponProfile.disableSprintAnimations;
+        rig->profile.sprintBobSpeedMultiplier=app.weaponProfile.sprintBobSpeedMultiplier;
         rig->profile.flipViewmodel=app.weaponProfile.flipViewmodel;
     }};
     sync(app.classSlotRigs);if(app.liveClassBeforeTake)sync(*app.liveClassBeforeTake);
@@ -4076,11 +4458,14 @@ void syncSharedGunPosition(AppState& app){
             rig.profile.gunPosition=app.weaponProfile.gunPosition;rig.profile.adsGunPosition=app.weaponProfile.adsGunPosition;
             rig.profile.separateAdsPosition=app.weaponProfile.separateAdsPosition;rig.profile.viewmodelFovMultiplier=app.weaponProfile.viewmodelFovMultiplier;
             rig.profile.sprintBobMultiplier=app.weaponProfile.sprintBobMultiplier;rig.profile.flipViewmodel=app.weaponProfile.flipViewmodel;
+            rig.profile.sprintBobSpeedMultiplier=app.weaponProfile.sprintBobSpeedMultiplier;
+            rig.profile.disableSprintAnimations=app.weaponProfile.disableSprintAnimations;
         }
     }
 }
 
 bool restoreTakeActorInternal(AppState& app,const take::ActorManifest& actor,std::size_t expectedBones,bool resetClassSlots,std::string& error,bool originalPbLayout=false){
+    const scene::imported::ScopedImportRevision importScope(actor.importRevision);
     app.iw4FireCycle.clear();
     error.clear();
     const auto base=resolveTakeModelPath(app,actor.baseModel);
@@ -4107,7 +4492,7 @@ bool restoreTakeActorInternal(AppState& app,const take::ActorManifest& actor,std
     if(!originalPbLayout&&((base->stem().string().starts_with("viewmodel_")&&base->stem().string().ends_with("_hands"))||gameFromExportPath(*base)=="codm"))for(const auto& path:rigModels){if(assets::classifyModelPath(path,path.stem().string())==assets::Role::ViewWeapon){handDriverGame=gameFromExportPath(path);break;}}
     if(!originalPbLayout)for(const auto& path:rigModels){
         const auto sourceGame=gameFromExportPath(path),skinGame=gameFromExportPath(*base);
-        if(sourceGame=="cs2"||(!assets::imported::supported(sourceGame)&&!assets::imported::supported(skinGame)&&skinGame!="bocw_sp"&&skinGame!="cs2"))continue;
+        if((sourceGame=="cs2"&&!importedViewPair(app,*base,sourceGame))||(!importedViewPair(app,*base,sourceGame)&&!assets::imported::supported(sourceGame)&&!assets::imported::supported(skinGame)&&skinGame!="bocw_sp"&&skinGame!="cs2"))continue;
         if(assets::classifyModelPath(path,path.stem().string())!=assets::Role::ViewWeapon)continue;
         handDriverGame=sourceGame;recordedWeapon=path;
         app.selectedWeaponAsset=app.assetCatalog.entries.size();
@@ -4118,12 +4503,22 @@ bool restoreTakeActorInternal(AppState& app,const take::ActorManifest& actor,std
     app.takeRecording=wasRecording;app.takePlaying=wasPlaying;app.takePreview=wasPreview;app.takeTime=savedTakeTime;app.takeAccumulator=savedAccumulator;
     if(!app.document||!app.document->valid()){error="Take actor base model could not be loaded";return false;}
     for(const auto& path:rigModels){
-        if(gameFromExportPath(path)=="cs2"&&gameFromExportPath(*base)!="cs2"){
+        // Legacy takes encode the tactical melee part by its hidden, namespaced
+        // root. Live assembly appends it last without merging its shared bones.
+        const bool auxiliaryMelee=&path==&rigModels.back()&&rigModels.size()>1&&
+            std::any_of(actor.hiddenBones.begin(),actor.hiddenBones.end(),[](const auto& name){return name.starts_with("melee_knife_");});
+        if(auxiliaryMelee){addRigModelFile(app,path,false,std::nullopt,1.f,true);continue;}
+        if(gameFromExportPath(path)=="cs2"&&gameFromExportPath(*base)!="cs2"&&app.scene.viewHandsDriverGame!="cs2"){
             if(const auto* source=sourceViewhandsSkeletonForGame(app,"cs2")){addRigModelFile(app,path,false,scene::Mat4::identity(),crossRigWeaponScale(app.scene.skeleton,*source));continue;}
         }
         addRigModelFile(app,path,false);
     }
     if(!rigModels.empty())finishRigMerge(app);
+    // Takes restore geometry and recorded poses without loading animation
+    // clips. Reapply the same T9-to-IW sleeve binding used during conversion.
+    if(app.scene.skeleton.boneByName.contains("j_wristfronttwist1_le")&&
+       std::any_of(rigModels.begin(),rigModels.end(),[](const auto& path){return gameFromExportPath(path)=="bocw_sp";}))
+        scene::supportIwLegacySleeves(app.scene);
     for(const auto& [attached,path]:attachedModels){
         std::optional<std::size_t> boneIndex;
         if(const auto exact=app.scene.skeleton.boneByName.find(attached.bone);exact!=app.scene.skeleton.boneByName.end())boneIndex=exact->second;
@@ -4131,7 +4526,7 @@ bool restoreTakeActorInternal(AppState& app,const take::ActorManifest& actor,std
         if(!boneIndex)continue;
         app.attachmentBone=static_cast<int>(*boneIndex);
         const auto before=app.scene.attachments.size();
-        addAttachmentFile(app,path);
+        if(lowerText(path.extension().string())==".glb")addGlbAttachmentFile(app,path);else addAttachmentFile(app,path);
         if(app.scene.attachments.size()>before){
             auto& restored=app.scene.attachments.back();
             restored.position=attached.position;
@@ -4164,14 +4559,16 @@ bool restoreTakeActor(AppState& app,const take::ActorManifest& actor,std::size_t
 }
 
 bool restoreTakeBotActor(AppState& app,const take::ActorManifest& actor,std::size_t expectedBones,std::string& error){
-    error.clear();if(actor.empty()||expectedBones==0){app.botActorScene.reset();app.botSetRuntime={};app.botActorPoses.clear();app.bots.clear();app.botActorGpuReady=false;return true;}const auto base=resolveTakeModelPath(app,actor.baseModel);if(!base){error="Take bot model is missing: "+actor.baseModel;return false;}auto document=cast::Document::load(*base);if(!document.valid()){error="Take bot model could not be loaded";return false;}scene::CastScene restored=scene::buildScene(document);if(!restoreCharacterRigParts(app,actor,restored,error))return false;
-    if(!restoreCharacterAttachments(app,actor,restored,error))return false;
-    if(restored.skeleton.bones.size()!=expectedBones){error="Take bot rebuilt with "+std::to_string(restored.skeleton.bones.size())+" bones; recording expects "+std::to_string(expectedBones);return false;}app.botActorScene=std::move(restored);app.botSetRuntime={};app.bots.clear();app.botActorPoses.clear();app.rendererError.clear();
+    const scene::imported::ScopedImportRevision importScope(actor.importRevision);
+    error.clear();if(actor.empty()||expectedBones==0){app.botActorScene.reset();app.botCollisionBaseHeights.clear();app.botSetRuntime={};app.botActorPoses.clear();app.bots.clear();app.botActorGpuReady=false;return true;}const auto base=resolveTakeModelPath(app,actor.baseModel);if(!base){error="Take bot model is missing: "+actor.baseModel;return false;}auto document=cast::Document::load(*base);if(!document.valid()){error="Take bot model could not be loaded";return false;}scene::CastScene restored=scene::buildScene(document);if(!restoreCharacterRigParts(app,actor,restored,error))return false;
+    if(!restoreCharacterAttachments(app,actor,restored,error,true))return false;
+    if(restored.skeleton.bones.size()!=expectedBones){error="Take bot rebuilt with "+std::to_string(restored.skeleton.bones.size())+" bones; recording expects "+std::to_string(expectedBones);return false;}app.botActorScene=std::move(restored);app.botCollisionBaseHeights.clear();app.botSetRuntime={};app.bots.clear();app.botActorPoses.clear();app.rendererError.clear();
     if(app.deferSceneUpload){app.botActorGpuReady=false;return true;}
     const bool actorsReady=app.renderer.loadAuxiliaryScenes(app.loadedMap?&app.loadedMap->scene:nullptr,app.hiddenWorldActor?&*app.hiddenWorldActor:nullptr,&*app.botActorScene,app.rendererError);app.mapGpuReady=actorsReady&&app.loadedMap.has_value();app.worldActorGpuReady=actorsReady&&app.hiddenWorldActor.has_value();app.botActorGpuReady=actorsReady;if(!app.botActorGpuReady){error="Take bot GPU upload failed: "+app.rendererError;return false;}return true;
 }
 
 bool restoreTakeWorldActor(AppState& app,const take::ActorManifest& actor,std::size_t expectedBones,std::string& error){
+    const scene::imported::ScopedImportRevision importScope(actor.importRevision);
     error.clear();if(actor.empty()||expectedBones==0){app.hiddenWorldActor.reset();app.hiddenWorldActorPose.clear();app.worldActorGpuReady=false;return true;}const auto base=resolveTakeModelPath(app,actor.baseModel);if(!base){error="Take world actor model is missing: "+actor.baseModel;return false;}auto document=cast::Document::load(*base);if(!document.valid()){error="Take world actor model could not be loaded";return false;}scene::CastScene restored=scene::buildScene(document);if(!restoreCharacterRigParts(app,actor,restored,error))return false;if(!restoreCharacterAttachments(app,actor,restored,error))return false;
     if(expectedBones>0&&restored.skeleton.bones.size()!=expectedBones){error="Take world actor rebuilt with "+std::to_string(restored.skeleton.bones.size())+" bones; recording expects "+std::to_string(expectedBones)+". Use the original matching rig export.";return false;}
     app.worldSelectionKey.reset();app.playerWorldActionCache.clear();app.hiddenWorldActor=std::move(restored);app.hiddenWorldActorPose.clear();app.rendererError.clear();
@@ -4290,7 +4687,11 @@ std::optional<std::size_t> findViewmodelGameplayAnimation(const AppState& app){
     if(app.actionActive){
         switch(app.activeAction){
             case scene::ActionRole::Aim:suffix="ads_up";break;
-            case scene::ActionRole::Fire:suffix=app.gameplayAds&&!activeWeaponIsCs2(app)?"ads_fire":"fire";break;
+            case scene::ActionRole::Fire:{
+                const bool hasAdsClips=findViewmodelClip(app,"ads_up").has_value()||findViewmodelClip(app,"ads_fire").has_value();
+                suffix=(app.gameplayAds&&hasAdsClips&&!activeWeaponIsCs2(app))?"ads_fire":"fire";
+                break;
+            }
             case scene::ActionRole::Reload:suffix=app.gameplayReloadEmpty?"reload_empty":(app.gameplayRechamber?(app.gameplayAds||app.viewmodelAdsEngaged?"ads_rechamber":"rechamber"):(std::find(app.viewmodelAttachmentTokens.begin(),app.viewmodelAttachmentTokens.end(),"fastmag")!=app.viewmodelAttachmentTokens.end()?"fastmag":"reload"));break;
             case scene::ActionRole::Melee:suffix="melee";break;
             case scene::ActionRole::Equip:suffix=app.weaponSwitchQuickAnimation?"pullout_quick":"pullout";break;
@@ -4299,9 +4700,10 @@ std::optional<std::size_t> findViewmodelGameplayAnimation(const AppState& app){
             case scene::ActionRole::Gesture:suffix="inspect";break;
             default:return std::nullopt;
         }
-    } else if(app.gameplayAds&&app.viewmodelAdsEngaged&&!activeWeaponIsCs2(app)&&app.scene.pointBlankWeaponStem.empty())suffix="ads_up";
+    } else if(app.gameplayAds&&app.viewmodelAdsEngaged&&!activeWeaponIsCs2(app)&&app.scene.pointBlankWeaponStem.empty())suffix="idle"; // ADS is already applied by the persistent pose layer.
     else if(app.gameplayStance==scene::Stance::Prone&&app.movementSpeed>=0.05f)suffix="crawl_forward";
-    else suffix=desiredMotion(app)==scene::MotionRole::Sprint?"sprint_loop":"idle";
+    else suffix=!app.weaponProfile.disableSprintAnimations&&desiredMotion(app)==scene::MotionRole::Sprint?"sprint_loop":"idle";
+    if(suffix=="melee"&&!activeWeaponIsCs2(app)){const auto clips=findViewmodelClips(app,"melee");return clips.empty()?std::nullopt:std::optional<std::size_t>(clips[app.meleeVariant%clips.size()]);}
     if((activeWeaponIsCs2(app)||assets::imported::supported(app.scene.importedViewGame)||assets::imported::supported(app.scene.viewHandsDriverGame))&&suffix=="sprint_loop"&&!findViewmodelClip(app,"sprint_loop"))suffix="idle";
     if(suffix=="sprint_loop"&&app.selectedWeaponAsset<app.assetCatalog.entries.size()){
         const auto game=lowerText(app.assetCatalog.entries[app.selectedWeaponAsset].game);
@@ -4315,6 +4717,8 @@ std::optional<std::size_t> findViewmodelGameplayAnimation(const AppState& app){
     std::optional<std::string> overrideName;if(!pairing.empty()){const auto paired=app.weaponProfile.animations.find(profileAction+"."+pairing);if(paired!=app.weaponProfile.animations.end()&&!paired->second.empty())overrideName=paired->second;}if(!overrideName&&profileAction!=suffix)overrideName=weapon::animationFor(app.weaponProfile,suffix);if(!overrideName)overrideName=weapon::animationFor(app.weaponProfile,profileAction);if(overrideName){const auto wanted=lowerText(std::filesystem::path(*overrideName).filename().string());for(std::size_t i=0;i<app.scene.animations.size();++i){const auto& clip=app.scene.animations[i];if(clip.domain==scene::AnimationDomain::ViewModel&&!clip.tracks.empty()&&lowerText(std::filesystem::path(clip.sourceName).filename().string())==wanted)return i;}}
 
     if(app.scene.codmNativeCentimetres)return findViewmodelClip(app,profileAction);
+    if(app.selectedWeaponAsset<app.assetCatalog.entries.size()&&assets::imported::additionalFamily(lowerText(app.assetCatalog.entries[app.selectedWeaponAsset].game)))
+        return findViewmodelClip(app,profileAction);
     // Source 2 viewmodel clips are commonly action-first (for example,
     // shoot1_ak.cast and reload_ak.cast), so they intentionally have no CoD
     // animation prefix. Explicit profile mappings above remain authoritative;
@@ -4322,9 +4726,14 @@ std::optional<std::size_t> findViewmodelGameplayAnimation(const AppState& app){
     if(app.viewmodelAnimationPrefix.empty())return std::nullopt;
 
     std::vector<std::string> expected;
-    if(app.actionActive&&app.activeAction==scene::ActionRole::Melee){const char* variants[]={"viewmodel_m4m203_knife_melee_1.cast","viewmodel_m4m203_knife_melee_2.cast"};expected.push_back(variants[app.meleeVariant%2]);expected.push_back(variants[(app.meleeVariant+1)%2]);}
+    if(app.actionActive&&app.activeAction==scene::ActionRole::Melee){
+        const char* variants[]={"viewmodel_m4m203_knife_melee_1.cast","viewmodel_m4m203_knife_melee_2.cast"};
+        expected.push_back(variants[app.meleeVariant%2]);
+        expected.push_back(variants[(app.meleeVariant+1)%2]);
+    }
+    const bool hasTacticalAttachment=std::find(app.viewmodelAttachmentTokens.begin(),app.viewmodelAttachmentTokens.end(),"tactical")!=app.viewmodelAttachmentTokens.end();
     for(const auto& token:app.viewmodelAttachmentTokens){
-        if(token=="grip"||token=="gl"||token=="tactical")expected.push_back(app.viewmodelAnimationPrefix+token+"_"+suffix+".cast");
+        if(token=="grip"||token=="gl"||(token=="tactical"&&hasTacticalAttachment&&app.activeAction!=scene::ActionRole::Melee))expected.push_back(app.viewmodelAnimationPrefix+token+"_"+suffix+".cast");
         if(app.gameplayAds&&(token=="reflex"||token=="acog"||token=="eotech"||token=="holo"||token=="mms"||token=="rangefinder"||token=="rmr"||token=="dualband"||token=="combo"||token=="specter"||token=="vzoom"))expected.push_back(app.viewmodelAnimationPrefix+token+"_"+suffix+".cast");
     }
     if(suffix=="reload"){
@@ -4342,6 +4751,7 @@ std::optional<std::size_t> findViewmodelGameplayAnimation(const AppState& app){
     std::optional<std::size_t> fallback;std::size_t fallbackLength=std::numeric_limits<std::size_t>::max();
     for(std::size_t i=0;i<app.scene.animations.size();++i){const auto& clip=app.scene.animations[i];if(clip.domain!=scene::AnimationDomain::ViewModel||clip.tracks.empty())continue;
         std::string source=clip.sourceName;std::transform(source.begin(),source.end(),source.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+        if(suffix=="melee"&&source.find("tactical_melee")!=std::string::npos&&!hasTacticalAttachment)continue;
         const bool aliasMatch=suffix=="first_raise"&&source.find("first_time_pullout")!=std::string::npos||suffix=="ads_rechamber"&&source.find("rechamber_ads")!=std::string::npos;
         if(source.starts_with(app.viewmodelAnimationPrefix)&&(source.find(suffix)!=std::string::npos||quickSuffix&&source.find(standardSuffix)!=std::string::npos||aliasMatch)&&source.size()<fallbackLength){fallback=i;fallbackLength=source.size();}
     }
@@ -4373,7 +4783,10 @@ bool resolveGameplayAnimation(AppState& app){
     if(viewmodelRig){
         auto match=findViewmodelGameplayAnimation(app);
         if((app.activeAction==scene::ActionRole::Gesture||app.activeAction==scene::ActionRole::Melee)&&app.pendingVariantAnimation<app.scene.animations.size())match=app.pendingVariantAnimation;
-        if(app.actionActive&&app.activeAction==scene::ActionRole::Fire)match=findViewmodelClip(app,(app.gameplayAds||app.viewmodelAdsEngaged)?"ads_fire":"fire");
+        if(app.actionActive&&app.activeAction==scene::ActionRole::Fire){
+            match=findViewmodelClip(app,(app.gameplayAds||app.viewmodelAdsEngaged)?"ads_fire":"fire");
+            if(!match)match=findViewmodelClip(app,"fire");
+        }
         if(!match){app.gameplayStatus="No mapped animation for equipped viewmodel: "+std::string(app.actionActive?scene::actionRoleName(app.activeAction):scene::motionRoleName(desiredMotion(app)));return false;}
         if(app.actionActive&&app.activeAction==scene::ActionRole::Aim){if(!startViewmodelAimClip(app,*match))return false;app.gameplayStatus="Viewmodel ADS transition — "+app.scene.animations[*match].sourceName;return true;}
         if(app.actionActive&&app.activeAction==scene::ActionRole::Fire){
@@ -4466,6 +4879,7 @@ void retainPointBlankKnifeTail(AppState& app){
 }
 
 void triggerGameplayAction(AppState& app){
+    if(app.gameplayAction==scene::ActionRole::Unequip)app.yyV5Resuming=false;
     if(app.gameplayAction==scene::ActionRole::None){stopGameplayAction(app);return;}
     if(app.gameplayAction==scene::ActionRole::Aim&&app.scene.codmNativeCentimetres&&app.actionActive&&(app.activeAction==scene::ActionRole::Fire||(app.gameplayRechamber&&app.activeAction==scene::ActionRole::Reload))){if(const auto up=findViewmodelClip(app,"ads_up"))startViewmodelAimClip(app,*up);return;}
     const bool blendPutaway=app.gameplayAction==scene::ActionRole::Unequip&&isViewmodelRig(app)&&!activeWeaponIsCs2(app);
@@ -4473,8 +4887,10 @@ void triggerGameplayAction(AppState& app){
         // Capture the evaluated pose BEFORE discarding ADS, fire/reload layers,
         // or an in-progress transition. The base clip alone is not that pose.
         const float drop=app.weaponSwitchQuickAnimation?app.weaponTiming.quickDropTime:app.weaponTiming.dropTime;
-        const float duration=std::min(std::max(.06f,app.actionBlendTime),drop>0?std::max(.001f,drop*.5f):.12f);
-        if(app.weaponSwitchAlgorithm==4||app.weaponSwitchAlgorithm==5)beginYyV4LiveBlend(app,duration);
+        const float duration=app.weaponSwitchAlgorithm==5?app.weaponTiming.iw4YySmoothingTime:std::min(std::max(.06f,app.actionBlendTime),drop>0?std::max(.001f,drop*.5f):.12f);
+        if(app.weaponSwitchAlgorithm==5&&duration<=0){app.interruptPoseDuration=0;app.yyLiveAnimation=SIZE_MAX;app.yyLiveReference.clear();}
+        else if(app.experimentalYyReloadBlend&&app.actionActive&&app.activeAction==scene::ActionRole::Reload)beginYyV4LiveBlend(app,duration,false);
+        else if(app.weaponSwitchAlgorithm==4||app.weaponSwitchAlgorithm==5)beginYyV4LiveBlend(app,duration);
         else beginInterruptPoseBlend(app,duration);
         app.runtimeLayers.clear();app.actionOverlay=false;
         app.gameplayAds=false;
@@ -4483,6 +4899,12 @@ void triggerGameplayAction(AppState& app){
         app.viewmodelSprintEntering=app.viewmodelSprintExiting=false;
     }
     retainPointBlankKnifeTail(app);
+    if(app.gameplayAction==scene::ActionRole::Fire&&app.actionActive&&app.activeAction==scene::ActionRole::Melee&&isViewmodelRig(app)&&!activeWeaponIsCs2(app)){
+        beginInterruptPoseBlend(app,std::max(.001f,app.actionBlendTime));
+        setMeleeKnifeVisible(app,false);
+        if(const auto idle=findViewmodelClip(app,"idle"))selectAnimation(app,*idle,false);
+        app.transitioning=false;
+    }
     if(app.gameplayAction!=scene::ActionRole::Reload&&app.gameplayAction!=scene::ActionRole::Fire){app.gameplayRechamber=false;app.pendingWeaponRechamber=false;}
     if(app.gameplayAction==scene::ActionRole::Death)app.deathRootReference=app.scene.sampleLocalPose(app.animationIndex,app.animationFrame);
     app.actionActive=true;app.activeAction=app.gameplayAction;app.activeActionDirection=app.gameplayDirection;app.actionElapsed=0;app.actionFrame=0;
@@ -4494,9 +4916,13 @@ void triggerGameplayAction(AppState& app){
     // and ADS crossfade path as every other weapon. Their profile can still
     // describe timing, but gameplay never invents an intro/loop/out chain.
     app.m40ReloadStage=0;
-    if(app.activeAction==scene::ActionRole::Melee){++app.meleeVariant;setMeleeKnifeVisible(app,true);app.pendingVariantAnimation=nextViewmodelVariant(app,"melee").value_or(static_cast<std::size_t>(-1));}
+    if(app.activeAction==scene::ActionRole::Melee){++app.meleeVariant;setMeleeKnifeVisible(app,!isKnifeWeapon(app));app.pendingVariantAnimation=nextViewmodelVariant(app,"melee").value_or(static_cast<std::size_t>(-1));}
     else if(app.activeAction==scene::ActionRole::Gesture)app.pendingVariantAnimation=nextViewmodelVariant(app,"inspect").value_or(static_cast<std::size_t>(-1));
     if(!resolveGameplayAnimation(app)){if(app.activeAction==scene::ActionRole::Melee)setMeleeKnifeVisible(app,false);app.actionActive=false;}
+    if(app.actionActive&&app.activeAction==scene::ActionRole::Fire){
+        const auto index=app.actionOverlay?app.actionAnimationIndex:app.animationIndex;
+        if(index<app.scene.animations.size())app.actionDurationOverride=authoredClipDuration(app,index)/std::max(.001f,app.weaponTiming.firePlaybackScale);
+    }
     if(app.actionActive)switch(app.activeAction){
         case scene::ActionRole::Reload: case scene::ActionRole::Melee:
         case scene::ActionRole::GrenadePrep: case scene::ActionRole::Throw:
@@ -4506,18 +4932,30 @@ void triggerGameplayAction(AppState& app){
         default:break;
     }
     if(blendPutaway&&app.actionActive)app.transitioning=false; // the captured-pose blend owns this seam
-    if(app.actionActive&&app.activeAction==scene::ActionRole::Melee&&isKnifeWeapon(app)&&app.actorMode&&!app.takePreview)++app.playerKnifeAttack;
+    if(app.actionActive&&app.activeAction==scene::ActionRole::Melee&&app.actorMode&&!app.takePreview)++app.playerKnifeAttack;
     app.pendingVariantAnimation=static_cast<std::size_t>(-1);
 }
 
 void stopGameplayAction(AppState& app){
     retainPointBlankKnifeTail(app);
+    if(!app.scene.pointBlankWeaponStem.empty()&&app.actionActive&&app.activeAction==scene::ActionRole::Reload)
+        beginInterruptPoseBlend(app,std::max(.001f,app.actionBlendTime));
     if(app.scene.codmNativeCentimetres&&app.actionActive&&(app.activeAction==scene::ActionRole::Fire||(app.activeAction==scene::ActionRole::Reload&&app.gameplayRechamber)))beginInterruptPoseBlend(app,std::max(.08f,app.actionBlendTime));
     // Rechamber belongs to the outgoing action, never to idle/ADS afterward.
     if(app.activeAction==scene::ActionRole::Reload)app.gameplayRechamber=false;
     if(app.activeAction==scene::ActionRole::Melee)setMeleeKnifeVisible(app,false);
     if(isViewmodelRig(app)&&app.viewmodelAdsExiting&&app.activeAction==scene::ActionRole::Aim)return;
     if(app.viewmodelAdsEngaged&&app.gameplayAds&&!app.viewmodelAdsExiting&&isViewmodelRig(app)){
+        // Sparse/additive ADS tags need a neutral carrier. Leaving the completed
+        // melee/draw as the base contaminates the next shot; using ADS itself
+        // as that base applies the aim transform twice.
+        if(!activeWeaponIsCs2(app))if(const auto idle=findViewmodelClip(app,"idle")){
+            if(app.animationIndex!=*idle){
+                beginInterruptPoseBlend(app,std::max(.001f,app.actionBlendTime));
+                selectAnimation(app,*idle,false);
+                app.transitioning=false; // captured evaluated pose owns this seam
+            }
+        }
         if(const auto up=findViewmodelClip(app,"ads_up")){app.actionActive=true;app.actionOverlay=true;app.activeAction=scene::ActionRole::Aim;app.actionAnimationIndex=*up;app.actionFrame=static_cast<float>(app.scene.animations[*up].durationFrames);app.actionDurationOverride=app.weaponTiming.adsIn;app.actionElapsed=app.weaponTiming.adsIn;app.viewmodelAdsPoseHold=true;app.gameplayStatus="Holding ADS tag — "+app.scene.animations[*up].sourceName;return;}}
     if(!app.actionActive&&app.viewmodelAdsEngaged&&isViewmodelRig(app)){app.actionActive=true;app.actionOverlay=false;app.activeAction=scene::ActionRole::Aim;}
     if(!app.actionActive)return;
@@ -4582,15 +5020,31 @@ void cancelYyV4Drop(AppState& app){
     resolveGameplayAnimation(app);if(!activeWeaponIsCs2(app))app.transitioning=false;app.gameplayStatus="YY v4 — switch canceled";
 }
 
+bool advanceYyV5(AppState& app,float delta){
+    if(app.weaponSwitchAlgorithm!=6||app.animationIndex>=app.scene.animations.size())return false;
+    if(app.yyReverse){
+        app.yyV5Elapsed+=std::max(0.f,delta);const auto sample=app.yyV5Return.at(app.yyV5Elapsed);
+        app.animationFrame=sample.frame;app.yyV5Velocity=sample.velocity;return true;
+    }
+    if(app.weaponSwitchStage==1&&app.yyV5Resuming){
+        app.yyV5Elapsed+=std::max(0.f,delta);const auto sample=app.yyV5Resume.at(app.yyV5Elapsed);
+        const auto last=static_cast<float>(app.scene.animations[app.animationIndex].durationFrames);
+        app.animationFrame=std::clamp(sample.frame,0.f,last);app.yyV5Velocity=sample.frame>=last?0.f:sample.velocity;return true;
+    }
+    return false;
+}
 void updateGameplay(AppState& app,float deltaSeconds){
     app.iw4FireCycle.pending(app.gameplayClock,app.activeClassSlot,app.selectedWeaponAsset,
         app.weaponSwitchAlgorithm==5&&!activeWeaponIsCs2(app)&&!app.scene.dualWield&&!app.takePreview);
     if(!app.gameplayLogic)return;
-    if(app.weaponSwitchStage==2&&app.yyReverse){app.weaponSwitchElapsed+=deltaSeconds;if(app.animationFrame<=0.001f){const bool preserveFire=app.actionActive&&app.activeAction==scene::ActionRole::Fire;app.weaponSwitchStage=0;app.weaponSwitchElapsed=0;app.weaponSwitchQuickAnimation=false;app.yyReturning=false;app.yyReverse=false;if(!preserveFire){app.actionActive=false;app.actionOverlay=false;app.activeAction=scene::ActionRole::None;app.actionDurationOverride=0;resolveGameplayAnimation(app);app.transitioning=false;}app.gameplayStatus=preserveFire?"YY reverse complete — fire retained":"YY reverse complete";} }
+    if(app.weaponSwitchStage==2&&app.yyReverse){app.weaponSwitchElapsed+=deltaSeconds;if(app.weaponSwitchAlgorithm==6?app.yyV5Elapsed>=app.yyV5Return.duration:app.animationFrame<=0.001f){const bool preserveFire=app.actionActive&&app.activeAction==scene::ActionRole::Fire;app.weaponSwitchStage=0;app.weaponSwitchElapsed=0;app.weaponSwitchQuickAnimation=false;app.yyReturning=false;app.yyReverse=false;if(!preserveFire){app.actionActive=false;app.actionOverlay=false;app.activeAction=scene::ActionRole::None;app.actionDurationOverride=0;resolveGameplayAnimation(app);app.transitioning=false;}app.gameplayStatus=preserveFire?"YY reverse complete — fire retained":"YY reverse complete";} }
     if(app.weaponSwitchStage!=0&&!app.yyReverse){app.weaponSwitchElapsed+=deltaSeconds;const float stageDuration=app.weaponSwitchStage==1?(app.weaponSwitchQuickAnimation?app.weaponTiming.quickDropTime:app.weaponTiming.dropTime):(app.yyReturning&&app.yyCancelDuration>0?app.yyCancelDuration:(app.weaponSwitchFirstRaiseAnimation?firstRaiseDuration(app):gameplay::iw4switch::raiseDurationSeconds(app.weaponSwitchAlgorithm==5&&!activeWeaponIsCs2(app)&&!app.scene.dualWield,app.weaponSwitchQuickAnimation,app.weaponTiming.quickRaiseTime,app.weaponTiming.raiseTime)));
         const bool directionalYy=app.weaponSwitchStage==1?app.yyTowardPutaway:app.yyReturning;const bool v1Return=app.weaponSwitchAlgorithm==0&&app.weaponSwitchStage==2&&app.yyReturning;
-        const bool reachedSwitchPose=v1Return?app.interruptPoseElapsed>=app.interruptPoseDuration:(directionalYy?!app.transitioning:(stageDuration<=0.0f||app.weaponSwitchElapsed>=std::max(app.weaponSwitchAlgorithm==5?0.001f:0.08f,stageDuration)));
+        const bool reachedSwitchPose=app.weaponSwitchAlgorithm==6&&app.weaponSwitchStage==1&&app.actionActive&&app.activeAction==scene::ActionRole::Unequip&&app.animationIndex<app.scene.animations.size()?app.animationFrame>=app.scene.animations[app.animationIndex].durationFrames:v1Return?app.interruptPoseElapsed>=app.interruptPoseDuration:(directionalYy?!app.transitioning:(stageDuration<=0.0f||app.weaponSwitchElapsed>=std::max(app.weaponSwitchAlgorithm==5?0.001f:0.08f,stageDuration)));
         if(reachedSwitchPose){
+            if(app.weaponSwitchStage==2&&!app.yyReturning&&!activeWeaponIsCs2(app)&&
+               app.viewmodelAdsEngaged&&app.gameplayAds&&!app.viewmodelAdsExiting)
+                stopGameplayAction(app);
             if(app.weaponSwitchStage==1){const int outgoingSlot=app.activeClassSlot;const bool iw4QuickHandoff=app.weaponSwitchAlgorithm==5&&!activeWeaponIsCs2(app),outgoingQuick=app.weaponSwitchQuickAnimation;app.yyReturning=false;app.yyTowardPutaway=false;activateClassSlot(app,app.weaponSwitchTarget);app.weaponSwitchQuickAnimation=iw4QuickHandoff&&!activeWeaponIsCs2(app)?outgoingQuick:useQuickSwapAnimation(app,app.activeClassSlot,outgoingSlot);app.weaponSwitchFirstRaiseAnimation=false;app.weaponSwitchStage=2;app.weaponSwitchElapsed=0;app.gameplayAction=scene::ActionRole::Equip;triggerGameplayAction(app);if(!app.actionActive)app.gameplayStatus="Switched weapon; pullout clip unavailable";return;}
             const bool preserveYyFire=app.yyReturning&&app.actionActive&&app.activeAction==scene::ActionRole::Fire;const bool completedYy=app.yyReturning;app.weaponSwitchStage=0;app.weaponSwitchElapsed=0;app.weaponSwitchQuickAnimation=false;app.weaponSwitchFirstRaiseAnimation=false;app.yyReturning=false;app.yyTowardPutaway=false;app.yyPutawayAnimation=static_cast<std::size_t>(-1);app.yyPutawayFrameLimit=0;app.yyCancelDuration=0;app.transitioning=false;app.transitionElapsed=0;app.activeTransitionDuration=app.transitionDuration;if(!preserveYyFire){app.actionActive=false;app.actionOverlay=false;app.activeAction=scene::ActionRole::None;app.actionDurationOverride=0;if(!completedYy)resolveGameplayAnimation(app);}app.gameplayStatus=preserveYyFire?"YY return complete — fire cycle retained":completedYy?"YY return complete":"Weapon switch complete — "+std::string(app.activeClassSlot==0?"primary":"secondary");return;
         }}
@@ -4609,8 +5063,21 @@ void updateGameplay(AppState& app,float deltaSeconds){
         const auto& clip=app.scene.animations[clipIndex];
         const float authoredDuration=clip.durationFrames/std::max(1.0f,clip.framerate),duration=app.actionDurationOverride>0?app.actionDurationOverride:authoredDuration;
         if(app.activeAction==scene::ActionRole::Aim&&app.viewmodelAdsExiting&&app.actionElapsed>=std::max(0.001f,duration)){app.viewmodelAdsBaseFrame=static_cast<float>(clip.durationFrames);app.viewmodelAdsTransitionElapsed=duration;app.viewmodelAdsExiting=false;app.viewmodelAdsEngaged=false;app.viewmodelAdsPoseHold=false;app.actionActive=false;app.actionOverlay=false;app.activeAction=scene::ActionRole::None;app.actionFrame=app.actionElapsed=0;resolveGameplayAnimation(app);return;}
-        if(app.activeAction!=scene::ActionRole::Death&&!actionRequiresHold(app.activeAction)&&app.actionElapsed>=std::max(0.08f,duration))stopGameplayAction(app);
-    } else if(!app.viewmodelSprintEntering&&!app.yyReverse)resolveGameplayAnimation(app);
+        if(!(app.weaponSwitchAlgorithm==6&&app.weaponSwitchStage==1)&&app.activeAction!=scene::ActionRole::Death&&!actionRequiresHold(app.activeAction)&&app.actionElapsed>=std::max(0.08f,duration)){
+            const int returnSlot=app.weaponTiming.grenade&&app.activeAction==scene::ActionRole::Fire?app.lastClassSlot:-1;
+            stopGameplayAction(app);
+            if(returnSlot>=0&&returnSlot<3&&returnSlot!=app.activeClassSlot&&app.classSlotRigs[returnSlot]){
+                activateClassSlot(app,returnSlot);app.weaponSwitchTarget=returnSlot;
+                app.weaponSwitchStage=2;app.weaponSwitchElapsed=0;
+                app.weaponSwitchQuickAnimation=app.weaponSwitchFirstRaiseAnimation=false;
+                app.gameplayAction=scene::ActionRole::Equip;triggerGameplayAction(app);
+                if(!app.actionActive)app.weaponSwitchStage=0;
+            }
+        }
+    // Let sprint-out reach its authored end just like sprint-in. Resolving the
+    // idle base here replaces the exit clip in the same tick it was selected.
+    // Keep the excluded CS2 weapon pipeline unchanged in this pass.
+    } else if(!app.viewmodelSprintEntering&&(!app.viewmodelSprintExiting||activeWeaponIsCs2(app))&&!app.yyReverse)resolveGameplayAnimation(app);
 }
 
 bool actorKey(const AppState& app,int key){return app.window&&glfwGetKey(app.window,key)==GLFW_PRESS;}
@@ -4621,13 +5088,14 @@ void requestBotAreaPing(AppState& app){
     const auto hit=app.loadedMap->raycastSurface(origin,forward,12000.f);
     if(!hit||hit->normal.z<.65f){app.gameplayStatus="Bot ping: aim at a walkable surface";return;}
     const auto point=hit->position+scene::Vec3{0,0,.1f};
-    if(gameplay::mantle::sweepRounded(*app.loadedMap,point,point,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72)).startSolid){app.gameplayStatus="Bot ping: area has insufficient clearance";return;}
+    if(actorCollisionSweep(app,*app.loadedMap,point,point,scene::course::kPlayerRadius,minimumBotCollisionHeight(app),true).startSolid){app.gameplayStatus="Bot ping: area has insufficient clearance";return;}
     const auto prior=app.botAreaPing.recipients;
     app.botAreaPing.set(point,app.botAreaPingPercent,app.bots);
     for(size_t i=0;i<app.bots.size();++i){auto& b=app.bots[i];if(!app.botAreaPing.contains(b.id)&&std::find(prior.begin(),prior.end(),b.id)==prior.end())continue;b.spPhaseTime=0;b.spWantsMove=false;b.navigationRoute.clear();b.repathTime=0;if(i<app.botSpRoutes.size())app.botSpRoutes[i].reset();if(app.botAreaPing.contains(b.id))++b.spDecisionSequence;}
     app.gameplayStatus="Area ping sent to "+std::to_string(app.botAreaPing.recipients.size())+" bots";
 }
 void gameplayScrollCallback(GLFWwindow* window,double xoffset,double yoffset){
+    if(gAppState&&gAppState->runtimePaused){ImGui_ImplGlfw_ScrollCallback(window,xoffset,yoffset);return;}
     if(gAppState&&gAppState->window==window&&gAppState->actorInputCaptured){
         auto& app=*gAppState;
         if(app.actorMode&&!app.takePreview&&!app.cameraEditMode&&!app.exportActive&&cadence::workspace::runtime(app.workspaceMode)&&std::isfinite(yoffset))app.actorWheelDelta+=static_cast<float>(yoffset);
@@ -4659,8 +5127,18 @@ void setCameraInputCapture(AppState& app,bool captured){
     if(captured&&app.actorCaptureRequested)setActorInputCapture(app,false);app.cameraInputCaptured=captured;app.cameraCursorInitialized=false;if(app.window){const int cursorMode=(captured||app.actorInputCaptured)?GLFW_CURSOR_DISABLED:GLFW_CURSOR_NORMAL;glfwSetInputMode(app.window,GLFW_CURSOR,cursorMode);}
 }
 
+bool needsViewmodelAimTransition(const AppState& app,bool ads){
+    // An ADS-fire alias is not an entry transition.
+    return ads&&(!app.viewmodelAdsEngaged||app.viewmodelAdsExiting)&&findViewmodelClip(app,"ads_up").has_value();
+}
+
 void updateActorController(AppState& app,float deltaSeconds){
-    const bool pingKey=actorKey(app,GLFW_KEY_Y),pingPressed=pingKey&&!app.previousBotAreaPingKey;
+    cadence::gamepad::poll(app.gamepad, app.gamepadConfig, deltaSeconds);
+    if(app.gamepad.connected && app.gamepad.dpadUpPressed && app.gamepad.y){
+        app.gamepadConfig.cycleSensitivityPreset();
+        app.gameplayStatus = std::string("Controller sensitivity: ") + cadence::gamepad::kSensitivityPresets[app.gamepadConfig.sensitivityPresetIndex].name;
+    }
+    const bool pingKey=actorKey(app,GLFW_KEY_Y) || (app.gamepad.connected && app.gamepad.dpadUpPressed && !app.gamepad.y),pingPressed=pingKey&&!app.previousBotAreaPingKey;
     app.previousBotAreaPingKey=pingKey;
 #ifdef _WIN32
     const bool winF1InActor = (GetAsyncKeyState(VK_F1) & 0x8000) != 0;
@@ -4668,7 +5146,7 @@ void updateActorController(AppState& app,float deltaSeconds){
     const bool winF1InActor = false;
 #endif
     const bool f1Pressed = actorKey(app, GLFW_KEY_F1) || winF1InActor;
-    const bool captureToggle = actorKey(app, GLFW_KEY_TAB) || actorKey(app, GLFW_KEY_GRAVE_ACCENT) || f1Pressed;
+    const bool captureToggle = actorKey(app, GLFW_KEY_TAB) || actorKey(app, GLFW_KEY_GRAVE_ACCENT) || f1Pressed || (app.gamepad.connected && app.gamepad.backPressed);
     if(captureToggle && !app.previousCaptureToggle && (!ImGui::GetIO().WantTextInput || f1Pressed)){
         toggleGlobalGameplayCapture(app);
     }
@@ -4687,7 +5165,7 @@ void updateActorController(AppState& app,float deltaSeconds){
         }
     }
     app.playerRecorder.previousF8 = f8Pressed;
-    if(app.actorInputCaptured&&actorKey(app,GLFW_KEY_ESCAPE)){setActorInputCapture(app,false);return;}
+    if(app.actorInputCaptured&&(actorKey(app,GLFW_KEY_ESCAPE) || (app.gamepad.connected && app.gamepad.startPressed))){setActorInputCapture(app,false);return;}
     // Gameplay owns the mouse exclusively while captured.  Losing focus must
     // release that ownership visibly; otherwise Windows can leave a hidden
     // cursor moving outside the client area and feed a stale delta on return.
@@ -4697,27 +5175,74 @@ void updateActorController(AppState& app,float deltaSeconds){
     // transition frame instead of applying a potentially synthetic delta.
     if(app.actorInputCaptured&&glfwGetInputMode(app.window,GLFW_CURSOR)!=GLFW_CURSOR_DISABLED){applyActorInputCapture(app,true);app.gameplayStatus="Gameplay cursor lock restored";}
     if(!app.actorInputCaptured)return;
+    const bool saveLocationKey=actorKey(app,GLFW_KEY_LEFT_BRACKET),loadLocationKey=actorKey(app,GLFW_KEY_RIGHT_BRACKET);
+    if(app.experimentalLocationKeys&&!app.takePreview&&app.actorMode&&!ImGui::GetIO().WantTextInput){
+        const auto map=app.loadedMap?app.loadedMap->sourcePath:std::filesystem::path{};
+        if(saveLocationKey&&!app.previousSaveLocation){
+            app.savedLocation=app.actorPosition;app.savedLocationYaw=app.actorYaw;app.savedLocationPitch=app.cameraPitch;
+            app.savedLocationMap=map;app.savedLocationValid=true;app.locationNotice="location saved";app.locationNoticeUntil=glfwGetTime()+2;
+        }
+        if(loadLocationKey&&!app.previousLoadLocation&&app.savedLocationValid&&map==app.savedLocationMap){
+            const auto offset=app.savedLocation-app.actorPosition;
+            app.actorPosition=app.actorPreviousPosition=app.actorRenderPosition=app.savedLocation;
+            app.actorVelocity={};app.actorYaw=app.savedLocationYaw;app.cameraPitch=app.savedLocationPitch;
+            app.actorFixedAccumulator=0;app.sourceFixedAccumulator=0;
+            app.actorPresentationZ=app.actorPosition.z;app.actorPresentationZValid=true;
+            app.actorMantling=false;app.actorMantlePresentation.cancel();app.actorGrounded=false;app.actorGroundGrace=0;
+            app.actorCursorInitialized=false;app.cameraTarget=app.cameraTarget+offset;
+            app.locationNotice="location loaded";app.locationNoticeUntil=glfwGetTime()+2;
+        }
+    }
+    app.previousSaveLocation=saveLocationKey;app.previousLoadLocation=loadLocationKey;
     double cursorX{},cursorY{};glfwGetCursorPos(app.window,&cursorX,&cursorY);app.actorMouseDx=app.actorMouseDy=app.actorPitchDelta=0;if(app.actorCursorInitialized){const float dx=static_cast<float>(cursorX-app.actorLastCursorX),dy=static_cast<float>(cursorY-app.actorLastCursorY),previousPitch=app.cameraPitch;app.actorMouseDx=dx;app.actorMouseDy=dy;const bool sniper=weapon::isSniper(app.weaponProfile.archetype);const float hipFov=std::max(1.0f,app.viewmodelFov*app.viewmodelFovScale);const float legacyAdsFov=sniper?30.0f:app.weaponTiming.adsFov*app.viewmodelFovScale;const float codAdsFov=app.weaponTiming.adsFov*app.viewmodelFovScale;const float aimFov=std::max(1.0f,app.fovSystem==0?codAdsFov:legacyAdsFov),adsRatio=std::tan(aimFov*scene::kPi/360.0f)/std::tan(hipFov*scene::kPi/360.0f),lookScale=1.0f+(std::clamp(adsRatio,0.1f,1.0f)-1.0f)*app.adsCameraBlend;app.actorYaw-=dx*0.0022f*lookScale;app.cameraPitch=std::clamp(app.cameraPitch-dy*0.0022f*lookScale,-1.35f,1.35f);app.actorPitchDelta=app.cameraPitch-previousPitch;}
+    if(app.gamepad.connected && (std::abs(app.gamepad.rightStickX) > 0.001f || std::abs(app.gamepad.rightStickY) > 0.001f)){
+        const bool sniper=weapon::isSniper(app.weaponProfile.archetype);
+        const float hipFov=std::max(1.0f,app.viewmodelFov*app.viewmodelFovScale);
+        const float legacyAdsFov=sniper?30.0f:app.weaponTiming.adsFov*app.viewmodelFovScale;
+        const float codAdsFov=app.weaponTiming.adsFov*app.viewmodelFovScale;
+        const float aimFov=std::max(1.0f,app.fovSystem==0?codAdsFov:legacyAdsFov),adsRatio=std::tan(aimFov*scene::kPi/360.0f)/std::tan(hipFov*scene::kPi/360.0f),lookScale=1.0f+(std::clamp(adsRatio,0.1f,1.0f)-1.0f)*app.adsCameraBlend;
+        const float adsMul=(app.adsCameraBlend>0.01f)?app.gamepadConfig.adsSensitivityMultiplier:1.0f;
+        const float stickLookSpeed=3.2f*lookScale*adsMul*deltaSeconds;
+        const float prevPitch=app.cameraPitch;
+        app.actorYaw-=app.gamepad.rightStickX*app.gamepadConfig.horizontalSensitivity*stickLookSpeed;
+        const float pitchSign=app.gamepadConfig.invertPitch?1.0f:-1.0f;
+        app.cameraPitch=std::clamp(app.cameraPitch-pitchSign*app.gamepad.rightStickY*app.gamepadConfig.verticalSensitivity*stickLookSpeed,-1.35f,1.35f);
+        app.actorPitchDelta+=app.cameraPitch-prevPitch;
+    }
     app.actorLastCursorX=cursorX;app.actorLastCursorY=cursorY;app.actorYaw=std::remainder(app.actorYaw,2.0f*scene::kPi);app.cameraYaw=app.actorYaw;app.actorCursorInitialized=true;
 
     if(pingPressed&&app.experimentalBotAreaPing&&app.playing&&!app.takePreview&&!ImGui::GetIO().WantTextInput)requestBotAreaPing(app);
-    const bool noclipKey=actorKey(app,GLFW_KEY_N);if(noclipKey&&!app.previousNoclip){app.actorNoclip=!app.actorNoclip;app.actorMantling=false;app.actorVelocity={};app.gameplayStatus=app.actorNoclip?"Noclip enabled":"Noclip disabled";if(!app.actorNoclip){const float ground=actorGroundHeight(app,app.actorPosition.x,app.actorPosition.y,app.actorPosition.z+scene::course::kStepHeight);if(ground>-1e8f){if(app.actorPosition.z<ground)app.actorPosition.z=ground;app.actorGrounded=app.actorPosition.z<=ground+0.01f;}}}app.previousNoclip=noclipKey;
+    const bool noclipKey=actorKey(app,GLFW_KEY_N) || (app.gamepad.connected && app.gamepad.dpadDownPressed);if(noclipKey&&!app.previousNoclip){app.actorNoclip=!app.actorNoclip;app.actorMantling=false;app.actorVelocity={};app.gameplayStatus=app.actorNoclip?"Noclip enabled":"Noclip disabled";if(!app.actorNoclip){const float ground=actorGroundHeight(app,app.actorPosition.x,app.actorPosition.y,app.actorPosition.z+scene::course::kStepHeight);if(ground>-1e8f){if(app.actorPosition.z<ground)app.actorPosition.z=ground;app.actorGrounded=app.actorPosition.z<=ground+0.01f;}}}app.previousNoclip=noclipKey;
 
     if(app.previousMovementAlgorithm!=app.movementAlgorithm){
-        app.previousMovementAlgorithm=app.movementAlgorithm;app.referenceMovement={};
+        app.previousMovementAlgorithm=app.movementAlgorithm;app.referenceMovement={};app.cssMovement={};
         app.actorSurfing=false;
         app.sourceFixedAccumulator=0;app.actorFixedAccumulator=0;app.actorPreviousPosition=app.actorRenderPosition=app.actorPosition;
         if(gameplay::reference::enabled(app.movementAlgorithm)){app.actorSliding=false;app.actorSlideBufferTime=0;app.speedBoostMultiplier=1;}
     }
-    const float forward=(actorKey(app,GLFW_KEY_W)?1.0f:0.0f)-(actorKey(app,GLFW_KEY_S)?1.0f:0.0f),side=(actorKey(app,GLFW_KEY_D)?1.0f:0.0f)-(actorKey(app,GLFW_KEY_A)?1.0f:0.0f);const bool jump=actorKey(app,GLFW_KEY_SPACE);
-const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_PRESS;if(!rawAds)app.adsSuppressedUntilRelease=false;const bool cs2Weapon=activeWeaponIsCs2(app),cs2Scoped=cs2Weapon&&weapon::isSniper(app.weaponProfile.archetype);const bool ads=rawAds&&app.weaponSwitchStage==0&&!app.scene.dualWield&&!app.adsSuppressedUntilRelease&&(!cs2Weapon||cs2Scoped);
+    const float gpForward=app.gamepad.connected?app.gamepad.leftStickY:0.0f;
+    const float gpSide=app.gamepad.connected?app.gamepad.leftStickX:0.0f;
+    const float forward=std::clamp((actorKey(app,GLFW_KEY_W)?1.0f:0.0f)-(actorKey(app,GLFW_KEY_S)?1.0f:0.0f)+gpForward,-1.0f,1.0f),side=std::clamp((actorKey(app,GLFW_KEY_D)?1.0f:0.0f)-(actorKey(app,GLFW_KEY_A)?1.0f:0.0f)+gpSide,-1.0f,1.0f);const bool jump=actorKey(app,GLFW_KEY_SPACE) || (app.gamepad.connected && app.gamepad.a);
+const bool rawAds=(glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_PRESS) || (app.gamepad.connected && app.gamepad.leftTrigger > app.gamepadConfig.triggerThreshold);if(!rawAds)app.adsSuppressedUntilRelease=false;const bool cs2Weapon=activeWeaponIsCs2(app),cs2Scoped=cs2Weapon&&weapon::isSniper(app.weaponProfile.archetype);
+    const bool adsDuringDraw=!cs2Weapon&&app.weaponSwitchStage==2&&!app.yyReverse&&!app.yyReturning&&app.actionActive&&(app.activeAction==scene::ActionRole::Equip||app.activeAction==scene::ActionRole::FirstRaise);
+    const bool ads=rawAds&&!app.weaponTiming.disableAds&&(app.weaponSwitchStage==0||adsDuringDraw)&&!app.scene.dualWield&&!app.adsSuppressedUntilRelease&&(!cs2Weapon||cs2Scoped);
     if(app.actorGrounded)app.actorGroundGrace=0.10f;else app.actorGroundGrace=std::max(0.0f,app.actorGroundGrace-deltaSeconds);const bool weaponPutawayActive=app.weaponSwitchStage==1||(app.actionActive&&app.activeAction==scene::ActionRole::Unequip);
     if(app.loadedMap&&app.loadedMap->authoredCollision.present&&(!app.loadedMap->authoredCollision.physicsReady||!app.loadedMap->hasDefaultSpawnPoint)){if(!app.actorCollisionPreviewNoclip)app.actorNoclipBeforeCollisionPreview=app.actorNoclip;app.actorCollisionPreviewNoclip=true;app.actorNoclip=true;app.actorMantling=false;app.gameplayStatus="Authored map is preview-only: collision/spawn validation required.";}
-    const bool sprintInput=actorKey(app,GLFW_KEY_LEFT_SHIFT)||actorKey(app,GLFW_KEY_RIGHT_SHIFT);const bool canSprint=app.movementAlgorithm!=3&&app.movementAlgorithm!=4&&sprintInput&&!app.authoredCrouch&&!(app.loadedMap&&!app.actorNoclip&&app.loadedMap->gameplay.crouch(app.actorPosition,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72)))&&!app.actorSliding&&!ads&&!weaponPutawayActive&&forward>0.1f&&(app.actorGrounded||app.actorGroundGrace>0.0f||app.actorNoclip);app.actorSprinting=canSprint;const bool sprint=app.actorSprinting;
-    const bool volumeCrouch=app.loadedMap&&!app.actorNoclip&&app.loadedMap->gameplay.crouch(app.actorPosition,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72));
+    if (app.gamepad.connected) {
+        if (app.gamepad.leftThumbPressed) {
+            app.actorGamepadSprintLatched = app.gamepadConfig.sprintToggle ? !app.actorGamepadSprintLatched : true;
+        } else if (!app.gamepadConfig.sprintToggle && !app.gamepad.leftThumb) {
+            app.actorGamepadSprintLatched = false;
+        }
+        if (forward < 0.1f || ads || weaponPutawayActive) {
+            app.actorGamepadSprintLatched = false;
+        }
+    }
+    const bool sprintInput=actorKey(app,GLFW_KEY_LEFT_SHIFT)||actorKey(app,GLFW_KEY_RIGHT_SHIFT) || (app.gamepad.connected && (app.actorGamepadSprintLatched || app.gamepad.leftThumb));const bool canSprint=app.movementAlgorithm!=3&&app.movementAlgorithm!=4&&sprintInput&&!app.authoredCrouch&&!(app.loadedMap&&!app.actorNoclip&&app.loadedMap->gameplay.crouch(app.actorPosition,scene::course::kPlayerRadius,actorCollisionHeight(app,scene::Stance::Stand)))&&!app.actorSliding&&!ads&&!weaponPutawayActive&&forward>0.1f&&(app.actorGrounded||app.actorGroundGrace>0.0f||app.actorNoclip);app.actorSprinting=canSprint;const bool sprint=app.actorSprinting;
+    const bool volumeCrouch=app.loadedMap&&!app.actorNoclip&&app.loadedMap->gameplay.crouch(app.actorPosition,scene::course::kPlayerRadius,actorCollisionHeight(app,scene::Stance::Stand));
     if(volumeCrouch&&app.gameplayStance==scene::Stance::Stand){setActorStance(app,scene::Stance::Crouch);app.authoredCrouch=true;}
     if(app.authoredCrouch&&!volumeCrouch&&app.loadedMap){
-        const auto standing=gameplay::mantle::sweepRounded(*app.loadedMap,app.actorPosition,app.actorPosition,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72));
+        const auto standing=actorCollisionSweep(app,*app.loadedMap,app.actorPosition,app.actorPosition,scene::course::kPlayerRadius,actorCollisionHeight(app,scene::Stance::Stand),true);
         if(!standing.startSolid){if(app.gameplayStance==scene::Stance::Crouch)setActorStance(app,scene::Stance::Stand);app.authoredCrouch=false;}
     }
     if (sprint&&!volumeCrouch&&!app.authoredCrouch)
@@ -4747,9 +5272,10 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
     if(gameplay::reference::enabled(app.movementAlgorithm)){
         gameplay::reference::Command cmd;cmd.forward=forward;cmd.side=side;cmd.yaw=app.actorYaw;cmd.sprint=sprint;cmd.ads=ads;
         cmd.stance=app.gameplayStance==scene::Stance::Prone?2:app.gameplayStance==scene::Stance::Crouch?1:0;cmd.weaponScale=app.weaponTiming.moveSpeedScale;
-        wishVelocity=gameplay::reference::wish(cmd,app.movementAlgorithm==4?gameplay::reference::Rules::HalfLife:gameplay::reference::Rules::Cod,app.actorGrounded)*gameplay::iw::worldUnits(1);
+        if(app.movementAlgorithm==4){gameplay::css::Command c;c.forward=forward;c.side=side;c.yaw=app.actorYaw;c.walk=sprintInput;gameplay::css::Settings cfg;cfg.maxSpeed=250.f*std::max(.01f,app.weaponTiming.moveSpeedScale);wishVelocity=gameplay::css::wish(c,cfg)*gameplay::iw::worldUnits(1);if(app.actorGrounded&&app.gameplayStance!=scene::Stance::Stand)wishVelocity=wishVelocity*.34f;}
+        else wishVelocity=gameplay::reference::wish(cmd,gameplay::reference::Rules::Cod,app.actorGrounded)*gameplay::iw::worldUnits(1);
     }
-    if(!gameplay::reference::enabled(app.movementAlgorithm)&&app.loadedMap&&!app.actorNoclip&&app.actorGrounded)wishVelocity=app.loadedMap->gameplay.assistedWish(app.actorPosition,wishVelocity,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72));
+    if(!gameplay::reference::enabled(app.movementAlgorithm)&&app.loadedMap&&!app.actorNoclip&&app.actorGrounded)wishVelocity=app.loadedMap->gameplay.assistedWish(app.actorPosition,wishVelocity,scene::course::kPlayerRadius,actorCollisionHeight(app,scene::Stance::Stand));
     app.actorWishVelocity = wishVelocity;
     app.actorMoveInputForward = forward;
     app.actorMoveInputSide = side;
@@ -4760,8 +5286,8 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
     app.actorMantleApproach.age(deltaSeconds,app.actorMantleIntentTime>0&&!app.actorNoclip&&!app.actorMantling&&!app.actorOnLadder);
     bool sourceSurfingNow=false;
     if(app.movementAlgorithm==3&&!app.actorGrounded&&app.loadedMap){
-      const float surfRadius=gameplay::source_v2::units(16),surfHeight=gameplay::source_v2::units(app.gameplayStance==scene::Stance::Stand?72.0f:36.0f);
-      const auto surfTrace=[&](scene::Vec3 a,scene::Vec3 b){return gameplay::movement::sweep(*app.loadedMap,a,b,surfRadius,surfHeight);};
+      const float surfRadius=gameplay::source_v2::units(16),surfHeight=actorCollisionHeight(app,app.gameplayStance,72.f,36.f,36.f);
+      const auto surfTrace=[&](scene::Vec3 a,scene::Vec3 b){return actorCollisionSweep(app,*app.loadedMap,a,b,surfRadius,surfHeight);};
       sourceSurfingNow=gameplay::source_v2::surfContact(app.actorPosition,app.actorVelocity,surfTrace);
     }
     if (app.movementAlgorithm!=4 && !app.actorMantling && !app.authoredLadder.active && app.loadedMap && app.actorMantleIntentTime>0.0f &&
@@ -4770,17 +5296,17 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
       const auto mantleEntry=app.actorMantleApproach.entry(app.actorVelocity,cameraFacing);
       scene::Vec3 intendedFacing=cameraFacing;
       const float mantleRadius=app.movementAlgorithm==3?gameplay::source_v2::units(16):scene::course::kPlayerRadius;
-      const auto mantleSweep=[&](scene::Vec3 a,scene::Vec3 b){return app.movementAlgorithm==3?gameplay::movement::sweep(*app.loadedMap,a,b,mantleRadius,gameplay::iw::worldUnits(72)):gameplay::mantle::sweepRounded(*app.loadedMap,a,b,mantleRadius,gameplay::iw::worldUnits(72));};
+      const auto mantleSweep=[&](scene::Vec3 a,scene::Vec3 b){return app.movementAlgorithm==3?actorCollisionSweep(app,*app.loadedMap,a,b,mantleRadius,actorCollisionHeight(app,scene::Stance::Stand)):actorCollisionSweep(app,*app.loadedMap,a,b,mantleRadius,actorCollisionHeight(app,scene::Stance::Stand),true);};
       const float mantleEye=std::max(gameplay::iw::worldUnits(20),app.actorViewHeight);
       const float lookAhead=gameplay::iw::worldUnits(app.traversalSettings.reachIw)+mantleRadius;
       const float minimumGrab=mantleEye*app.traversalSettings.minimumEyePercent*.01f,maximumGrab=mantleEye*app.traversalSettings.maximumEyePercent*.01f;
       const auto acceptTraversal=[&](scene::Vec3 point,scene::Vec3 direction){
-          const auto decision=gameplay::traversal::classify(*app.loadedMap,app.actorPosition,point,direction,mantleEye,mantleRadius,app.traversalSettings);
+          const auto decision=withCollisionHull(app,mantleRadius,[&](auto hull){return gameplay::traversal::classify(*app.loadedMap,app.actorPosition,point,direction,mantleEye,hull,app.traversalSettings);});
           if(app.traversalVisualizer)app.traversalDebug={app.actorPosition,point,decision,app.gameplayClock};
           return decision==gameplay::traversal::Decision::Eligible;
       };
       std::optional<scene::Vec3> target;scene::Vec3 facing=intendedFacing;
-      if(const auto path=gameplay::authored::climb(*app.loadedMap,app.actorPosition,intendedFacing,mantleRadius,gameplay::iw::worldUnits(72),scene::course::kStepHeight,maximumGrab,lookAhead,minimumGrab,app.actorMantleSpeedMultiplier,app.movementAlgorithm==3)){
+      if(const auto path=gameplay::authored::climb(*app.loadedMap,app.actorPosition,intendedFacing,mantleRadius,actorCollisionHeight(app,scene::Stance::Stand),scene::course::kStepHeight,maximumGrab,lookAhead,minimumGrab,app.actorMantleSpeedMultiplier,app.movementAlgorithm==3,customCollisionFootprint(app)?actorCollisionHalfExtents(app,mantleRadius):scene::Vec2{})){
           if(acceptTraversal(path->target,intendedFacing)){target=path->target;app.mantleTrajectory=gameplay::mantle::withMomentum(*path,mantleEntry,intendedFacing,app.actorMantleSpeedMultiplier,mantleSweep);}
       }
       const float cone=std::clamp(app.actorMantleFacingConeDegrees,0.0f,55.0f)*scene::kPi/180.0f;
@@ -4790,7 +5316,7 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
           const float angle=std::atan2(intendedFacing.y,intendedFacing.x)+offset*cone;
           const scene::Vec3 candidateFacing{std::cos(angle),std::sin(angle),0};
           const auto candidate=app.loadedMap->mantleTarget(app.actorPosition,candidateFacing,mantleRadius,
-              gameplay::iw::worldUnits(72),scene::course::kStepHeight,
+              actorCollisionHeight(app,scene::Stance::Stand),scene::course::kStepHeight,
               maximumGrab,lookAhead,
               minimumGrab,true,&mantleGround);
           const float candidateSupport=candidate?app.loadedMap->groundHeight(candidate->x,candidate->y,candidate->z-43.f,-1e9f):-1e9f;
@@ -4800,7 +5326,7 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
               if(gameplay::mantle::clear(path,mantleSweep)){target=candidate;facing=candidateFacing;app.mantleTrajectory=path;break;}
               if(app.traversalVisualizer)app.traversalDebug.decision=gameplay::traversal::Decision::PathBlocked;
           }
-          if(const auto path=gameplay::mantle::findClimb(*app.loadedMap,app.actorPosition,candidateFacing,mantleRadius,gameplay::iw::worldUnits(72),scene::course::kStepHeight,maximumGrab,lookAhead,minimumGrab,app.actorMantleSpeedMultiplier,app.movementAlgorithm==3)){
+          if(const auto path=withCollisionHull(app,mantleRadius,[&](auto hull){return gameplay::mantle::findClimb(*app.loadedMap,app.actorPosition,candidateFacing,hull,actorCollisionHeight(app,scene::Stance::Stand),scene::course::kStepHeight,maximumGrab,lookAhead,minimumGrab,app.actorMantleSpeedMultiplier,app.movementAlgorithm==3);})){
               if(acceptTraversal(path->target,candidateFacing)){target=path->target;facing=candidateFacing;app.mantleTrajectory=gameplay::mantle::withMomentum(*path,mantleEntry,candidateFacing,app.actorMantleSpeedMultiplier,mantleSweep);break;}
           }
       }
@@ -4862,7 +5388,7 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
       while(app.actorMantleElapsed<frameEnd) {
           const float next=std::min(frameEnd,app.actorMantleElapsed+0.004f/app.mantleTrajectory.playbackSpeed);
           const auto sample=app.mantleTrajectory.sample(next);
-          const auto hit=app.movementAlgorithm==3?gameplay::movement::sweep(*app.loadedMap,app.actorPosition,sample.position,radius,gameplay::iw::worldUnits(72)):gameplay::mantle::sweepRounded(*app.loadedMap,app.actorPosition,sample.position,radius,gameplay::iw::worldUnits(72));
+          const auto hit=app.movementAlgorithm==3?actorCollisionSweep(app,*app.loadedMap,app.actorPosition,sample.position,radius,actorCollisionHeight(app,scene::Stance::Stand)):actorCollisionSweep(app,*app.loadedMap,app.actorPosition,sample.position,radius,actorCollisionHeight(app,scene::Stance::Stand),true);
           app.actorPosition=hit.end;app.actorVelocity=sample.velocity;
           app.actorMantleElapsed=next;
           if(hit.startSolid||hit.fraction<0.9999f) {
@@ -4883,7 +5409,7 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
           auto finalPose=evaluateHiddenWorldActorPose(app,nullptr,nullptr,nullptr,nullptr,false);
           const auto& actor=*app.hiddenWorldActor;
           const float lift=actor.bounds.valid?-actor.bounds.minimum.z+gameplay::iw::worldUnits(.25f):gameplay::iw::worldUnits(.25f);
-          const auto inverseRoot=scene::inverseAffine(gameplay::presentation::worldActorTransform(app.actorPosition,app.actorPosition,false,app.actorYaw+app.actorWorldFacingOffset,lift));
+          const auto inverseRoot=scene::inverseAffine(gameplay::presentation::bodyWorldTransform(actor.skeleton,app.actorPosition,app.actorPosition,false,app.actorYaw+app.actorWorldFacingOffset,lift));
           for(auto& bone:finalPose)bone=inverseRoot*bone;
           app.worldMantleFalloffPose=std::move(finalPose);
           app.worldMantleFalloffStart=app.gameplayClock;app.worldMantleFalloffDuration=app.actorMantleFalloff;
@@ -4905,7 +5431,8 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
         app.previousFire =
             glfwGetMouseButton(app.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         app.previousReload = actorKey(app, GLFW_KEY_R);
-        app.previousMelee = actorKey(app, GLFW_KEY_V);
+        app.previousMelee = actorKey(app, GLFW_KEY_V) || (app.gamepad.connected && app.gamepad.bPressed);
+        app.previousThirdWeaponKey = actorKey(app, GLFW_KEY_B);
         app.previousFirstRaise = actorKey(app, GLFW_KEY_F);
         app.previousGrenade = actorKey(app, GLFW_KEY_G);
         return;
@@ -4914,7 +5441,7 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
         app.actorMantling = false;
         // No fixed-target snap or forced grounding at the end of a vault.
         const auto groundEnd=app.actorPosition-scene::Vec3{0,0,gameplay::iw::worldUnits(2)};
-        const auto groundHit=app.movementAlgorithm==3?gameplay::movement::sweep(*app.loadedMap,app.actorPosition,groundEnd,radius,gameplay::iw::worldUnits(72)):gameplay::mantle::sweepRounded(*app.loadedMap,app.actorPosition,groundEnd,radius,gameplay::iw::worldUnits(72));
+        const auto groundHit=app.movementAlgorithm==3?actorCollisionSweep(app,*app.loadedMap,app.actorPosition,groundEnd,radius,actorCollisionHeight(app,scene::Stance::Stand)):actorCollisionSweep(app,*app.loadedMap,app.actorPosition,groundEnd,radius,actorCollisionHeight(app,scene::Stance::Stand),true);
         app.actorGrounded=!groundHit.startSolid&&groundHit.fraction<1&&groundHit.normal.z>=0.7f;
         if(app.actorGrounded){app.actorPosition=groundHit.end;app.actorVelocity.z=0;}
         app.actorPreviousPosition=app.actorRenderPosition=app.actorPosition;
@@ -4932,7 +5459,8 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
       app.previousFire =
           glfwGetMouseButton(app.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
       app.previousReload = actorKey(app, GLFW_KEY_R);
-      app.previousMelee = actorKey(app, GLFW_KEY_V);
+      app.previousMelee = actorKey(app, GLFW_KEY_V) || (app.gamepad.connected && app.gamepad.bPressed);
+      app.previousThirdWeaponKey = actorKey(app, GLFW_KEY_B);
       app.previousFirstRaise = actorKey(app, GLFW_KEY_F);
       app.previousGrenade = actorKey(app, GLFW_KEY_G);
       return;
@@ -4977,7 +5505,7 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
     const auto physStart = std::chrono::steady_clock::now();
     const auto beforeLadder=app.actorPosition;
     if(app.actorNoclip)app.authoredLadder={};
-    const bool authoredLadderStep=!app.actorNoclip&&app.loadedMap&&gameplay::authored::ladder(app.authoredLadder,*app.loadedMap,app.actorPosition,app.actorVelocity,app.actorGrounded,{cy,sy,0},forward,jump&&!app.previousJump,deltaSeconds,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72));
+    const bool authoredLadderStep=!app.actorNoclip&&app.loadedMap&&gameplay::authored::sourceLadder(app.authoredLadder,*app.loadedMap,app.actorPosition,app.actorVelocity,app.actorGrounded,{cy*std::cos(app.cameraPitch),sy*std::cos(app.cameraPitch),std::sin(app.cameraPitch)},{-sy,cy,0},forward,side,jump&&!app.previousJump,deltaSeconds,scene::course::kPlayerRadius,actorCollisionHeight(app,scene::Stance::Stand),customCollisionFootprint(app)?actorCollisionHalfExtents(app):scene::Vec2{},app.ladderSpeedMultiplier);
     if(!authoredLadderStep)app.actorOnLadder=false;
     if (app.actorNoclip) {
       const scene::Vec3 oldPosition = app.actorPosition;
@@ -5003,11 +5531,11 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
     } else if(app.movementAlgorithm==3) {
       gameplay::source_v2::Settings cfg;
       cfg.playerSpeed=gameplay::iw::kRunSpeed*app.weaponTiming.moveSpeedScale*(app.gameplayStance==scene::Stance::Stand?1.0f:0.34f);
-      cfg.height=gameplay::source_v2::units(app.gameplayStance==scene::Stance::Stand?72.0f:36.0f);
+      cfg.height=actorCollisionHeight(app,app.gameplayStance,72.f,36.f,36.f);
       cfg.airAccelerate=std::clamp(app.sourceAirAccelerate,1.0f,200.0f);
       cfg.autoJump=true;cfg.unlimitedBunnyhop=app.sourceUnlimitedBunnyhop;
       const auto trace=[&](scene::Vec3 a,scene::Vec3 b){
-          if(app.loadedMap)return gameplay::movement::sweep(*app.loadedMap,a,b,cfg.radius,cfg.height);
+          if(app.loadedMap)return actorCollisionSweep(app,*app.loadedMap,a,b,cfg.radius,cfg.height);
           gameplay::movement::Trace hit;
           hit.end=constrainActorMove(app,a,b,&hit.normal);
           const float floor=actorGroundHeight(app,b.x,b.y,a.z+cfg.stepHeight);
@@ -5092,8 +5620,8 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
         // the ordinary ground-height support below.
         if(app.loadedMap&&app.actorPosition.z<attemptedPosition.z)app.actorPosition.z=attemptedPosition.z;
         if(app.loadedMap&&!app.actorGrounded&&!app.actorOnLadder&&app.traversalSettings.airEdgeEnabled&&preCollisionVelocity.z>0){
-            const float headHeight=gameplay::iw::worldUnits(app.gameplayStance==scene::Stance::Stand?72.f:app.gameplayStance==scene::Stance::Crouch?40.f:20.f);
-            if(const auto cleared=gameplay::traversal::airEdge(*app.loadedMap,oldPosition,attemptedPosition,app.actorPosition,scene::course::kPlayerRadius,headHeight,gameplay::iw::worldUnits(app.traversalSettings.airEdgeIw)-app.actorAirEdgeLift)){
+            const float headHeight=actorCollisionHeight(app,app.gameplayStance);
+            if(const auto cleared=withCollisionHull(app,scene::course::kPlayerRadius,[&](auto hull){return gameplay::traversal::airEdge(*app.loadedMap,oldPosition,attemptedPosition,app.actorPosition,hull,headHeight,gameplay::iw::worldUnits(app.traversalSettings.airEdgeIw)-app.actorAirEdgeLift);})){
                 const float lift=cleared->z-attemptedPosition.z;app.actorAirEdgeLift+=lift;
                 app.actorPosition=*cleared;contactNormal={};
                 if(app.traversalVisualizer){app.traversalDebug={oldPosition,*cleared,gameplay::traversal::Decision::Below,app.gameplayClock};app.traversalDebug.edgeLift=lift;}
@@ -5101,8 +5629,8 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
         }
         bool ceilingBlocked=false;
         if(app.loadedMap&&preCollisionVelocity.z>0){
-            const float headHeight=gameplay::iw::worldUnits(app.gameplayStance==scene::Stance::Stand?72.f:app.gameplayStance==scene::Stance::Crouch?40.f:20.f);
-            const auto overhead=gameplay::traversal::ceiling(*app.loadedMap,oldPosition,attemptedPosition,scene::course::kPlayerRadius,headHeight);
+            const float headHeight=actorCollisionHeight(app,app.gameplayStance);
+            const auto overhead=withCollisionHull(app,scene::course::kPlayerRadius,[&](auto hull){return gameplay::traversal::ceiling(*app.loadedMap,oldPosition,attemptedPosition,hull,headHeight);});
             if(overhead.startSolid||overhead.fraction<1){ceilingBlocked=true;app.actorPosition.z=std::min(app.actorPosition.z,overhead.end.z);app.actorVelocity.z=std::min(0.f,app.actorVelocity.z);app.actorGrounded=false;}
         }
         bool hitSurface=false;
@@ -5132,30 +5660,7 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
             }
         }
         if(hitSurface)app.actorMantleApproach.contact(preCollisionVelocity,app.actorVelocity,app.actorMantleIntentTime>0);
-        if(app.loadedMap&&app.authoredLadder.cooldown<=0){
-            if(const auto ladderHit=app.loadedMap->findLadderContact(app.actorPosition,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72.0f))){
-                if(!app.actorOnLadder&&(forward>0.1f||!app.actorGrounded)){
-                    app.actorOnLadder=true;
-                    app.ladderNormal=*ladderHit;
-                }
-            }else{
-                app.actorOnLadder=false;
-            }
-        }
-        if(app.actorOnLadder){
-            app.actorVelocity.z=0.0f;
-            app.actorGrounded=false;
-            if(actorKey(app,GLFW_KEY_W)){
-                app.actorPosition.z+=160.0f*step;
-            }else if(actorKey(app,GLFW_KEY_S)){
-                app.actorPosition.z-=160.0f*step;
-            }
-            if(jump&&!app.previousJump){
-                app.actorOnLadder=false;
-                app.actorVelocity=app.ladderNormal*250.0f+scene::Vec3{0,0,240.0f};
-                app.gameplayStatus="Ladder jump-off";
-            }
-        }
+        // Ladder movement is resolved once before the movement-mode branches.
         const int boostTier=app.loadedMap?app.loadedMap->speedBoostTier(app.actorPosition.x,app.actorPosition.y,app.actorPosition.z,scene::course::kPlayerRadius):0;
         app.activeSpeedBoostTier=boostTier;
         const float targetBoost=boostTier==2?4.0f:(boostTier==1?2.0f:1.0f);
@@ -5167,7 +5672,15 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
         if(app.actorMantleGrace>0.0f){
             app.actorMantleGrace=std::max(0.0f,app.actorMantleGrace-step);
         }
-        const float ground=actorGroundHeight(app,app.actorPosition.x,app.actorPosition.y,oldPosition.z+scene::course::kStepHeight+4.0f);
+        // Rectangular movement has already resolved the entire footprint onto
+        // the step. A narrower legacy ground sample can miss its leading edge
+        // and snap the feet back inside that step on the very same tick.
+        const float ground=app.loadedMap&&customCollisionFootprint(app)
+            ? (preCollisionVelocity.z<=0.f?gameplay::movement::playerSupport(
+                *app.loadedMap,app.actorPosition,actorCollisionHalfExtents(app),
+                actorCollisionHeight(app,app.gameplayStance),
+                app.actorGrounded?scene::course::kStepHeight:.1f).value_or(-1e9f):-1e9f)
+            : actorGroundHeight(app,app.actorPosition.x,app.actorPosition.y,oldPosition.z+scene::course::kStepHeight+4.0f);
         const bool hasGround=ground>-1e8f;
         const float groundCorrection=hasGround?std::max(0.0f,ground-app.actorPosition.z):0.0f;
         const bool terrainStepDown=(app.actorMantleGrace<=0.0f)&&hasGround&&app.actorGrounded&&app.actorVelocity.z<=0.0f&&app.actorPosition.z-ground<=scene::course::kStepHeight;
@@ -5242,8 +5755,10 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
       const auto physElapsed = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-physStart).count();
       app.performancePhysicsMs = app.performancePhysicsMs * 0.9 + physElapsed * 0.1;
     }
-    const bool crouch=actorKey(app,GLFW_KEY_C),prone=actorKey(app,GLFW_KEY_Z)||actorKey(app,GLFW_KEY_LEFT_CONTROL);
-    const bool crouchPressed=crouch&&!app.previousCrouch,pronePressed=prone&&!app.previousProne;
+    const bool gpCrouch=app.gamepad.connected&&(app.gamepad.rightThumbPressed||(app.actorSprinting&&app.gamepad.rightThumb));
+    const bool gpProne=app.gamepad.connected&&app.gamepad.rightThumbLongHeldTriggered;
+    const bool crouch=actorKey(app,GLFW_KEY_C)||gpCrouch,prone=actorKey(app,GLFW_KEY_Z)||actorKey(app,GLFW_KEY_LEFT_CONTROL)||gpProne;
+    const bool crouchPressed=(crouch&&!app.previousCrouch)||(app.gamepad.connected&&app.gamepad.rightThumbPressed),pronePressed=(prone&&!app.previousProne)||(app.gamepad.connected&&app.gamepad.rightThumbLongHeldTriggered);
     const bool slideInput=crouchPressed||pronePressed;
     const float currentHSpd=std::hypot(app.actorVelocity.x,app.actorVelocity.y);
     if(app.actorSlideBufferTime>0.0f)app.actorSlideBufferTime=std::max(0.0f,app.actorSlideBufferTime-deltaSeconds);
@@ -5309,10 +5824,10 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
     app.sniperZoomState.update(ads&&(!cs2Weapon||cs2Scoped),deltaSeconds,gameplay::view::zoomDuration(ads?app.cameraControls.zoomInDuration:app.cameraControls.zoomOutDuration,ads?app.weaponTiming.adsIn:app.weaponTiming.adsOut),app.sniperZoomIn,app.sniperZoomOut);
     // Native Point Blank instant-scope defaults must not inherit a global
     // sniper zoom duration override. Authored/user nonzero timings still blend.
-    if(!app.scene.pointBlankWeaponStem.empty()&&weapon::isSniper(app.weaponProfile.archetype)&&(ads?app.weaponTiming.adsIn:app.weaponTiming.adsOut)<=0){
+    if(app.weaponTiming.instantScope||(!app.scene.pointBlankWeaponStem.empty()&&weapon::isSniper(app.weaponProfile.archetype)&&(ads?app.weaponTiming.adsIn:app.weaponTiming.adsOut)<=0)){
         app.adsCameraBlend=ads?1.f:0.f;app.sniperZoomState.value=app.sniperZoomState.from=app.adsCameraBlend;app.sniperZoomState.aiming=ads;
     }
-    if(horizontalSpeed>10.0f)gameplay::iw::advanceBobCycle(app.actorCameraTime,deltaSeconds*(cs2Weapon&&sprint?0.5f:1.0f),app.gameplayStance,sprint);
+    if(horizontalSpeed>10.0f)gameplay::iw::advanceBobCycle(app.actorCameraTime,deltaSeconds*(cs2Weapon&&sprint?0.5f:1.0f)*(sprint?std::max(0.f,app.weaponProfile.sprintBobSpeedMultiplier):1.f),app.gameplayStance,sprint);
     if(app.movementAlgorithm==0&&!wasGrounded&&app.actorGrounded){const float severity=std::clamp((landingSpeed-gameplay::iw::worldUnits(120.0f))/gameplay::iw::worldUnits(420.0f),0.0f,1.0f);app.landingCameraElapsed=0;app.landingCameraDuration=0.45f;app.landingCameraAmplitude=gameplay::iw::worldUnits(0.45f+severity*1.55f);}
     if(app.movementAlgorithm==0&&app.landingCameraElapsed<app.landingCameraDuration){app.landingCameraElapsed+=deltaSeconds;app.landCameraOffset=gameplay::iw::landingDip(app.landingCameraElapsed,app.landingCameraDuration,app.landingCameraAmplitude);}else {app.landingCameraElapsed=app.landingCameraDuration;app.landCameraOffset=0;}
     const float targetJumpPitch=app.movementAlgorithm!=0||app.actorNoclip||app.actorGrounded?0.0f:std::clamp(-app.actorVelocity.z/350.0f,-1.0f,1.0f)*0.65f;app.jumpCameraPitch+=(targetJumpPitch-app.jumpCameraPitch)*(1.0f-std::exp(-deltaSeconds*(app.actorGrounded?14.0f:8.0f)));
@@ -5340,6 +5855,7 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
         if(hasSprintPresentation){
             const bool canceledReload=app.actionActive&&app.activeAction==scene::ActionRole::Reload;
             if(!sprintIn.empty())beginInterruptPoseBlend(app,cappedInterruptDuration(app,sprintIn.front(),app.weaponTiming.sprintInTime));
+            else if(!sprintLoop.empty())beginInterruptPoseBlend(app,cappedInterruptDuration(app,sprintLoop.front(),app.weaponTiming.sprintInTime));
             if(app.activeAction==scene::ActionRole::Melee)setMeleeKnifeVisible(app,false);app.weaponSwitchStage=0;app.weaponSwitchElapsed=0;app.yyReturning=false;app.yyTowardPutaway=false;app.yyReverse=false;app.yyPutawayAnimation=static_cast<std::size_t>(-1);app.yyPutawayFrameLimit=0;app.yyCancelDuration=0;app.actionActive=false;app.actionOverlay=false;app.activeAction=scene::ActionRole::None;app.actionElapsed=app.actionFrame=0;app.pendingVariantAnimation=static_cast<std::size_t>(-1);app.viewmodelAdsEngaged=app.viewmodelAdsExiting=app.viewmodelAdsPoseHold=false;app.viewmodelAdsBaseAnimation=static_cast<std::size_t>(-1);app.runtimeLayers.clear();app.m40ReloadStage=0;if(canceledReload){app.nextFireTime=std::min(app.nextFireTime,app.gameplayClock);app.pendingWeaponRechamber=false;app.gameplayRechamber=false;app.burstShotsRemaining=0;app.previousFire=false;}
             if(!sprintIn.empty()){selectAnimation(app,sprintIn.front(),false);app.animationFrame=0;app.transitioning=false;app.viewmodelSprintEntering=true;app.gameplayStatus="Crossfading into sprint — "+app.scene.animations[sprintIn.front()].sourceName;}
             else if(!sprintLoop.empty()){selectAnimation(app,sprintLoop.front(),false);app.animationFrame=0;app.viewmodelSprintEntering=false;app.gameplayStatus="Sprint loop — "+app.scene.animations[sprintLoop.front()].sourceName;}
@@ -5351,7 +5867,14 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
         if(hasSprintPresentation){if(app.activeAction==scene::ActionRole::Melee)setMeleeKnifeVisible(app,false);app.weaponSwitchStage=0;app.weaponSwitchElapsed=0;app.yyReturning=false;app.yyTowardPutaway=false;app.yyReverse=false;app.yyPutawayAnimation=static_cast<std::size_t>(-1);app.yyPutawayFrameLimit=0;app.yyCancelDuration=0;app.transitioning=false;app.transitionElapsed=0;app.activeTransitionDuration=app.transitionDuration;app.actionActive=false;app.actionOverlay=false;app.activeAction=scene::ActionRole::None;app.actionElapsed=app.actionFrame=0;app.pendingVariantAnimation=static_cast<std::size_t>(-1);app.viewmodelAdsEngaged=app.viewmodelAdsExiting=app.viewmodelAdsPoseHold=false;app.viewmodelAdsBaseAnimation=static_cast<std::size_t>(-1);app.runtimeLayers.clear();resolveGameplayAnimation(app);}
     }
 
-    const bool fire=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_LEFT)==GLFW_PRESS,reload=actorKey(app,GLFW_KEY_R),reloadEmpty=actorKey(app,GLFW_KEY_LEFT_ALT),melee=actorKey(app,GLFW_KEY_V)&&!(app.experimentalThirdWeapon&&app.classSlotRigs[2]),firstRaise=actorKey(app,GLFW_KEY_F),grenade=actorKey(app,GLFW_KEY_G),inspect=actorKey(app,GLFW_KEY_E)||actorKey(app,GLFW_KEY_I),swap=actorKey(app,GLFW_KEY_Q);const bool knifeWeapon=isKnifeWeapon(app);const float wheelDirection=app.actorWheelDelta;const bool wheelSwap=std::abs(app.actorWheelDelta)>0.01f;app.actorWheelDelta=0;
+    const bool gpFire=app.gamepad.connected&&(app.gamepad.rightTrigger>app.gamepadConfig.triggerThreshold);
+    const bool gpReload=app.gamepad.connected&&app.gamepad.x;
+    const bool gpMelee=app.gamepad.connected&&app.gamepad.bPressed;
+    const bool gpGrenade=app.gamepad.connected&&app.gamepad.rightBumper;
+    const bool gpInspect=app.gamepad.connected&&(app.gamepad.dpadLeftPressed||(!app.experimentalThirdWeapon&&app.gamepad.leftBumperPressed));
+    const bool gpSwap=app.gamepad.connected&&app.gamepad.yPressed;
+
+    const bool fire=(glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_LEFT)==GLFW_PRESS)||gpFire,reload=actorKey(app,GLFW_KEY_R)||gpReload,reloadEmpty=actorKey(app,GLFW_KEY_LEFT_ALT),melee=(actorKey(app,GLFW_KEY_V)||gpMelee),firstRaise=actorKey(app,GLFW_KEY_F),grenade=actorKey(app,GLFW_KEY_G)||gpGrenade,inspect=actorKey(app,GLFW_KEY_E)||actorKey(app,GLFW_KEY_I)||gpInspect,swap=actorKey(app,GLFW_KEY_Q)||gpSwap;const bool knifeWeapon=isKnifeWeapon(app);const float wheelDirection=app.actorWheelDelta;const bool wheelSwap=std::abs(app.actorWheelDelta)>0.01f;app.actorWheelDelta=0;
     const auto trigger=[&](scene::ActionRole action){
         const bool importedShot=action==scene::ActionRole::Fire&&!cs2Weapon&&
             (assets::imported::supported(app.scene.importedViewGame)||assets::imported::supported(app.scene.viewHandsDriverGame));
@@ -5388,7 +5911,8 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
         if(action==scene::ActionRole::Gesture&&isViewmodelRig(app))beginInterruptPoseBlend(app,cs2Weapon?0.12f:0.45f);
         const bool keepReloadEmpty=app.gameplayReloadEmpty;
         const bool keepPutawayEmpty=app.gameplayPutawayEmpty;
-        if(!restartingFire&&!fireKeepsPrimary)stopGameplayAction(app);
+        const bool keepReloadForPutaway=app.experimentalYyReloadBlend&&!activeWeaponIsCs2(app)&&action==scene::ActionRole::Unequip&&app.actionActive&&app.activeAction==scene::ActionRole::Reload;
+        if(!restartingFire&&!fireKeepsPrimary&&!keepReloadForPutaway)stopGameplayAction(app);
         if(immediateCs2Inspect)app.runtimeLayers.clear();
         if(action==scene::ActionRole::Reload&&keepReloadEmpty)app.gameplayReloadEmpty=true;
         if(action==scene::ActionRole::Unequip&&keepPutawayEmpty)app.gameplayPutawayEmpty=true;
@@ -5398,15 +5922,16 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
     };
     const bool firePressed=fire&&!app.previousFire;
     if(firePressed&&app.weaponSwitchStage==2&&app.yyReverse){beginInterruptPoseBlend(app,std::max(0.001f,app.actionBlendTime));app.weaponSwitchStage=0;app.weaponSwitchElapsed=0;app.yyReverse=false;app.yyReturning=false;app.yyTowardPutaway=false;app.yyCancelDuration=0;app.yyPutawayAnimation=static_cast<std::size_t>(-1);app.yyPutawayFrameLimit=0;app.actionActive=false;app.actionOverlay=false;app.activeAction=scene::ActionRole::None;app.runtimeLayers.clear();resolveGameplayAnimation(app);app.nextFireTime=std::min(app.nextFireTime,app.gameplayClock);app.gameplayStatus="Fire interrupted YY return";}
+    const bool adsPressed=ads&&!app.previousAds;
     const bool pulloutActionPressed=firePressed||(reload&&!app.previousReload)||(melee&&!app.previousMelee)||(firstRaise&&!app.previousFirstRaise)||(inspect&&!app.previousInspect)||(grenade&&!app.previousGrenade);
-    if(pulloutActionPressed&&app.weaponSwitchStage==2&&!app.yyReverse&&app.weaponSwitchAlgorithm!=4&&app.weaponSwitchAlgorithm!=5){
+    if(pulloutActionPressed&&(app.weaponSwitchStage==2||app.yyReturning)&&!app.yyReverse&&app.weaponSwitchAlgorithm!=4&&app.weaponSwitchAlgorithm!=5){
         beginInterruptPoseBlend(app,std::max(0.001f,app.actionBlendTime));
         app.weaponSwitchStage=0;app.weaponSwitchElapsed=0;app.weaponSwitchQuickAnimation=false;app.weaponSwitchFirstRaiseAnimation=false;
         app.yyReturning=false;app.yyTowardPutaway=false;app.yyCancelDuration=0;
         app.actionActive=false;app.actionOverlay=false;app.activeAction=scene::ActionRole::None;app.actionElapsed=app.actionFrame=0;
         app.runtimeLayers.clear();resolveGameplayAnimation(app);
         if(firePressed)app.nextFireTime=std::min(app.nextFireTime,app.gameplayClock);
-        app.gameplayStatus=firePressed?"Fire interrupted pullout":"Action interrupted pullout";
+        app.gameplayStatus=firePressed?"Fire interrupted pullout":(ads?"ADS interrupted pullout":"Action interrupted pullout");
     }
     const bool fireDuringYyReturn=app.yyReturning&&app.weaponSwitchStage==2;
     const double fireClock=app.gameplayClock;
@@ -5416,63 +5941,38 @@ const bool rawAds=glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_P
     const bool hardFireBlock=rechamberBlocks||sprint||(app.weaponSwitchStage!=0&&!fireDuringYyReturn)||(app.actionActive&&app.activeAction==scene::ActionRole::Reload&&!app.gameplayRechamber&&!actionCancelShot);
     const auto mintActionCancelShot=[&](scene::ActionRole role){if(app.actionActive&&app.activeAction==role&&gameplay::action_cancel::mayMint(fireClock,app.nextFireTime,app.acceptedShotSerial,app.cancelShotConsumedSerial,cancelKind(role)))app.cancelShotTokenSerial=app.acceptedShotSerial;};
     if(firePressed&&app.weaponTiming.burstCount>1&&(fireClock>=app.nextFireTime||actionCancelShot))app.burstShotsRemaining=app.weaponTiming.burstCount;
-    const auto scheduleRechamber=[&]{if(!app.weaponTiming.boltAction)return;if(cs2Weapon&&!findViewmodelClip(app,"rechamber")){app.pendingWeaponRechamber=false;app.gameplayRechamber=false;return;}float fireDuration=std::max(0.03f,app.weaponTiming.fireTime);const auto index=app.actionOverlay?app.actionAnimationIndex:app.animationIndex;if(index<app.scene.animations.size()){const auto& clip=app.scene.animations[index];fireDuration=std::max(0.03f,clip.durationFrames/std::max(1.0f,clip.framerate));}app.pendingWeaponRechamber=true;app.rechamberReadyTime=app.gameplayClock+weapon::rechamberStartSeconds(app.weaponTiming,fireDuration);};
+    const auto scheduleRechamber=[&]{if(!app.weaponTiming.boltAction)return;if(cs2Weapon&&!findViewmodelClip(app,"rechamber")){app.pendingWeaponRechamber=false;app.gameplayRechamber=false;return;}float fireDuration=std::max(0.03f,app.weaponTiming.fireTime);const auto index=app.actionOverlay?app.actionAnimationIndex:app.animationIndex;if(index<app.scene.animations.size()){const auto& clip=app.scene.animations[index];fireDuration=std::max(0.03f,clip.durationFrames/std::max(1.0f,clip.framerate));}app.pendingWeaponRechamber=true;app.rechamberReadyTime=app.gameplayClock+weapon::rechamberStartSeconds(app.weaponTiming,fireDuration/std::max(.001f,app.weaponTiming.firePlaybackScale));};
 const bool cadenceReady=fireClock>=app.nextFireTime||actionCancelShot;bool wantsShot=!hardFireBlock&&cadenceReady&&((app.weaponTiming.fullAuto&&fire)||(app.weaponTiming.burstCount>1&&app.burstShotsRemaining>0)||(app.weaponTiming.burstCount==1&&!app.weaponTiming.fullAuto&&firePressed));if(hardFireBlock)app.burstShotsRemaining=0;
+    if(app.weaponTiming.grenade&&app.actionActive&&app.activeAction==scene::ActionRole::Fire)wantsShot=false;
     if(knifeWeapon){app.burstShotsRemaining=0;wantsShot=!hardFireBlock&&firePressed&&(!cs2Weapon||!(app.actionActive&&app.activeAction==scene::ActionRole::Melee));}
-    const bool directKeys[3]={actorKey(app,GLFW_KEY_1),actorKey(app,GLFW_KEY_2),actorKey(app,GLFW_KEY_3)};
+    const bool directKeys[3]={actorKey(app,GLFW_KEY_1),actorKey(app,GLFW_KEY_2),actorKey(app,GLFW_KEY_3)||(app.gamepad.connected&&app.gamepad.dpadRightPressed)};
     int thirdRequest=-1;
-    const bool holdThird=app.experimentalThirdWeapon&&app.classSlotRigs[2]&&actorKey(app,GLFW_KEY_V);
-    if(holdThird&&!app.holdingThirdWeapon){app.heldThirdReturnSlot=std::max(0,app.activeClassSlot);thirdRequest=2;}
-    if(!holdThird&&app.holdingThirdWeapon)thirdRequest=app.heldThirdReturnSlot;
-    app.holdingThirdWeapon=holdThird;
+    const bool thirdKey=actorKey(app,GLFW_KEY_B);
+    if(thirdKey&&!app.previousThirdWeaponKey&&app.experimentalThirdWeapon&&app.classSlotRigs[2])thirdRequest=2;
+    app.previousThirdWeaponKey=thirdKey;
     if(app.experimentalThirdWeapon){
-        if(swap&&!app.previousSwap)thirdRequest=app.weaponSwitchAlgorithm==4&&app.weaponSwitchStage==1?app.activeClassSlot:app.lastClassSlot;
+        if(swap&&!app.previousSwap&&gameplay::practice::directSwapKey(app.experimentalThirdWeapon,app.weaponSwitchAlgorithm))thirdRequest=app.weaponSwitchStage==1?app.activeClassSlot:app.lastClassSlot;
         if(wheelSwap)thirdRequest=(std::max(0,app.weaponSwitchStage==1?app.weaponSwitchTarget:app.activeClassSlot)+(wheelDirection>0?2:1))%3;
+        if(app.gamepad.connected&&app.gamepad.leftBumperPressed&&app.classSlotRigs[2]){
+            thirdRequest=(std::max(0,app.weaponSwitchStage==1?app.weaponSwitchTarget:app.activeClassSlot)+1)%3;
+        }
         for(int i=0;i<3;++i)if(directKeys[i]&&!app.previousDirectSlot[i])thirdRequest=i;
     }
     for(int i=0;i<3;++i)app.previousDirectSlot[i]=directKeys[i];
 #include "Iw4Switch.inc"
-    if(!iw4Yy){
-    if(thirdRequest==app.activeClassSlot&&app.weaponSwitchStage==1){
-        if(app.weaponSwitchAlgorithm==4)cancelYyV4Drop(app);
-        else {app.weaponSwitchStage=2;app.weaponSwitchTarget=app.activeClassSlot;app.gameplayAction=scene::ActionRole::Equip;triggerGameplayAction(app);
-        if(!app.actionActive)app.weaponSwitchStage=0;}
-        wantsShot=false;
-    }
-    if(thirdRequest>=0&&thirdRequest<3&&thirdRequest!=app.activeClassSlot&&app.classSlotRigs[thirdRequest]){
-        wantsShot=false;
-        app.yyReturning=app.yyTowardPutaway=app.yyReverse=false;app.yyCancelDuration=0;app.queuedWeaponSwap=false;
-        app.weaponSwitchTarget=thirdRequest;app.weaponSwitchQuickAnimation=useQuickSwapAnimation(app,app.activeClassSlot,thirdRequest);
-        app.weaponSwitchStage=1;app.weaponSwitchElapsed=0;trigger(scene::ActionRole::Unequip);
-        if(!app.actionActive){activateClassSlot(app,thirdRequest);app.weaponSwitchStage=2;app.gameplayAction=scene::ActionRole::Equip;triggerGameplayAction(app);if(!app.actionActive)app.weaponSwitchStage=0;}
-    }
-    const bool swapPressed=!app.experimentalThirdWeapon&&((swap&&!app.previousSwap)||wheelSwap);
-    if(swapPressed&&(app.weaponSwitchAlgorithm==2||app.weaponSwitchAlgorithm==3)&&!sprint&&app.classSlotRigs[0]&&app.classSlotRigs[1]){const int outgoing=app.activeClassSlot,target=outgoing==0?1:0;app.yyReturning=app.yyTowardPutaway=app.yyReverse=false;app.yyCancelDuration=0;app.weaponSwitchTarget=target;activateClassSlot(app,target);app.weaponSwitchStage=2;app.weaponSwitchElapsed=0;app.weaponSwitchFirstRaiseAnimation=false;if(app.weaponSwitchAlgorithm==3){app.weaponSwitchQuickAnimation=false;app.gameplayAction=scene::ActionRole::FirstRaise;triggerGameplayAction(app);app.weaponSwitchFirstRaiseAnimation=app.actionActive;if(!app.actionActive){app.gameplayAction=scene::ActionRole::Equip;triggerGameplayAction(app);}app.gameplayStatus=app.weaponSwitchFirstRaiseAnimation?"First-pullout QQ — swapped immediately and playing first pullout":"First-pullout QQ — first pullout unavailable; using regular pullout";}else{app.weaponSwitchQuickAnimation=useQuickSwapAnimation(app,target,outgoing);app.gameplayAction=scene::ActionRole::Equip;triggerGameplayAction(app);app.gameplayStatus="Source QQ — swapped immediately and playing "+std::string(app.weaponSwitchQuickAnimation?"quick pullout":"pullout");}}
-    else if(swapPressed&&app.weaponSwitchAlgorithm==4&&app.weaponSwitchStage==1){
-        cancelYyV4Drop(app);wantsShot=false;
-    }
-    else if(swapPressed&&app.weaponSwitchStage!=0){
-        if(app.weaponSwitchStage==2&&app.yyReverse){
-            // A fresh swap never inherits the canceled attempt's phase. Blend
-            // from the currently visible reverse pose into putaway frame zero.
-            beginInterruptPoseBlend(app,std::max(0.001f,app.actionBlendTime));app.weaponSwitchStage=0;app.yyReverse=false;app.yyReturning=false;app.yyTowardPutaway=false;app.yyCancelDuration=0;
-            app.weaponSwitchTarget=app.activeClassSlot==0?1:0;app.weaponSwitchQuickAnimation=useQuickSwapAnimation(app,app.activeClassSlot,app.weaponSwitchTarget);app.weaponSwitchStage=1;app.weaponSwitchElapsed=0;trigger(scene::ActionRole::Unequip);app.animationFrame=0;app.transitioning=false;app.gameplayStatus="YY — fresh putaway blended from the current pose";
-        } else if(app.weaponSwitchStage==1){
-            app.yyPutawayAnimation=app.animationIndex;app.yyPutawayFrameLimit=app.animationFrame;app.queuedWeaponSwap=false;app.weaponSwitchTarget=app.activeClassSlot;app.weaponSwitchStage=2;app.weaponSwitchElapsed=0;app.yyCancelDuration=yyReturnDuration(app);app.nextFireTime=std::min(app.nextFireTime,app.gameplayClock);if(app.weaponSwitchAlgorithm==0)beginInterruptPoseBlend(app,app.yyCancelDuration);app.actionActive=false;app.actionOverlay=false;app.activeAction=scene::ActionRole::None;
-            if(app.weaponSwitchAlgorithm==0){app.yyReturning=true;app.yyTowardPutaway=false;app.yyReverse=false;if(const auto idle=findViewmodelClip(app,"idle")){selectAnimation(app,*idle,true);app.activeTransitionDuration=app.yyCancelDuration;app.transitionElapsed=0;}else{app.weaponSwitchStage=0;resolveGameplayAnimation(app);}app.gameplayStatus="YY v1 cancel — interpolating current putaway pose back to idle";}
-            else{app.yyReturning=false;app.yyTowardPutaway=false;app.yyReverse=true;app.transitioning=false;app.transitionElapsed=0;app.gameplayStatus="YY v2 cancel — returning putaway toward frame zero";}
-        } else if(app.classSlotRigs[0]&&app.classSlotRigs[1]){
-            app.yyReturning=false;app.yyTowardPutaway=false;app.yyReverse=false;app.yyCancelDuration=0;app.queuedWeaponSwap=false;
-            app.weaponSwitchTarget=app.activeClassSlot==0?1:0;app.weaponSwitchQuickAnimation=useQuickSwapAnimation(app,app.activeClassSlot,app.weaponSwitchTarget);
-            app.weaponSwitchStage=1;app.weaponSwitchElapsed=0;trigger(scene::ActionRole::Unequip);app.gameplayStatus="Pullout interrupted — putting the current weapon away";
-        }
-    }
-    else if(swapPressed&&app.weaponSwitchStage==0&&!sprint&&app.classSlotRigs[0]&&app.classSlotRigs[1]){const bool canceledReload=app.actionActive&&app.activeAction==scene::ActionRole::Reload;if(canceledReload)app.nextFireTime=std::min(app.nextFireTime,app.gameplayClock);app.yyReturning=false;app.yyTowardPutaway=false;app.yyPutawayAnimation=static_cast<std::size_t>(-1);app.yyPutawayFrameLimit=0;app.yyReverse=false;app.yyCancelDuration=0;app.queuedWeaponSwap=false;app.weaponSwitchTarget=app.activeClassSlot==0?1:0;app.weaponSwitchQuickAnimation=useQuickSwapAnimation(app,app.activeClassSlot,app.weaponSwitchTarget);app.weaponSwitchStage=1;app.weaponSwitchElapsed=0;trigger(scene::ActionRole::Unequip);app.gameplayStatus=std::string(canceledReload?"Reload canceled; ":"")+"putting away for "+(app.weaponSwitchTarget==0?"primary":"secondary");}
-    }
+#include "LegacyWeaponSwitch.inc"
     if(app.yyReturning&&app.weaponSwitchStage==2)app.activeTransitionDuration=app.yyCancelDuration;
     // ADS was sampled before swap processing. Never let that outgoing input
     // cancel a newly started draw; held ADS resumes after the switch completes.
     const bool canCombat=!sprint&&app.weaponSwitchStage==0;
+    const bool drawingForAds=!cs2Weapon&&app.actionActive&&(app.activeAction==scene::ActionRole::Equip||app.activeAction==scene::ActionRole::FirstRaise)&&app.weaponSwitchStage!=1;
+    if(drawingForAds&&!sprint&&!cameraScope){
+        if(needsViewmodelAimTransition(app,ads)){if(const auto up=findViewmodelClip(app,"ads_up"))startViewmodelAimClip(app,*up);}
+        else if(!ads&&app.viewmodelAdsEngaged&&!app.viewmodelAdsExiting){
+            if(const auto down=pairedAdsDown(app))startViewmodelAimClip(app,*down);
+            else {app.viewmodelAdsEngaged=app.viewmodelAdsPoseHold=false;app.viewmodelAdsBaseAnimation=SIZE_MAX;}
+        }
+    }
     const bool reloadEmptyPressed=reloadEmpty&&!app.previousReloadEmptyKey;
     if(reloadEmptyPressed&&app.actionActive&&app.activeAction==scene::ActionRole::Reload&&app.gameplayReloadEmpty){
         app.gameplayReloadEmpty=false;
@@ -5532,8 +6032,12 @@ else if(canCombat&&reload&&!app.previousReload){app.gameplayReloadEmpty=false;ap
     else if(canCombat&&melee&&!app.previousMelee)trigger(scene::ActionRole::Melee);
     else if(canCombat&&grenade&&!app.previousGrenade)trigger(scene::ActionRole::GrenadePrep);
     else if(canCombat&&!grenade&&app.previousGrenade){if(app.actionActive&&app.activeAction==scene::ActionRole::GrenadePrep)stopGameplayAction(app);trigger(scene::ActionRole::Throw);}
-    else if(canCombat&&!cs2Weapon&&!cameraScope&&app.scene.pointBlankWeaponStem.empty()&&ads&&(!app.viewmodelAdsEngaged||app.viewmodelAdsExiting))trigger(scene::ActionRole::Aim);
-    else if(!cs2Weapon&&!cameraScope&&app.scene.pointBlankWeaponStem.empty()&&!ads&&app.previousAds&&(app.viewmodelAdsEngaged||(app.actionActive&&app.activeAction==scene::ActionRole::Aim)))releaseViewmodelAim(app);
+    else if(canCombat&&!cs2Weapon&&!cameraScope&&app.scene.pointBlankWeaponStem.empty()&&needsViewmodelAimTransition(app,ads)){
+        // No ADS-up clip means no transition to start. Do not consume the
+        // input branch every frame and starve the normal firing path below.
+        trigger(scene::ActionRole::Aim);
+    }
+    else if(!drawingForAds&&!cs2Weapon&&!cameraScope&&app.scene.pointBlankWeaponStem.empty()&&!ads&&app.previousAds&&(app.viewmodelAdsEngaged||(app.actionActive&&app.activeAction==scene::ActionRole::Aim)))releaseViewmodelAim(app);
     else if(app.scene.dualWield&&!hardFireBlock&&app.weaponSwitchStage==0){
         for(int hand=0;hand<2;++hand){const bool held=hand?rawAds:fire,pressed=held&&!(hand?app.previousDualLeft:app.previousFire);auto& ready=hand?app.dualLeftNextFireTime:app.nextFireTime;
             if(pressed&&app.weaponTiming.burstCount>1&&app.dualBurstRemaining[hand]==0&&fireClock>=ready)app.dualBurstRemaining[hand]=app.weaponTiming.burstCount;
@@ -5568,7 +6072,7 @@ else if(canCombat&&reload&&!app.previousReload){app.gameplayReloadEmpty=false;ap
             if(app.gameplayAds){app.adsSuppressedUntilRelease=true;app.gameplayAds=false;app.viewmodelAdsEngaged=false;app.adsCameraBlend=0;}
         }if(app.weaponTiming.burstCount>1&&app.burstShotsRemaining>0){--app.burstShotsRemaining;if(!app.burstShotsRemaining)app.nextFireTime+=app.weaponTiming.burstDelay;}}
     }
-if(app.navigationRecordActive&&app.loadedMap&&!app.actorNoclip){const auto snapped=[&]{auto p=app.actorPosition;p=localNavigationGround(app,p);return p;}();const bool first=app.navigationRecordLastNode>=app.botNavigation.nodes.size();const float distance=first?std::numeric_limits<float>::max():gameplay::bot::horizontalDistance(snapped,app.botNavigation.nodes[app.navigationRecordLastNode].position);if(first||distance>=app.navigationRecordSpacing){gameplay::bot::NavigationNode node;node.position=snapped;node.lane=app.navigationRecordLane;const auto next=app.botNavigation.nodes.size();app.botNavigation.nodes.push_back(node);if(!first&&(!app.loadedMap||app.loadedMap->navigationSegmentClear(app.botNavigation.nodes[app.navigationRecordLastNode].position,snapped,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72.0f),scene::course::kStepHeight)))app.botNavigation.links.push_back({app.navigationRecordLastNode,next,1.0f,true});app.navigationRecordLastNode=next;app.selectedNavigationNode=static_cast<int>(next);}}
+if(app.navigationRecordActive&&app.loadedMap&&!app.actorNoclip){const auto snapped=[&]{auto p=app.actorPosition;p=localNavigationGround(app,p);return p;}();const bool first=app.navigationRecordLastNode>=app.botNavigation.nodes.size();const float distance=first?std::numeric_limits<float>::max():gameplay::bot::horizontalDistance(snapped,app.botNavigation.nodes[app.navigationRecordLastNode].position);if(first||distance>=app.navigationRecordSpacing){gameplay::bot::NavigationNode node;node.position=snapped;node.lane=app.navigationRecordLane;const auto next=app.botNavigation.nodes.size();app.botNavigation.nodes.push_back(node);if(!first&&(!app.loadedMap||collisionNavigationClear(app,*app.loadedMap,app.botNavigation.nodes[app.navigationRecordLastNode].position,snapped,scene::course::kPlayerRadius,minimumBotCollisionHeight(app),scene::course::kStepHeight)))app.botNavigation.links.push_back({app.navigationRecordLastNode,next,1.0f,true});app.navigationRecordLastNode=next;app.selectedNavigationNode=static_cast<int>(next);}}
     if(app.playerRecorder.recording && app.actorInputCaptured){
         app.playerRecorder.sampleTimer += deltaSeconds;
         app.playerRecorder.elapsedRecordTime += deltaSeconds;
@@ -5630,6 +6134,9 @@ void drawPlayback(AppState& app) {
     if (app.scene.animations.empty()) {
         ImGui::BeginDisabled(); ImGui::Button("Play"); ImGui::SameLine(); ImGui::TextUnformatted("No animation clips"); ImGui::EndDisabled();
         return;
+    }
+    if(app.animationIndex>=app.scene.animations.size()){
+        ImGui::TextDisabled("No active animation");return;
     }
     if (ImGui::Button(app.playing ? "Pause" : "Play")) app.playing = !app.playing;
     ImGui::SameLine();
@@ -5898,6 +6405,35 @@ std::size_t findGenericHeadForPlayermodel(const AppState& app, const std::string
 }
 
 #include "CharacterAssembly.inc"
+
+bool drawViewhandsPicker(AppState& app,const char* label,std::size_t& selected,const char* defaultLabel=nullptr,const std::string& onlyGame={}){
+    const auto& entries=app.assetCatalog.entries;
+    const auto handLabel=[](const assets::Asset& a){const auto variant=assets::source2::skin(a);return a.name+(variant.empty()?std::string{}:" / "+variant);};
+    const auto previewText=selected<entries.size()?handLabel(entries[selected]):std::string(defaultLabel?defaultLabel:"None");
+    const char* preview=previewText.c_str();
+    const auto pickerId=ImGui::GetID(label);
+    bool changed=false;
+    if(ImGui::BeginCombo(label,preview,ImGuiComboFlags_HeightLarge)){
+        static std::unordered_map<ImGuiID,std::array<char,160>> searches;
+        auto& search=searches[pickerId];
+        ImGui::InputTextWithHint("##search","Search hands or game",search.data(),search.size());
+        const auto query=lowerText(search.data());
+        if(defaultLabel&&ImGui::Selectable(defaultLabel,selected>=entries.size())){selected=static_cast<std::size_t>(-1);changed=true;}
+        std::map<std::string,std::vector<std::size_t>> groups;
+        for(std::size_t i=0;i<entries.size();++i){const auto& a=entries[i];
+            if(a.role!=assets::Role::ViewHands||(!onlyGame.empty()&&lowerText(a.game)!=lowerText(onlyGame)))continue;
+            if(!query.empty()&&lowerText(a.game+" "+handLabel(a)).find(query)==std::string::npos)continue;
+            groups[a.game.empty()?"Other":a.game].push_back(i);
+        }
+        if(groups.empty())ImGui::TextDisabled("No matching hands");
+        for(const auto& [game,indices]:groups){
+            if(!query.empty())ImGui::SetNextItemOpen(true,ImGuiCond_Always);
+            if(ImGui::TreeNode(game.c_str())){for(const auto index:indices){ImGui::PushID(static_cast<int>(index));
+                if(ImGui::Selectable(handLabel(entries[index]).c_str(),selected==index)){selected=index;changed=true;ImGui::CloseCurrentPopup();}
+                ImGui::PopID();}ImGui::TreePop();}
+        }ImGui::EndCombo();
+    }return changed;
+}
 
 std::size_t findGenericViewhandsForGame(const AppState& app, const std::string& gameName) {
     if (gameName.empty()) return static_cast<std::size_t>(-1);
@@ -6994,18 +7530,8 @@ void drawAnimationClassifier(AppState& app){
         }
 
         // Viewhands selector
-        const auto currentHands = findGenericViewhandsForGame(app, activeGame);
-        const std::string handsName = (currentHands < app.assetCatalog.entries.size()) ? app.assetCatalog.entries[currentHands].name : "None";
-        if (ImGui::BeginCombo("Generic Viewhands", handsName.c_str())) {
-            for (std::size_t i = 0; i < app.assetCatalog.entries.size(); ++i) {
-                const auto& a = app.assetCatalog.entries[i];
-                if (a.role != assets::Role::ViewHands || (!activeGame.empty() && lowerText(a.game) != lowerText(activeGame))) continue;
-                if (ImGui::Selectable(a.name.c_str(), currentHands == i)) {
-                    setup.viewhandsAsset = i;
-                }
-            }
-            ImGui::EndCombo();
-        }
+        auto currentHands = findGenericViewhandsForGame(app, activeGame);
+        if(drawViewhandsPicker(app,"Generic Viewhands",currentHands,nullptr,activeGame))setup.viewhandsAsset=currentHands;
 
         // View weapon selector
         const auto currentWpn = findGenericViewWeaponForGame(app, activeGame);
@@ -7344,19 +7870,20 @@ std::shared_ptr<const std::vector<CustomContentPackage>> customContentPackages(b
     return cache.get(root.string(),cadence::TimedSnapshotCache<std::vector<CustomContentPackage>>::Clock::now(),forceRefresh,[&]{return scanCustomContentPackages(root);});
 }
 
-void refreshCustomContentCatalog(AppState& app){app.weaponPickerCache.clear();app.assetCatalog.entries.erase(std::remove_if(app.assetCatalog.entries.begin(),app.assetCatalog.entries.end(),[](const auto& asset){return !asset.customManifest.empty()||asset.customPackageId=="cadence-games";}),app.assetCatalog.entries.end());const auto packages=customContentPackages(true);for(const auto& package:*packages){const auto base=packagePath(package,package.baseModel);if(package.type=="gun"){assets::Asset hands;hands.path=base;hands.name=package.name+" hands";hands.game="Custom Guns";hands.role=assets::Role::ViewHands;hands.compatibilityKeys={package.id};hands.customManifest=package.manifest;hands.customPackageId=package.id;app.assetCatalog.entries.push_back(std::move(hands));assets::Asset gun;gun.path=packagePath(package,package.weaponModel);gun.name=package.name;gun.game="Custom Guns";gun.role=assets::Role::ViewWeapon;gun.compatibilityKeys=assets::compatibilityKeys(gun.path.stem().string(),gun.role);gun.compatibilityKeys.push_back(package.id);gun.customManifest=package.manifest;gun.customPackageId=package.id;app.assetCatalog.entries.push_back(std::move(gun));}else{assets::Asset player;player.path=base;player.name=package.name;player.game="Custom Players";player.role=assets::Role::PlayerModel;player.compatibilityKeys={package.id};player.customManifest=package.manifest;player.customPackageId=package.id;app.assetCatalog.entries.push_back(std::move(player));}}assets::Catalog portable;std::string portableError;if(std::filesystem::is_directory(customGamesDirectory())&&assets::scan(customGamesDirectory(),portable,portableError)){for(auto& asset:portable.entries){asset.customPackageId="cadence-games";if(asset.game.empty())asset.game="Cadence Assets";app.assetCatalog.entries.push_back(std::move(asset));}}app.assetCatalog.counts={};for(const auto& asset:app.assetCatalog.entries)++app.assetCatalog.counts[static_cast<std::size_t>(asset.role)];}
+void refreshCustomContentCatalog(AppState& app){app.weaponPickerCache.clear();app.assetCatalog.entries.erase(std::remove_if(app.assetCatalog.entries.begin(),app.assetCatalog.entries.end(),[](const auto& asset){return !asset.customManifest.empty()||asset.customPackageId=="cadence-games";}),app.assetCatalog.entries.end());const auto packages=customContentPackages(true);for(const auto& package:*packages){const auto base=packagePath(package,package.baseModel);if(package.type=="gun"){assets::Asset hands;hands.path=base;hands.name=package.name+" hands";hands.game="Saved weapons";hands.role=assets::Role::ViewHands;hands.compatibilityKeys={package.id};hands.customManifest=package.manifest;hands.customPackageId=package.id;app.assetCatalog.entries.push_back(std::move(hands));assets::Asset gun;gun.path=packagePath(package,package.weaponModel);gun.name=package.name;gun.game="Saved weapons";gun.role=assets::Role::ViewWeapon;gun.compatibilityKeys=assets::compatibilityKeys(gun.path.stem().string(),gun.role);gun.compatibilityKeys.push_back(package.id);gun.customManifest=package.manifest;gun.customPackageId=package.id;app.assetCatalog.entries.push_back(std::move(gun));}else{assets::Asset player;player.path=base;player.name=package.name;player.game="Custom Players";player.role=assets::Role::PlayerModel;player.compatibilityKeys={package.id};player.customManifest=package.manifest;player.customPackageId=package.id;app.assetCatalog.entries.push_back(std::move(player));}}assets::Catalog portable;std::string portableError;if(std::filesystem::is_directory(customGamesDirectory())&&assets::scan(customGamesDirectory(),portable,portableError)){for(auto& asset:portable.entries){asset.customPackageId="cadence-games";if(asset.game.empty())asset.game="Cadence Assets";app.assetCatalog.entries.push_back(std::move(asset));}}app.assetCatalog.counts={};for(const auto& asset:app.assetCatalog.entries)++app.assetCatalog.counts[static_cast<std::size_t>(asset.role)];}
 
 void applyWeaponRigState(AppState& app);
 bool applyCustomContentPackage(AppState& app,const std::filesystem::path& manifestPath,std::string& error){CustomContentPackage package;if(!loadCustomContentManifest(manifestPath,package,error))return false;std::vector<std::filesystem::path> missing;for(const auto& dependency:package.dependencies){const auto resolved=packagePath(package,dependency);if(!std::filesystem::is_regular_file(resolved))missing.push_back(resolved);}if(package.type=="gun"){weapon::Profile profile;const auto profilePath=packagePath(package,package.profile);if(!weapon::load(profilePath,profile,error))return false;const auto weaponPath=packagePath(package,package.weaponModel).lexically_normal();for(const auto& stored:profile.rigModels){const auto path=std::filesystem::u8path(stored).lexically_normal();if(path==weaponPath||!std::filesystem::is_regular_file(path))continue;addRigModelFile(app,path,false);}finishRigMerge(app);activateWeaponProfile(app,std::move(profile),profilePath);applyWeaponRigState(app);}for(const auto& stored:package.attachments){const auto path=packagePath(package,stored.path);if(!std::filesystem::is_regular_file(path))continue;const auto found=app.scene.skeleton.boneByName.find(stored.bone);const auto canonical=app.scene.skeleton.boneByCanonicalName.find(lowerText(stored.bone));if(found!=app.scene.skeleton.boneByName.end())app.attachmentBone=static_cast<int>(found->second);else if(canonical!=app.scene.skeleton.boneByCanonicalName.end())app.attachmentBone=static_cast<int>(canonical->second);const auto before=app.scene.attachments.size();if(lowerText(path.extension().string())==".glb")addGlbAttachmentFile(app,path);else addAttachmentFile(app,path);if(app.scene.attachments.size()>before){auto& attachment=app.scene.attachments.back();attachment.position=stored.position;attachment.rotationDegrees=stored.rotationDegrees;attachment.scale=stored.scale;}}if(!missing.empty()){error="Loaded with "+std::to_string(missing.size())+" missing dependency/dependencies; first: "+missing.front().string();return true;}error.clear();return true;}
 std::string sourceGameForAsset(const assets::Asset& asset){if(asset.customManifest.empty())return asset.game;CustomContentPackage package;std::string error;return loadCustomContentManifest(asset.customManifest,package,error)&&!package.originGame.empty()?package.originGame:asset.game;}
 cadence::UiFileLists& uiFileLists(){static cadence::UiFileLists cache;return cache;}
+auto skyLibrary(const std::filesystem::path& root,bool force=false){static cadence::SkyLibrary cache;return cache.get(uiFileLists(),root,force);}
 std::filesystem::path visualPresetDirectory(){return cadenceAssetsDirectory()/"visual_presets";}
 auto visualPresets(bool force=false){return uiFileLists().get(visualPresetDirectory(),"|.castvisual|",false,force);}
 std::filesystem::path gameplayPresetDirectory(){return cadenceAssetsDirectory()/"gameplay_presets";}
 auto gameplayPresets(bool force=false){return uiFileLists().get(gameplayPresetDirectory(),"|.cadencegame|",false,force);}
 #include "app/MotionDefaults.inc"
 #include "app/MovementPresetExtras.inc"
-bool saveGameplayPreset(const AppState& app,const std::filesystem::path& path){std::error_code error;std::filesystem::create_directories(path.parent_path(),error);std::ofstream out(path);if(!out)return false;out<<std::setprecision(std::numeric_limits<float>::max_digits10)<<"CADENCEGAME 12\n"<<app.transitionDuration<<' '<<app.actionBlendTime<<' '<<app.weaponSwitchAlgorithm<<' '<<app.movementAlgorithm<<' '<<app.actorJumpHeightIw<<' '<<app.viewBobScale<<' '<<app.bhopGroundClipThresholdIw<<'\n'<<app.sourceAutoJump<<' '<<app.sourceUnlimitedBunnyhop<<' '<<app.actorMaxMantleHeightIw<<' '<<app.actorMantleInputBuffer<<' '<<app.actorMantleReachIw<<' '<<app.actorMantleFacingConeDegrees<<' '<<app.experimentalUniversalFirstPersonMantle<<' '<<app.universalFirstPersonMantleScale<<'\n';out<<false<<' '<<app.autoStrafeKey<<' '<<app.mantleFallbackPositionIw.x<<' '<<app.mantleFallbackPositionIw.y<<' '<<app.mantleFallbackPositionIw.z<<' '<<app.mantleFallbackRotationDegrees.x<<' '<<app.mantleFallbackRotationDegrees.y<<' '<<app.mantleFallbackRotationDegrees.z<<' '<<app.mantleFallbackRecovery<<'\n'<<app.sourceAirAccelerate<<' '<<app.actorMinMantleHeightIw<<'\n';out<<app.actorMantleSpeedMultiplier<<' '<<app.actorMantleFalloff<<'\n';out<<app.mantleFallbackCurve<<'\n';out<<app.experimentalExoViewmodelJump<<' '<<app.boostFallback<<' '<<app.slideFallback<<'\n';out<<app.boostCamera<<' '<<app.boostCameraMovesViewmodel<<' '<<app.directionalTilt<<' '<<app.sniperZoomIn<<' '<<app.sniperZoomOut<<'\n';out<<captureMotionDefaults(app)<<app.cameraControls<<'\n';std::apply([&](const auto&... value){((out<<value<<' '),...);},movementPresetExtras(app));out<<'\n';out<<app.exoSingleTapAirborne<<'\n'<<app.traversalSettings<<'\n';return static_cast<bool>(out);}
+bool saveGameplayPreset(const AppState& app,const std::filesystem::path& path){std::error_code error;std::filesystem::create_directories(path.parent_path(),error);std::ofstream out(path);if(!out)return false;out<<std::setprecision(std::numeric_limits<float>::max_digits10)<<"CADENCEGAME 15\n"<<app.transitionDuration<<' '<<app.actionBlendTime<<' '<<app.weaponSwitchAlgorithm<<' '<<app.movementAlgorithm<<' '<<app.actorJumpHeightIw<<' '<<app.viewBobScale<<' '<<app.bhopGroundClipThresholdIw<<'\n'<<app.sourceAutoJump<<' '<<app.sourceUnlimitedBunnyhop<<' '<<app.actorMaxMantleHeightIw<<' '<<app.actorMantleInputBuffer<<' '<<app.actorMantleReachIw<<' '<<app.actorMantleFacingConeDegrees<<' '<<app.experimentalUniversalFirstPersonMantle<<' '<<app.universalFirstPersonMantleScale<<'\n';out<<false<<' '<<app.autoStrafeKey<<' '<<app.mantleFallbackPositionIw.x<<' '<<app.mantleFallbackPositionIw.y<<' '<<app.mantleFallbackPositionIw.z<<' '<<app.mantleFallbackRotationDegrees.x<<' '<<app.mantleFallbackRotationDegrees.y<<' '<<app.mantleFallbackRotationDegrees.z<<' '<<app.mantleFallbackRecovery<<'\n'<<app.sourceAirAccelerate<<' '<<app.actorMinMantleHeightIw<<'\n';out<<app.actorMantleSpeedMultiplier<<' '<<app.actorMantleFalloff<<'\n';out<<app.mantleFallbackCurve<<'\n';out<<app.experimentalExoViewmodelJump<<' '<<app.boostFallback<<' '<<app.slideFallback<<'\n';out<<app.boostCamera<<' '<<app.boostCameraMovesViewmodel<<' '<<app.directionalTilt<<' '<<app.sniperZoomIn<<' '<<app.sniperZoomOut<<'\n';out<<captureMotionDefaults(app)<<app.cameraControls<<'\n';std::apply([&](const auto&... value){((out<<value<<' '),...);},movementPresetExtras(app));out<<'\n';out<<app.exoSingleTapAirborne<<'\n'<<app.traversalSettings<<'\n'<<app.playerClipHeightCm<<'\n'<<app.playerClipWidthCm<<' '<<app.playerClipDepthCm<<'\n';out<<app.ladderSpeedMultiplier<<'\n';return static_cast<bool>(out);}
 #include "app/GameplayPresetLoading.inc"
 #include "app/VisualEffectPresets.inc"
 void drawActorOverlayControls(AppState& app){
@@ -7404,6 +7931,11 @@ bool saveVisualPreset(const AppState& app,const std::filesystem::path& path){std
 
 out<<"day_night "<<app.dayNight<<'\n'<<"night_sky "<<app.nightSky<<'\n'<<"night_galaxy_noise "<<app.nightSky.galaxyNoiseAlgorithm<<' '<<app.nightSky.galaxyNoiseScale<<' '<<app.nightSky.galaxyNoiseDetail<<' '<<app.nightSky.galaxyNoiseContrast<<'\n'<<"star_rotation "<<app.dayNight.starAutoRotate<<' '<<app.dayNight.starRotationSpeed<<'\n';
 out<<"actor_overlays ";writeVisualValues(out,actorOverlayValues(app));
+out<<"reshade_native "<<app.nativeReShade.enabled<<' '<<std::quoted(app.nativeReShade.preset)<<'\n';
+out<<"crosshair_hide_ads "<<app.crosshairHideWhileAds<<'\n';
+out<<"heaven_smile "<<app.killer7Deaths<<' '<<app.heavenSmileKeepDeathAnimations<<' '<<app.heavenSmileColor.x<<' '<<app.heavenSmileColor.y<<' '<<app.heavenSmileColor.z<<'\n';
+out<<"heaven_smile_streams "<<app.heavenSmileBloodStreams<<'\n';
+out<<"weapon_turning "<<app.experimentalWeaponTurning<<' '<<app.weaponTurningHipMultiplier<<' '<<app.weaponTurningAdsMultiplier<<'\n';
 out<<"water_appearance "<<static_cast<const render::water::Appearance&>(app.water)<<'\n';
 out<<"water_optics "<<app.water.optics<<'\n';
 out<<"water_spectrum "<<app.water.crossSwell<<' '<<app.water.swellAngle<<' '<<app.water.swellLength<<' '<<app.water.seed<<'\n';
@@ -7434,7 +7966,9 @@ void updateFrameHistogram(AppState& app){if(glfwGetTime()-app.histogramUpdated<0
 void drawLevelsHistogram(AppState& app){updateFrameHistogram(app);ImGui::BeginGroup();const ImVec2 size{28.f*ImGui::GetFontSize(),120};const auto p=ImGui::GetCursorScreenPos();ImGui::InvisibleButton("levels_histogram",size);auto* dl=ImGui::GetWindowDrawList();dl->AddRectFilled(p,{p.x+size.x,p.y+size.y},IM_COL32(10,12,16,255));for(std::size_t i=0;i<app.frameHistogram.size();++i){const float x0=p.x+size.x*static_cast<float>(i)/256.0f,x1=p.x+size.x*static_cast<float>(i+1)/256.0f,y=p.y+size.y*(1.0f-app.frameHistogram[i]);const ImU32 color=(i==0&&app.frameHistogram[i]>.01f)?IM_COL32(255,70,65,255):(i==255&&app.frameHistogram[i]>.01f)?IM_COL32(255,70,65,255):IM_COL32(170,190,215,220);dl->AddRectFilled({x0,y},{x1,p.y+size.y},color);}const float bx=p.x+size.x*app.autoBlackPointIntensity,wx=p.x+size.x*app.autoWhitePointIntensity;dl->AddLine({bx,p.y},{bx,p.y+size.y},IM_COL32(255,80,70,255),2);dl->AddLine({wx,p.y},{wx,p.y+size.y},IM_COL32(80,255,130,255),2);if(app.frameHistogram.front()==0)dl->AddText({p.x+5,p.y+4},IM_COL32(90,255,140,255),"empty blacks");if(app.frameHistogram.back()==0)dl->AddText({p.x+size.x-92,p.y+4},IM_COL32(90,255,140,255),"empty whites");ImGui::TextUnformatted("Input black / white");ImGui::PushItemWidth(size.x);ImGui::DragFloatRange2("##levels_input",&app.autoBlackPointIntensity,&app.autoWhitePointIntensity,.001f,0.0f,1.0f,"B %.3f","W %.3f");ImGui::PopItemWidth();app.autoWhitePointIntensity=std::max(app.autoWhitePointIntensity,app.autoBlackPointIntensity+.001f);app.autoBlackPoint=app.autoWhitePoint=true;uiHelp("Red marks clipped endpoints; green labels mark unused endpoint range.");ImGui::EndGroup();}
 
 #include "app/DepthOfFieldControls.inc"
+#include "app/NativeReShadeControls.inc"
 void drawProfessionalPostFx(AppState& app){
+    drawNativeReShadeControls(app);
     drawDepthOfFieldControls(app.dof);
     if(ImGui::CollapsingHeader("Volumetric sunlight / shadows")){
         auto& v=app.volumetric;ImGui::Checkbox("Enable volumetric sunlight",&v.enabled);
@@ -7636,12 +8170,13 @@ void drawLogicalMaterials(AppState& app){
 }
 
 scene::Vec3 blackbodyRgb(float kelvin){const float t=std::clamp(kelvin,1000.0f,40000.0f)/100.0f;const float r=t<=66?255.0f:329.698727446f*std::pow(t-60.0f,-0.1332047592f),g=t<=66?99.4708025861f*std::log(t)-161.1195681661f:288.1221695283f*std::pow(t-60.0f,-0.0755148492f),b=t>=66?255.0f:t<=19?0.0f:138.5177312231f*std::log(t-10.0f)-305.044792731f;return {std::clamp(r/255.0f,0.0f,1.0f),std::clamp(g/255.0f,0.0f,1.0f),std::clamp(b/255.0f,0.0f,1.0f)};}
-bool drawResponseCurve(const char* id,gameplay::view::ResponseCurve& curve);
+bool drawResponseCurve(const char* id,gameplay::view::ResponseCurve& curve,bool transition=false);
 #include "app/HitmarkerControls.inc"
 void drawProjectileEffects(AppState& app){
     drawHitmarkerControls(app);
         if(ImGui::CollapsingHeader("Crosshair")){
             drawCrosshairPresets(app);
+            ImGui::Checkbox("Hide while ADS",&app.crosshairHideWhileAds);
             ImGui::Checkbox("Enable classic crosshair",&app.csgoClassicCrosshair);ImGui::BeginDisabled(!app.csgoClassicCrosshair);
             ImGui::Checkbox("Dynamic movement / firing spread",&app.csgoCrosshairDynamic);ImGui::Checkbox("Center dot",&app.csgoCrosshairCenterDot);
             ImGui::SliderFloat("Crosshair scale",&app.csgoCrosshairScale,0.5f,3.0f,"%.2fx");ImGui::SliderFloat("Gap",&app.csgoCrosshairGap,0.0f,40.0f,"%.1f px");ImGui::SliderFloat("Length",&app.csgoCrosshairLength,2.0f,40.0f,"%.1f px");ImGui::SliderFloat("Thickness",&app.csgoCrosshairThickness,0.5f,8.0f,"%.1f px");ImGui::SliderFloat("Outline",&app.csgoCrosshairOutline,0.0f,6.0f,"%.1f px");
@@ -7804,7 +8339,7 @@ if(ImGui::CollapsingHeader("Trails")){
                         ImGui::SliderFloat("Width##sniperTrail",&app.sniperTrailWidth,0.1f,8.0f,"%.2f u");
                         ImGui::SliderFloat("Lifetime##sniperTrail",&app.sniperTrailLifetime,0.05f,3.0f,"%.2f s");
                         ImGui::SliderFloat("Feathering##sniperTrail",&app.sniperTrailFeathering,0.0f,1.0f,"%.2f");
-                        ImGui::ColorEdit4("Color##sniperTrail",&app.sniperTrailColor.x);
+                        ImGui::ColorEdit3("Color##sniperTrail",&app.sniperTrailColor.x);
                         drawResponseCurve("Sniper trail taper",app.sniperTrailTaper);
                         ImGui::SliderFloat("Taper smoothness##sniper", &app.sniperTrailTaper.smoothness,0,1);
                         ImGui::Checkbox("Enable emission##sniperTrail",&app.sniperTrailEmissiveEnabled);
@@ -7823,7 +8358,7 @@ if(ImGui::CollapsingHeader("Trails")){
                         ImGui::SliderFloat("Speed##projTrail",&app.projectileTrailSpeed,500.0f,12000.0f,"%.0f u/s");
                         ImGui::SliderFloat("Length##projTrail",&app.projectileTrailLength,5.0f,150.0f,"%.1f u");
                         ImGui::SliderFloat("Width##projTrail",&app.projectileTrailWidth,0.1f,6.0f,"%.2f u");
-                        ImGui::ColorEdit4("Color##projTrail",&app.projectileTrailColor.x);
+                        ImGui::ColorEdit3("Color##projTrail",&app.projectileTrailColor.x);
                         drawResponseCurve("Bullet trail taper",app.projectileTrailTaper);
                         ImGui::SliderFloat("Taper smoothness##bullet", &app.projectileTrailTaper.smoothness,0,1);
                         ImGui::Checkbox("Enable emission##projTrail",&app.projectileTrailEmissiveEnabled);
@@ -7911,32 +8446,32 @@ ImGui::SliderFloat("Intensity##specB2",&app.alternateSpecularIntensity2,0.0f,4.0
 ImGui::EndDisabled();}
     if(visualSection==0&&ImGui::CollapsingHeader("Visual Presets",ImGuiTreeNodeFlags_DefaultOpen)){const auto presetSnapshot=visualPresets();const auto& presets=*presetSnapshot;const std::string preview=app.visualPresetIndex==-2?"Init":app.visualPresetIndex>=0&&app.visualPresetIndex<static_cast<int>(presets.size())?presets[static_cast<std::size_t>(app.visualPresetIndex)].stem().string():"Choose saved preset";if(ImGui::BeginCombo("Saved presets",preview.c_str())){if(ImGui::Selectable("Init",app.visualPresetIndex==-2)){if(loadInitVisualPreset(app)){app.visualPresetIndex=-2;app.status="Loaded Init";}}for(std::size_t i=0;i<presets.size();++i)if(ImGui::Selectable(presets[i].stem().string().c_str(),app.visualPresetIndex==static_cast<int>(i))){app.visualPresetIndex=static_cast<int>(i);if(loadVisualPreset(app,presets[i]))app.status="Loaded visual preset "+presets[i].stem().string();else app.status="Could not read visual preset";}ImGui::EndCombo();}ImGui::InputTextWithHint("Preset name","new look",app.visualPresetName.data(),app.visualPresetName.size());ImGui::SameLine();if(ImGui::Button("Save preset")){std::string name=app.visualPresetName.data();for(auto& c:name)if(!std::isalnum(static_cast<unsigned char>(c))&&c!='-'&&c!='_')c='_';if(name.empty())name="visual_preset";if(lowerText(name)=="init"){app.status="Init is built-in; choose another preset name";}else{const auto path=visualPresetDirectory()/(name+".castvisual");app.status=saveVisualPreset(app,path)?"Saved visual preset "+name:"Could not save visual preset";app.visualPresetIndex=-1;visualPresets(true);}}}
     if(visualSection==3&&ImGui::CollapsingHeader("Environment / Sky",ImGuiTreeNodeFlags_DefaultOpen)){
-    static int bundledSky=-1;const auto root=programDirectory()/"skyboxes";const auto skySnapshot=uiFileLists().get(root,"|.iwi|",true);const auto& bundledT6Skies=*skySnapshot;if(bundledSky>=static_cast<int>(bundledT6Skies.size()))bundledSky=-1;const auto refreshBundledSkies=[&]{uiFileLists().get(root,"|.iwi|",true,true);};
+    const std::filesystem::path legacyRoot=R"(C:\Program Files (x86)\Steam\steamapps\common\Call of Duty Black Ops II - redacted\Tools\skyboxes)";
+    const auto localRoot=programDirectory()/"skyboxes";std::error_code skyEc;
+    const auto root=(cadence::portable::enabled()||std::filesystem::is_directory(localRoot,skyEc))?localRoot:legacyRoot;
+    constexpr const char* skyFilter="|.iwi|.dds|.hdr|.png|.jpg|.jpeg|.webp|";
+    const auto skySnapshot=skyLibrary(root);const auto& bundledSkies=*skySnapshot;
+    int bundledSky=-1;for(std::size_t i=0;i<bundledSkies.size();++i)if(bundledSkies[i].lexically_normal()==app.environmentPath.lexically_normal()){bundledSky=static_cast<int>(i);break;}
+    const auto skyLabel=[&](const std::filesystem::path& path){
+        if(lowerText(path.extension().string())==".iwi")return path.parent_path().filename().string();
+        const auto folder=path.parent_path().filename()=="images"?path.parent_path().parent_path():path.parent_path();
+        const auto relative=folder.lexically_relative(root).generic_string();
+        return (relative.empty()||relative=="."?std::string{}:relative+" / ")+path.stem().string();
+    };
+    const auto loadSky=[&](std::size_t index){std::string error;if(app.renderer.setEnvironmentPanorama(bundledSkies[index],error)){app.environmentPath=bundledSkies[index];app.status=error.empty()?"Loaded sky "+skyLabel(bundledSkies[index]):error;}else app.status=error;};
     if(ImGui::ArrowButton("##sky_prev", ImGuiDir_Left)){
-        if(!bundledT6Skies.empty()){
-            bundledSky = (bundledSky <= 0) ? static_cast<int>(bundledT6Skies.size()) - 1 : bundledSky - 1;
-            std::string error;
-            if(app.renderer.setT6SkyboxIwi(bundledT6Skies[static_cast<std::size_t>(bundledSky)], error)){
-                app.environmentPath = bundledT6Skies[static_cast<std::size_t>(bundledSky)];
-                app.status = error.empty() ? "Loaded bundled T6 sky " + bundledT6Skies[static_cast<std::size_t>(bundledSky)].parent_path().filename().string() : error;
-            } else app.status = error;
-        }
+        if(!bundledSkies.empty()){bundledSky=bundledSky<=0?static_cast<int>(bundledSkies.size())-1:bundledSky-1;loadSky(static_cast<std::size_t>(bundledSky));}
     }
     ImGui::SameLine();
     if(ImGui::ArrowButton("##sky_next", ImGuiDir_Right)){
-        if(!bundledT6Skies.empty()){
-            bundledSky = (bundledSky < 0 || bundledSky >= static_cast<int>(bundledT6Skies.size()) - 1) ? 0 : bundledSky + 1;
-            std::string error;
-            if(app.renderer.setT6SkyboxIwi(bundledT6Skies[static_cast<std::size_t>(bundledSky)], error)){
-                app.environmentPath = bundledT6Skies[static_cast<std::size_t>(bundledSky)];
-                app.status = error.empty() ? "Loaded bundled T6 sky " + bundledT6Skies[static_cast<std::size_t>(bundledSky)].parent_path().filename().string() : error;
-            } else app.status = error;
-        }
+        if(!bundledSkies.empty()){bundledSky=bundledSky<0||bundledSky>=static_cast<int>(bundledSkies.size())-1?0:bundledSky+1;loadSky(static_cast<std::size_t>(bundledSky));}
     }
     ImGui::SameLine();
-    const std::string bundledPreview=bundledSky>=0&&bundledSky<static_cast<int>(bundledT6Skies.size())?bundledT6Skies[static_cast<std::size_t>(bundledSky)].parent_path().filename().string():"Choose bundled T6 sky";if(ImGui::BeginCombo("T6 sky library",bundledPreview.c_str())){for(std::size_t i=0;i<bundledT6Skies.size();++i){const auto label=bundledT6Skies[i].parent_path().filename().string();if(ImGui::Selectable(label.c_str(),bundledSky==static_cast<int>(i))){bundledSky=static_cast<int>(i);std::string error;if(app.renderer.setT6SkyboxIwi(bundledT6Skies[i],error)){app.environmentPath=bundledT6Skies[i];app.status=error.empty()?"Loaded bundled T6 sky "+label:error;}else app.status=error;}}ImGui::EndCombo();}ImGui::SameLine();if(ImGui::SmallButton("Refresh skies"))refreshBundledSkies();
-    if(ImGui::Button("Load HDRI / panorama"))if(const auto path=chooseEnvironmentFile()){std::string error;if(app.renderer.setEnvironmentPanorama(*path,error)){app.environmentPath=*path;app.status="Loaded environment "+path->filename().string();}else app.status=error;}ImGui::SameLine();
-    if(ImGui::Button("Load T6 sky IWI"))if(const auto path=chooseIwiFile()){std::string error;if(app.renderer.setT6SkyboxIwi(*path,error)){app.environmentPath=*path;app.status=error.empty()?"Loaded T6 IWI sky "+path->filename().string():error;}else app.status=error;}ImGui::SameLine();if(ImGui::Button("Clear sky")){app.renderer.clearEnvironment();app.environmentPath.clear();}
+    const auto bundledPreview=app.environmentPath.empty()?std::string("None"):skyLabel(app.environmentPath);
+    if(ImGui::BeginCombo("Sky library",bundledPreview.c_str())){for(std::size_t i=0;i<bundledSkies.size();++i){ImGui::PushID(static_cast<int>(i));if(ImGui::Selectable(skyLabel(bundledSkies[i]).c_str(),bundledSky==static_cast<int>(i)))loadSky(i);ImGui::PopID();}ImGui::EndCombo();}
+    ImGui::SameLine();if(ImGui::SmallButton("Refresh skies"))skyLibrary(root,true);
+    if(ImGui::Button("Load sky"))if(const auto path=chooseEnvironmentFile()){std::string error;if(app.renderer.setEnvironmentPanorama(*path,error)){app.environmentPath=*path;app.status=error.empty()?"Loaded sky "+path->filename().string():error;}else app.status=error;}
+    ImGui::SameLine();if(ImGui::Button("Clear sky")){app.renderer.clearEnvironment();app.environmentPath.clear();}
     bool useMapAlpha=!app.ignoreMapTextureAlpha;if(ImGui::Checkbox("Map texture alpha",&useMapAlpha))app.ignoreMapTextureAlpha=!useMapAlpha;app.renderer.setIgnoreTextureAlpha(app.ignoreViewmodelTextureAlpha,app.ignoreMapTextureAlpha);if(ImGui::IsItemHovered())uiHelp("Enabled by default so fences, foliage and map decals retain cutout alpha.");ImGui::SliderFloat("Map decal depth tolerance",&app.mapDecalDepthBias,0.0f,4.0f,"%.2f");app.renderer.setDecalDepthBias(app.mapDecalDepthBias);if(ImGui::IsItemHovered())uiHelp("A tightly bounded coplanar offset that cannot be raised far enough to pull decals through walls.");
     ImGui::SliderFloat("Sky intensity",&app.environmentIntensity,0.0f,4.0f,"%.2f");
     ImGui::SliderFloat("Sky exposure",&app.environmentExposure,-8.0f,8.0f,"%.2f EV");
@@ -8026,6 +8561,9 @@ ImGui::SliderFloat("Intensity##spec2",&app.specularIntensity2,0.0f,4.0f,"%.2fx")
 
 // Presentation state must not depend on which settings tab is displayed.
 void syncVisualRendererSettings(AppState& app){
+    // The toolbar is available even when Debug is closed. Apply its selection
+    // every frame; never make the viewport pass depend on drawing that panel.
+    app.renderer.setDebugView(app.renderDebugView);
     app.renderer.setKawaseSamples(app.bloomKawaseSamples,app.cubemapKawaseSamples);app.renderer.setPostEffects(app.bloomRadius,app.lensDistortion,app.lutIntensity,app.autoBlackPoint,app.autoBlackPointIntensity,app.autoWhitePoint,app.autoWhitePointIntensity);app.renderer.setEnvironmentParameters(app.environmentIntensity,app.environmentExposure,app.environmentRotation,app.environmentContrast,app.environmentHighlightBoost,app.environmentHighlightThreshold,app.environmentToneMap);
     app.renderer.setAntialiasing(app.antialiasing);app.renderer.setNormalMapIntensity(app.normalMapIntensity);app.renderer.setAlternateSpecular(app.alternateSpecularEnabled,app.alternateSpecularIntensity,app.alternateSpecularSharpness,app.alternateSpecularIntensity2,app.alternateSpecularSharpness2,app.viewmodelSpecularProfile,app.playermodelSpecularProfile,app.worldSpecularProfile);app.renderer.setLensTintIntensity(app.lensTintIntensity);app.renderer.setWorldLensParameters(app.worldLensAlpha,app.worldLensTint,app.worldLensTintIntensity,app.worldLensSpecularIntensity,app.worldLensCubemapIntensity);app.renderer.setMaterialParameters(app.lensAlpha,app.lensTint,app.lensCubemapIntensity,app.specularIntensity,app.specularSharpness,app.specularIntensity2,app.specularSharpness2,app.lensSpecularIntensity,app.cubemapSpecular,app.cubemapSpecularIntensity,app.cubemapSpecularBlur,app.shadingModel,app.iw3DualLobe,app.awRoughnessScale,app.awRoughnessBias,app.awMetalness,app.awSpecularLevel,app.awDiffuseWrap,app.awClearcoat,app.awClearcoatRoughness,app.awEnvironmentIntensity);app.renderer.setEeveeParameters(app.eeveeMetallic,app.eeveeRoughness,app.eeveeIor,app.eeveeSpecular,app.eeveeSpecularTint,app.eeveeClearcoat,app.eeveeClearcoatRoughness);app.renderer.setTonemapping(app.tonemappingMode,app.tonemapRec709Match,app.tonemapRec709Strength);app.renderer.setBrdfModel(app.shadingSubModel);app.renderer.setBloomBlendMode(app.bloomBlendMode);app.renderer.setPostPassOrder(app.postPassOrder);app.renderer.setEmissiveTint(app.tritiumTint);app.renderer.setFilmTweaks(app.filmTweaks,app.filmBrightness,app.filmContrast,app.filmDesaturation,app.filmDarkTint,app.filmMidTint,app.filmLightTint,app.filmMidTintEnabled,app.filmInvert);app.renderer.setLensTweaks(app.bloomEnabled,app.bloomThreshold,app.bloomSoftThreshold,app.bloomSaturationBias,app.bloomAspectRatio,app.bloomRotation,app.bloomIntensity,app.vignetteEnabled,app.vignetteIntensity,app.vignetteRadius,app.vignetteSoftness);app.renderer.setFog(app.fogEnabled,app.fogColor,app.fogStartMeters*gameplay::iw::kMetersToUnits,app.fogHalfDistanceMeters*gameplay::iw::kMetersToUnits,app.fogOpacity,app.fogSkyAmount,app.fogHeightEnabled,app.fogHeightMeters*gameplay::iw::kMetersToUnits,app.fogHeightFalloffMeters*gameplay::iw::kMetersToUnits);app.renderer.setShadowStyle(app.shadowIntensity,app.shadowBias,app.shadowNormalBias,app.shadowSoftness,app.shadowContrast,app.shadowTint);app.renderer.setShadowSpecularMultiplier(app.shadowSpecularMultiplier);app.renderer.setNavigationAppearance(app.navigationLinkColor,app.navigationNodeColor,app.navigationPriorityColor,app.navigationLineThickness,app.navigationInterpolation,app.navigationHandleHeight,app.navigationCircleSides,app.navigationCircleScale,app.navigationCrossLength);app.renderer.setActorDebugOverlays(app.debugWallhack,app.wallhackVisibleColor,app.wallhackOccludedColor,app.wallhackThickness,app.debugHitboxes,app.hitboxColor,app.hitboxThickness);app.renderer.setSkyVerticalFlip(app.skyVerticalFlip);app.renderer.setWeaponMaterialTuning(app.weaponSpecularMultiplier,app.weaponSpecularLow,app.weaponSpecularHigh,app.weaponCubemapMultiplier,app.weaponCubemapBlur,app.weaponProfile.materials.overrideMetalness?app.weaponProfile.materials.metalness:-1.f);app.renderer.setWeaponMetalnessFromDiffuse(app.weaponProfile.materials.metalnessFromDiffuse,app.weaponProfile.materials.metalnessBlack,app.weaponProfile.materials.metalnessWhite,app.weaponProfile.materials.metalnessGamma);app.renderer.setSurfaceNormalReflectionInfluence(app.surfaceNormalReflectionInfluence);
 }
@@ -8047,6 +8585,7 @@ void setActorControllerEnabled(AppState& app,bool enabled){app.actorMode=enabled
 
 scene::WeaponClass gameplayWeaponClass(const weapon::Profile& profile,const assets::Asset& asset);
 void returnToLiveGameplay(AppState& app){
+    if(app.liveThirdWeaponBeforeTake){app.experimentalThirdWeapon=*app.liveThirdWeaponBeforeTake;app.liveThirdWeaponBeforeTake.reset();}
     app.iw4FireCycle.clear();
     cadence::content::preferPack({});
     setCameraInputCapture(app,false);
@@ -8091,7 +8630,7 @@ void returnToLiveGameplay(AppState& app){
 }
 
 void toggleGlobalGameplayCapture(AppState& app){
-    if(!cadence::workspace::runtime(app.workspaceMode))return;
+    if(app.takePreparationFuture||!cadence::workspace::runtime(app.workspaceMode))return;
     const double now=glfwGetTime();
     if(now-app.lastF1ToggleTime<0.20)return;
     app.lastF1ToggleTime=now;
@@ -8135,6 +8674,18 @@ void drawActorControls(AppState& app,int section=0){
         ImGui::Checkbox("Camera follows actor",&app.actorFollowCamera);
         ImGui::Checkbox("Over-shoulder third person",&app.actorThirdPerson);
         ImGui::Checkbox("Freecam (retain viewmodel)",&app.actorFreecamRetainViewmodel);
+        float clipHeight=playerCurrentCollisionHeight(app,scene::Stance::Stand);
+        ImGui::TextUnformatted("Player and bot collision");
+        if(ImGui::SliderFloat("Clip height",&clipHeight,40.f,250.f,"%.1f cm")&&gameplay::collision::validPlayerHeight(clipHeight)&&clipHeight>0.f)app.playerClipHeightCm=clipHeight;
+        if(ImGui::IsItemHovered())uiHelp("Shared standing collision height. Crouch and prone retain their existing ratios. Ctrl-click for a custom value.");
+        const float automaticDiameter=2.f*((app.movementAlgorithm==3||app.movementAlgorithm==4)?gameplay::iw::worldUnits(16):scene::course::kPlayerRadius);
+        const auto clipHalfExtents=actorCollisionHalfExtents(app,automaticDiameter*.5f);
+        float clipWidth=2.f*clipHalfExtents.x;
+        float clipDepth=2.f*clipHalfExtents.y;
+        if(ImGui::SliderFloat("Clip width (world X)",&clipWidth,10.f,150.f,"%.1f cm")&&gameplay::collision::validPlayerHeight(clipWidth)&&clipWidth>0.f)app.playerClipWidthCm=clipWidth;
+        if(ImGui::SliderFloat("Clip depth (world Y)",&clipDepth,10.f,150.f,"%.1f cm")&&gameplay::collision::validPlayerHeight(clipDepth)&&clipDepth>0.f)app.playerClipDepthCm=clipDepth;
+        ImGui::Checkbox("Preview collision box",&app.playerClipPreview);
+        ImGui::SameLine();if(ImGui::Button("Auto##player_clip_height")){app.playerClipHeightCm=0;app.playerClipWidthCm=0;app.playerClipDepthCm=0;}
         if(ImGui::CollapsingHeader("Playermodel")){
 
         if (ImGui::Checkbox("Auto-select from ViewHands", &app.autoPlayerModel)) configureClassActor(app);
@@ -8177,11 +8728,15 @@ ImGui::EndDisabled();
         ImGui::BeginDisabled(!app.actorMode);
         {const auto presetSnapshot=gameplayPresets();const auto& presets=*presetSnapshot;const std::string preview=app.gameplayPresetIndex>=0&&app.gameplayPresetIndex<static_cast<int>(presets.size())?presets[static_cast<std::size_t>(app.gameplayPresetIndex)].stem().string():"Choose saved preset";if(ImGui::BeginCombo("Saved gameplay preset",preview.c_str())){for(std::size_t i=0;i<presets.size();++i)if(ImGui::Selectable(presets[i].stem().string().c_str(),app.gameplayPresetIndex==static_cast<int>(i))){app.gameplayPresetIndex=static_cast<int>(i);app.status=loadGameplayPreset(app,presets[i])?"Loaded gameplay preset "+presets[i].stem().string():"Could not load gameplay preset";}ImGui::EndCombo();}ImGui::InputTextWithHint("##gameplay_preset_name","new gameplay preset",app.gameplayPresetName.data(),app.gameplayPresetName.size());ImGui::SameLine();if(ImGui::Button("Save")){std::string name=app.gameplayPresetName.data();for(auto& c:name)if(!std::isalnum(static_cast<unsigned char>(c))&&c!='-'&&c!='_')c='_';if(name.empty())name="gameplay_preset";app.status=saveGameplayPreset(app,gameplayPresetDirectory()/(name+".cadencegame"))?"Saved gameplay preset "+name:"Could not save gameplay preset";app.gameplayPresetIndex=-1;gameplayPresets(true);}}
         if(ImGui::CollapsingHeader("Movement System")){
-            constexpr const char* algorithms[]={"Current — IW/T6 tuned","Source — Source acceleration (legacy)","Quake — canonical Q3 acceleration","Source v2 — CSS fixed-step","Source v3","COD v2"};
+            constexpr const char* algorithms[]={"Current — IW/T6 tuned","Source — Source acceleration (legacy)","Quake — canonical Q3 acceleration","Source v2 — CSS fixed-step","Source v3 — CSS","COD v2"};
             ImGui::Combo("Movement system",&app.movementAlgorithm,algorithms,static_cast<int>(std::size(algorithms)));
-            if(app.movementAlgorithm==3){
+            if(ImGui::SliderFloat("Ladder speed",&app.ladderSpeedMultiplier,0.f,10.f,"%.2fx"))
+                app.ladderSpeedMultiplier=std::isfinite(app.ladderSpeedMultiplier)?std::max(0.f,app.ladderSpeedMultiplier):4.f;
+            if(app.movementAlgorithm==3||app.movementAlgorithm==4){
                 // Held Space jumping is supported by every movement controller.
                 ImGui::Checkbox("Unlimited bunnyhop speed",&app.sourceUnlimitedBunnyhop);
+            }
+            if(app.movementAlgorithm==3||app.movementAlgorithm==4){
                 ImGui::SliderFloat("Air acceleration",&app.sourceAirAccelerate,1.0f,200.0f,"%.0f",ImGuiSliderFlags_AlwaysClamp);
                 if(ImGui::IsItemHovered())uiHelp("150 matches the legacy surf-server feel; 10 is the stock CSS-style baseline.");
             }
@@ -8214,7 +8769,7 @@ ImGui::EndDisabled();
             ImGui::BeginDisabled(app.movementAlgorithm==0||gameplay::reference::enabled(app.movementAlgorithm));
             ImGui::SliderFloat("Bhop clip threshold",&app.bhopGroundClipThresholdIw,0.0f,18.0f,"%.1f IW units",ImGuiSliderFlags_AlwaysClamp);
             ImGui::EndDisabled();
-            uiHelp(app.movementAlgorithm==3?"Source v2: 66.67 Hz; hold Space repeats CSS jump checks on landing.":"Source and Quake retain uncapped accumulated horizontal velocity.");
+            uiHelp(app.movementAlgorithm==4?"Source v3: CSS-targeted movement at 66.67 Hz. Hold Space to hop; Shift to walk.":app.movementAlgorithm==3?"Source v2: 66.67 Hz; hold Space repeats CSS jump checks on landing.":"Source and Quake retain uncapped accumulated horizontal velocity.");
         }
         if(ImGui::CollapsingHeader("Weapon Shot Effects")){
             uiHelp("Knives remain suppressed by the accepted-shot event path.");
@@ -8223,14 +8778,27 @@ ImGui::EndDisabled();
             ImGui::Checkbox("Muzzle smoke",&app.smokeTrailEnabled);ImGui::SliderFloat("Muzzle flash duration",&app.muzzleFlashDuration,0.005f,0.20f,"%.3f sec");ImGui::SliderFloat("Muzzle smoke duration",&app.smokeEmissionDuration,0.01f,2.0f,"%.2f sec");
         }
         if(ImGui::CollapsingHeader("YY Behavior")){
-            constexpr const char* algorithms[]={"YY v1 — classic return-to-idle","YY v2 — directional putaway reverse","Source QQ — instant swap + pullout","First-pullout QQ — always first pullout","YY v4","IW4 YY"};
+            constexpr const char* algorithms[]={"YY v1 — classic return-to-idle","YY v2 — directional putaway reverse","Source QQ — instant swap + pullout","First-pullout QQ — always first pullout","YY v4","IW4 YY","YY v5"};
             if(ImGui::Combo("Weapon switching algorithm",&app.weaponSwitchAlgorithm,algorithms,static_cast<int>(std::size(algorithms)))){
+                if(app.weaponSwitchAlgorithm==6){app.weaponTiming.yyReturnScale=1.11f;app.weaponProfile.stats.yyReturnScale=1.11f;app.weaponProfileDirty=true;}
+                app.yyV5Resuming=false;app.yyV5Elapsed=0;
                 app.iw4FireCycle.clear();app.iw4PendingSlot=-1;
                 app.weaponSwitchStage=0;app.weaponSwitchElapsed=0;app.weaponSwitchFirstRaiseAnimation=false;app.yyReturning=app.yyTowardPutaway=app.yyReverse=false;app.yyCancelDuration=0;app.actionActive=app.actionOverlay=false;app.activeAction=scene::ActionRole::None;app.transitioning=false;
                 app.interruptPoseDuration=0;app.yyLiveAnimation=SIZE_MAX;app.yyLiveReference.clear();resolveGameplayAnimation(app);
             }
+            if(app.weaponSwitchAlgorithm==5&&ImGui::SliderFloat("IW4 YY smoothing time",&app.weaponTiming.iw4YySmoothingTime,0.f,.5f,"%.3f sec")){
+                app.weaponTiming.iw4YySmoothingTime=std::max(0.f,app.weaponTiming.iw4YySmoothingTime);
+                app.weaponProfile.stats.iw4YySmoothingTime=app.weaponTiming.iw4YySmoothingTime;app.weaponProfileDirty=true;
+            }
+            if(app.weaponSwitchAlgorithm==5&&ImGui::TreeNode("YY smoothing curve")){
+                bool changed=drawResponseCurve("YY curve",app.weaponTiming.iw4YyCurve,true);
+                changed|=ImGui::SliderFloat("Curve smoothness",&app.weaponTiming.iw4YyCurve.smoothness,0.f,1.f);
+                if(ImGui::Button("Reset curve")){app.weaponTiming.iw4YyCurve=weapon::Stats{}.iw4YyCurve;changed=true;}
+                if(changed){app.weaponProfile.stats.iw4YyCurve=app.weaponTiming.iw4YyCurve;app.weaponProfileDirty=true;}
+                ImGui::TreePop();
+            }
             ImGui::BeginDisabled(app.weaponSwitchAlgorithm==5);
-            if(ImGui::SliderFloat(app.weaponSwitchAlgorithm==4?"YY blend duration":"YY interpolate to idle",&app.weaponTiming.yyReturnScale,0.5f,8.0f,"%.2fx")){app.weaponProfile.stats.yyReturnScale=app.weaponTiming.yyReturnScale;app.weaponProfileDirty=true;}
+            if(ImGui::SliderFloat(app.weaponSwitchAlgorithm==4?"YY blend duration":"YY return duration",&app.weaponTiming.yyReturnScale,0.5f,8.0f,"%.2fx")){app.weaponProfile.stats.yyReturnScale=app.weaponTiming.yyReturnScale;app.weaponProfileDirty=true;}
             ImGui::EndDisabled();
         }
         if(ImGui::CollapsingHeader("Animation Behaviors")){ImGui::SliderFloat("Locomotion interpolation",&app.transitionDuration,0.0f,0.5f,"%.3f sec");ImGui::SliderFloat("Action-layer blend",&app.actionBlendTime,0.0f,0.15f,"%.3f sec",ImGuiSliderFlags_AlwaysClamp);}
@@ -8329,10 +8897,24 @@ bool drawAwWeaponVariant(AppState& app,std::size_t& selected){
     const auto label=[&](std::size_t index){auto name=lowerText(app.assetCatalog.entries[index].name);if(name.ends_with("_lod0"))name.resize(name.size()-5);auto suffix=name.substr(std::min(name.size(),family.size()));if(!suffix.empty()&&suffix.front()=='_')suffix.erase(suffix.begin());return suffix.empty()?std::string("Base"):suffix;};const auto preview=label(selected);bool changed=false;if(ImGui::BeginCombo("AW weapon variant",preview.c_str())){for(const auto index:variants){const auto variant=label(index);if(ImGui::Selectable(variant.c_str(),selected==index)){selected=index;changed=true;}}ImGui::EndCombo();}return changed;
 }
 
+bool drawSource2Skin(AppState& app,std::size_t& selected){
+    if(selected>=app.assetCatalog.entries.size())return false;
+    const auto& current=app.assetCatalog.entries[selected];const auto family=assets::source2::weaponFamily(current);
+    if(family.empty())return false;
+    const auto label=[](const assets::Asset& a){auto s=assets::source2::skin(a);return s.empty()?std::string("Default"):s;};
+    bool changed=false;
+    if(ImGui::BeginCombo("Skin",label(current).c_str())){
+        for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto& a=app.assetCatalog.entries[i];
+            if(a.role!=current.role||assets::source2::weaponFamily(a)!=family)continue;
+            ImGui::PushID(static_cast<int>(i));if(ImGui::Selectable(label(a).c_str(),selected==i)){selected=i;changed=true;}ImGui::PopID();
+        }ImGui::EndCombo();
+    }return changed;
+}
+
 bool assetCombo(AppState& app,const char* label,assets::Role role,std::size_t& selected){
     const char* preview="Select asset";if(selected<app.assetCatalog.entries.size()&&app.assetCatalog.entries[selected].role==role)preview=app.assetCatalog.entries[selected].name.c_str();bool changed=false;
     if(ImGui::BeginCombo(label,preview)){
-for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto& asset=app.assetCatalog.entries[i];if(!assetVisible(app,asset,role)||(!app.showAllWeaponVariants&&role==assets::Role::ViewWeapon&&(app.weaponPickerCache.isImportedVariant(app.assetCatalog,asset)||isMw3CamoVariant(asset)||isAwWeaponVariant(asset))))continue;ImGui::PushID(static_cast<int>(i));
+for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto& asset=app.assetCatalog.entries[i];if(!assetVisible(app,asset,role)||app.weaponPickerCache.isSource2SkinVariant(app.assetCatalog,asset)||(!app.showAllWeaponVariants&&role==assets::Role::ViewWeapon&&(app.weaponPickerCache.isImportedVariant(app.assetCatalog,asset)||isMw3CamoVariant(asset)||isAwWeaponVariant(asset))))continue;ImGui::PushID(static_cast<int>(i));
             const std::string entryLabel=(asset.game.empty()?std::string{}:"["+asset.game+"] ")+asset.name;
             if(ImGui::Selectable(entryLabel.c_str(),selected==i)){selected=i;changed=true;}ImGui::PopID();}
         ImGui::EndCombo();
@@ -8363,6 +8945,8 @@ std::size_t findCatalogModelExact(const AppState& app,assets::Role role,std::str
 }
 
 int classCategoryForWeapon(const AppState& app,const assets::Asset& asset){
+    // Append category 9: existing saved category indices keep their meaning.
+    if(cadence::WeaponPickerCache::knifeCategory(asset))return 9;
     static std::unordered_map<std::string,int> cache;const auto key=lowerText(asset.path.string());if(const auto found=cache.find(key);found!=cache.end())return found->second;
     int category=0;
     const auto cat=lowerText(asset.category);
@@ -8406,6 +8990,7 @@ scene::WeaponClass gameplayWeaponClass(const weapon::Profile& profile,const asse
 }
 
 void restoreEngineViewHeight(AppState& app){
+    app.playerCollisionHeightCache.invalidate();app.collisionBodyBoneStorage=nullptr;app.collisionBodyBoneCount=0;app.collisionSceneIsBody=false;
     // The imported actor's eye/head bones describe the rendered body, not the
     // playerState camera. Classic IW movement drives the camera from viewHeight.
     app.actorStandingViewHeight=gameplay::iw::viewHeight(scene::Stance::Stand);
@@ -8460,6 +9045,58 @@ bool shouldAutoLoadRigPart(const AppState& app,const assets::Asset& weaponAsset,
     static const std::unordered_set<std::string> generic{"ar","smg","lmg","sniper","pistol","shotty","shotgun","scope","view","world"};
     for(const auto& key:part.compatibilityKeys)if(key.size()>=3&&!generic.contains(key)&&std::find(weaponAsset.compatibilityKeys.begin(),weaponAsset.compatibilityKeys.end(),key)!=weaponAsset.compatibilityKeys.end())return true;
     return false;
+}
+
+void ensureDefaultKnifeMeleeAnimations(AppState& app){
+    if(app.scene.skeleton.bones.empty())return;
+    const char* clipFiles[]={
+        "viewmodel_m4m203_knife_melee_1.cast",
+        "viewmodel_m4m203_knife_melee_2.cast",
+        "viewmodel_knife_melee_slice.cast",
+        "viewmodel_knife_melee_stab.cast"
+    };
+    for(const char* clipFile : clipFiles){
+        const bool mw3Fallback=std::string_view(clipFile).starts_with("viewmodel_knife_");
+        if(mw3Fallback&&activeWeaponIsCs2(app))continue;
+        if(mw3Fallback&&std::any_of(app.scene.animations.begin(),app.scene.animations.end(),[](const auto& a){const auto n=lowerText(std::filesystem::path(a.sourceName).filename().string());return !a.tracks.empty()&&(n=="viewmodel_m4m203_knife_melee_1.cast"||n=="viewmodel_m4m203_knife_melee_2.cast");}))continue;
+        bool alreadyPresent=false;
+        for(const auto& anim : app.scene.animations){
+            if(lowerText(anim.sourceName) == clipFile){
+                alreadyPresent = true;
+                break;
+            }
+        }
+        if(alreadyPresent) continue;
+
+        std::filesystem::path animPath;
+        if(!app.defaultSalukiDirectory.empty()){
+            const auto root = salukiExportRoot(app.defaultSalukiDirectory);
+            const auto relative=std::filesystem::path(mw3Fallback?"mw3":"bo2")/"animations"/"viewmodel"/(mw3Fallback?"knife":"m4m203")/clipFile;
+            const auto p1 = root / relative;
+            const auto p2 = root / "exported_files" / relative;
+            if(std::filesystem::is_regular_file(p1)) animPath = p1;
+            else if(std::filesystem::is_regular_file(p2)) animPath = p2;
+        }
+        if(animPath.empty() && !mw3Fallback && !cadence::portable::enabled()){
+            const auto defaultCand = std::filesystem::path(R"(exported_files\bo2\animations\viewmodel\m4m203)") / clipFile;
+            if(std::filesystem::is_regular_file(defaultCand)) animPath = defaultCand;
+        }
+        if(!animPath.empty()){
+            auto doc = cast::Document::load(animPath);
+            if(doc.valid()){
+                const auto before = app.scene.animations.size();
+                const auto added = scene::appendAnimations(doc, app.scene);
+                if(added){
+                    tagAnimationGame(app.scene, before, animPath);
+                    retargetNewAnimations(app, animPath, before, &doc);
+                    if(std::find(app.animationSources.begin(), app.animationSources.end(), animPath) == app.animationSources.end()){
+                        app.animationSources.push_back(animPath);
+                        app.animationDocuments.push_back(std::move(doc));
+                    }
+                }
+            }
+        }
+    }
 }
 
 void ensureColdWarAnimationSources(AppState& app,const assets::Asset& asset){
@@ -8526,7 +9163,7 @@ void equipViewWeapon(AppState& app,std::size_t weaponIndex,AppState* notifyApp,s
         std::string nativeHandId;if(lowerText(selectedWeapon.game)=="eldewrito"){auto native=stem;if(native.ends_with("_dual"))native.resize(native.size()-5);if(native.find("_fp_")!=std::string::npos)nativeHandId=native.substr(native.rfind('_'));}
         for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto& a=app.assetCatalog.entries[i];if(a.game==selectedWeapon.game&&a.role==assets::Role::ViewHands&&(lowerText(a.name)==expected||(!nativeHandId.empty()&&lowerText(a.name).ends_with(nativeHandId)))){app.selectedBaseAsset=i;break;}}
     }
-    if(auditedWeaponGame(selectedWeapon.game)||assets::imported::supported(lowerText(selectedWeapon.game)))app.selectedWeaponAsset=weaponIndex;
+    app.selectedWeaponAsset=weaponIndex;
     logLoading(logger, "Configuring weapon profile: [" + selectedWeapon.game + "] " + selectedWeapon.name);
     activateWeaponProfile(app,generatedWeaponProfile(app,selectedWeapon,{},!auditedWeaponGame(selectedWeapon.game)&&!assets::imported::supported(lowerText(selectedWeapon.game))));
     if(dualOverride)app.weaponProfile.archetype=*dualOverride?weapon::Archetype::DualWield:weapon::Archetype::Pistol;
@@ -8554,7 +9191,7 @@ void equipViewWeapon(AppState& app,std::size_t weaponIndex,AppState* notifyApp,s
     app.animationDocuments=std::move(documents);
     std::optional<scene::Mat4> sourceWeaponMount;float importedWeaponScale=1.0f;
     const auto weaponGame=lowerText(selectedWeapon.game),handsGame=activeViewhandsGame(app);
-    if(weaponGame=="cs2"&&!handsGame.empty()&&handsGame!="cs2")if(const auto* sourceHands=sourceViewhandsSkeletonForGame(app,weaponGame)){
+    if(weaponGame=="cs2"&&!handsGame.empty()&&handsGame!="cs2"&&app.scene.viewHandsDriverGame!="cs2")if(const auto* sourceHands=sourceViewhandsSkeletonForGame(app,weaponGame)){
         const auto socket=sourceHands->boneByCanonicalName.find("wpn");
         if(socket!=sourceHands->boneByCanonicalName.end()){sourceWeaponMount=scene::Mat4::identity();importedWeaponScale=crossRigWeaponScale(app.scene.skeleton,*sourceHands);logLoading(logger,"Scaling CS2 weapon coordinates for "+handsGame+" hands at "+std::to_string(importedWeaponScale)+"x");}
     }
@@ -8577,10 +9214,24 @@ void equipViewWeapon(AppState& app,std::size_t weaponIndex,AppState* notifyApp,s
         if(weaponGame=="aw"&&candidate.role==assets::Role::ViewWeapon&&shouldAutoLoadRigPart(app,selectedWeapon,candidate)){
             addRigModelFile(app,candidate.path,false,sourceWeaponMount,importedWeaponScale);app.equippedRigAssets.push_back(index);continue;
         }
-        if(requestedDual||candidate.game!=app.assetCatalog.entries[weaponIndex].game||lowerText(candidate.name).find("t6_wpn_knife_base_view")==std::string::npos)continue;
-        addRigModelFile(app,candidate.path,false,sourceWeaponMount,importedWeaponScale);
-        app.equippedRigAssets.push_back(index);
-        break;
+    }
+    if(!requestedDual){
+        std::size_t knifeAssetIndex=static_cast<std::size_t>(-1);
+        if(app.classMeleeAsset<app.assetCatalog.entries.size()&&app.assetCatalog.entries[app.classMeleeAsset].role==assets::Role::ViewWeapon){
+            knifeAssetIndex=app.classMeleeAsset;
+        }else{
+            for(std::size_t index=0;index<app.assetCatalog.entries.size();++index){
+                const auto& candidate=app.assetCatalog.entries[index];
+                if(candidate.role==assets::Role::ViewWeapon&&lowerText(candidate.name).find("t6_wpn_knife_base_view")!=std::string::npos){
+                    knifeAssetIndex=index;
+                    break;
+                }
+            }
+        }
+        if(knifeAssetIndex<app.assetCatalog.entries.size()){
+            addRigModelFile(app,app.assetCatalog.entries[knifeAssetIndex].path,false,std::nullopt,1.f,true);
+            app.equippedRigAssets.push_back(knifeAssetIndex);
+        }
     }
     if(const auto folder=animationFolderFor(selectedWeapon)){
         const auto prefix=animationPrefixForWeapon(selectedWeapon);
@@ -8588,7 +9239,7 @@ void equipViewWeapon(AppState& app,std::size_t weaponIndex,AppState* notifyApp,s
         bool hasWeaponAnims=false;
         for(const auto& clip:app.scene.animations){
             const auto src=lowerText(clip.sourceName);
-            if(!prefix.empty()&&src.starts_with(prefix)){hasWeaponAnims=true;break;}
+            if(!prefix.empty()&&src.starts_with(weaponGame=="dirtybomb"?assets::imported::additionalWeaponKey(weaponGame,selectedWeapon.name)+"_":prefix)){hasWeaponAnims=true;break;}
             for(const auto& k:keys)if(src.find("_"+k+"_")!=std::string::npos||src.starts_with("viewmodel_"+k+"_")||src.starts_with("vm_"+k+"_")||src.ends_with("_"+k+".cast")||src.ends_with("_"+k+"_model.cast")){hasWeaponAnims=true;break;}
         }
         if(!hasWeaponAnims){
@@ -8656,6 +9307,7 @@ void equipViewWeapon(AppState& app,std::size_t weaponIndex,AppState* notifyApp,s
         }
     }
     ensureColdWarAnimationSources(app,selectedWeapon);
+    ensureDefaultKnifeMeleeAnimations(app);
     if(requestedDual&&weaponGame=="mw3"&&cadence::dual::duplicateMw3(app.scene))app.loadedRigModelPaths.push_back(selectedWeapon.path);
     finishRigMerge(app,&selectedWeapon);
     if(!app.scene.dualWield)populateDefaultDiscoveredAnimations(app, app.weaponProfile, selectedWeapon);
@@ -8722,7 +9374,7 @@ void processPendingModelLoad(AppState& app){
     if(app.pendingModelStage==0){
         // The picker and class loader must share discovery/assembly. The old
         // staged path only reused previously loaded animations for these games.
-        if(auditedWeaponGame(app.assetCatalog.entries[weaponIndex].game)){
+        if(auditedWeaponGame(app.assetCatalog.entries[weaponIndex].game)||lowerText(app.assetCatalog.entries[weaponIndex].game)=="cs2"){
             equipViewWeapon(app,weaponIndex,nullptr);
             app.pendingModelKind=app.pendingModelStage=0;app.loadingActive=false;app.loadingVisibleUntil=glfwGetTime()+1.0;
             return;
@@ -8739,12 +9391,20 @@ void processPendingModelLoad(AppState& app){
         for(const auto index:app.assetCatalog.compatibleAttachments(weaponIndex))
             if(shouldAutoLoadRigPart(app,selectedWeapon,app.assetCatalog.entries[index]))
                 app.pendingRigAssets.push_back(index);
-        for(std::size_t index=0;index<app.assetCatalog.entries.size();++index){
-            const auto& candidate=app.assetCatalog.entries[index];
-            if(lowerText(selectedWeapon.game)=="aw"&&candidate.role==assets::Role::ViewWeapon&&shouldAutoLoadRigPart(app,selectedWeapon,candidate)){app.pendingRigAssets.push_back(index);continue;}
-            if(candidate.game==selectedWeapon.game&&lowerText(candidate.name).find("t6_wpn_knife_base_view")!=std::string::npos){
-                app.pendingRigAssets.push_back(index);break;
+        std::size_t pendingKnifeIndex=static_cast<std::size_t>(-1);
+        if(app.classMeleeAsset<app.assetCatalog.entries.size()&&app.assetCatalog.entries[app.classMeleeAsset].role==assets::Role::ViewWeapon){
+            pendingKnifeIndex=app.classMeleeAsset;
+        }else{
+            for(std::size_t index=0;index<app.assetCatalog.entries.size();++index){
+                const auto& candidate=app.assetCatalog.entries[index];
+                if(candidate.role==assets::Role::ViewWeapon&&lowerText(candidate.name).find("t6_wpn_knife_base_view")!=std::string::npos){
+                    pendingKnifeIndex=index;
+                    break;
+                }
             }
+        }
+        if(pendingKnifeIndex<app.assetCatalog.entries.size()){
+            app.pendingRigAssets.push_back(pendingKnifeIndex);
         }
         logLoading(app, "Identified " + std::to_string(app.pendingRigAssets.size()) + " composite rig components", 0.30f);
         app.loadingActive=true;app.loadingProgress=0.30f;app.loadingLabel="Loading View Weapon";app.loadingDetail=selectedWeapon.name;app.pendingModelStage=1;return;
@@ -8761,6 +9421,7 @@ void processPendingModelLoad(AppState& app){
     logLoading(app, "Merging composite rig hierarchy and resolving weapon animations...", 0.85f);
     app.loadingDetail="Finalizing composite rig";app.loadingProgress=0.90f;
     ensureColdWarAnimationSources(app,app.assetCatalog.entries[weaponIndex]);
+    ensureDefaultKnifeMeleeAnimations(app);
     finishRigMerge(app,&app.assetCatalog.entries[weaponIndex]);
     const auto& selectedWeapon=app.assetCatalog.entries[weaponIndex];
     if(const auto game=lowerText(selectedWeapon.game);game=="cs2"||game=="bocw_sp"||game=="bocw"||game=="t9"){
@@ -8790,7 +9451,7 @@ void ensureBotAnimationCache(AppState& app,const std::string& game);
 std::string availableWorldAnimationGame(AppState& app,std::string game){
     game=lowerText(game);if(game=="bo2_sp"||game=="bo2+bo2_sp")game="bo2";
     ensureBotAnimationCache(app,game);
-    if(game!="bo2"&&game!="cs2"&&app.botAnimationCache[game].empty()){
+    if(game!="bo2"&&app.botAnimationCache[game].empty()){
         ensureBotAnimationCache(app,"bo2");
         if(!app.botAnimationCache["bo2"].empty())return "bo2";
     }
@@ -8871,7 +9532,14 @@ void configureMwrWeaponOnCod4(AppState& app,scene::CastScene& actor,size_t attac
 }
 
 std::size_t findWorldWeaponForViewWeapon(const AppState& app, const assets::Asset& viewWeapon) {
+    if(lowerText(viewWeapon.game)=="cs2"){
+        const auto family=assets::source2::weaponFamily(viewWeapon),skin=assets::source2::skin(viewWeapon);
+        for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto& candidate=app.assetCatalog.entries[i];
+            if(candidate.role==assets::Role::WorldWeapon&&assets::source2::weaponFamily(candidate)==family&&assets::source2::skin(candidate)==skin)return i;
+        }
+    }
     if(assets::imported::supported(lowerText(viewWeapon.game))){
+        if(assets::imported::additionalFamily(lowerText(viewWeapon.game))){const auto key=assets::imported::additionalWeaponKey(lowerText(viewWeapon.game),viewWeapon.name);if(!key.empty())for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto& c=app.assetCatalog.entries[i];if(c.game==viewWeapon.game&&c.role==assets::Role::WorldWeapon&&assets::imported::additionalWeaponKey(lowerText(c.game),c.name)==key)return i;}}
         const auto wanted=assets::imported::worldName(lowerText(viewWeapon.game),viewWeapon.name);
         if(assets::imported::sourceFamily(lowerText(viewWeapon.game))&&wanted.starts_with("w_")){
             const auto held="p_"+wanted.substr(2);
@@ -8950,6 +9618,28 @@ std::size_t findWorldWeaponForViewWeapon(const AppState& app, const assets::Asse
             bestIdx = i;
         }
     }
+    if(bestIdx==static_cast<std::size_t>(-1)&&lowerText(viewWeapon.game)=="mw3"){
+        // Some legacy views omit the IW5 generation token. Keep all other
+        // identity/cosmetic tokens, and always prefer an exact match above.
+        const auto generationKey=[](std::string key){
+            const auto at=key.find("_iw5");
+            if(at!=std::string::npos&&(at+4==key.size()||key[at+4]=='_'))key.erase(at,4);
+            return key;
+        };
+        for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){
+            const auto& candidate=app.assetCatalog.entries[i];
+            if(candidate.role==assets::Role::WorldWeapon&&lowerText(candidate.game)=="mw3"&&
+               generationKey(safeName(candidate.name))==generationKey(root)){
+                bestIdx=i;break;
+            }
+        }
+    }
+    // AW exports can omit a distinct world mesh. Keep the selected weapon
+    // visible using its own geometry; never substitute an unrelated gun.
+    // MWR deliberately retains its user's strict world-export-only policy.
+    if(bestIdx==static_cast<std::size_t>(-1)&&lowerText(viewWeapon.game)=="aw")
+        for(std::size_t i=0;i<app.assetCatalog.entries.size();++i)
+            if(&app.assetCatalog.entries[i]==&viewWeapon&&viewWeapon.role==assets::Role::ViewWeapon)return i;
     return bestIdx;
 }
 
@@ -8975,6 +9665,18 @@ constexpr float kCs2WorldmodelRearwardOffset=4.0f;
 void configureCs2WorldWeaponAttachment(scene::CastScene& actor,const cast::Document& weaponDocument,std::size_t previousAttachmentCount){
     if(previousAttachmentCount>=actor.attachments.size())return;
     auto& attachment=actor.attachments.back();
+    if(scene::imported::bodyLayout(actor.skeleton).family==scene::imported::BodyFamily::Source2){
+        const auto socket=actor.skeleton.boneByName.find("wpn");
+        const auto gun=scene::buildScene(weaponDocument,false);
+        const auto source=gun.skeleton.boneByName.find("wpn");
+        if(socket!=actor.skeleton.boneByName.end()&&source!=gun.skeleton.boneByName.end()){
+            attachment.boneIndex=socket->second;
+            const float units=2.54f/std::max(.0001f,gun.importedTranslationScale);
+            const auto mount=scene::scale({units,units,units})*scene::inverseAffine(gun.skeleton.bones[source->second].restGlobal);
+            cadence::world_weapon::setTransform(attachment,mount);
+            return;
+        }
+    }
     const float scale=kCs2WorldmodelScale;
     const auto grip=cs2WorldWeaponGrip(weaponDocument).value_or(scene::Vec3{});
     attachment.scale={scale,scale,scale};
@@ -9092,6 +9794,10 @@ void configureClassActor(AppState& app){
                     if (std::filesystem::is_regular_file(p1)) slideAnimPath = p1;
                     else if (std::filesystem::is_regular_file(p2)) slideAnimPath = p2;
                 }
+                if (slideAnimPath.empty()&&!cadence::portable::enabled()) {
+                    const auto defaultCandidate = std::filesystem::path(R"(exported_files\ghosts\animations\mp\scripted\generic\mp_slide.cast)");
+                    if (std::filesystem::is_regular_file(defaultCandidate)) slideAnimPath = defaultCandidate;
+                }
                 if (!slideAnimPath.empty()) {
                     auto slideDoc = cast::Document::load(slideAnimPath);
                     if (slideDoc.valid()) {
@@ -9117,6 +9823,10 @@ void configureClassActor(AppState& app){
                     const auto p2 = root / "exported_files" / "ghosts" / "animations" / "mp" / "run" / "generic" / "mp_mantle_32_over_run.cast";
                     if(std::filesystem::is_regular_file(p1)) sprintMantlePath = p1;
                     else if(std::filesystem::is_regular_file(p2)) sprintMantlePath = p2;
+                }
+                if(sprintMantlePath.empty()&&!cadence::portable::enabled()){
+                    const auto defaultCandidate = std::filesystem::path(R"(exported_files\ghosts\animations\mp\run\generic\mp_mantle_32_over_run.cast)");
+                    if(std::filesystem::is_regular_file(defaultCandidate)) sprintMantlePath = defaultCandidate;
                 }
                 if(!sprintMantlePath.empty()){
                     auto mantleDoc = cast::Document::load(sprintMantlePath);
@@ -9440,7 +10150,7 @@ void equipClassSlot(AppState& app,int slot,AppState* notifyApp){
     logLoading(logger, std::string("[Slot ") + std::to_string(slot) + "] Rig cached successfully: " + app.assetCatalog.entries[weapon].name, slot==0 ? 0.50f : 0.85f);
 }
 
-void activateClassSlot(AppState& app,int slot){if(slot<0||slot>2||!app.classSlotRigs[slot])return;if(app.activeClassSlot==slot)return;if(app.activeClassSlot>=0)app.lastClassSlot=app.activeClassSlot;if(app.activeClassSlot>=0&&app.activeClassSlot<3&&app.activeClassSlot!=slot&&app.classSlotRigs[app.activeClassSlot]){auto& outgoing=*app.classSlotRigs[app.activeClassSlot];const auto idle=findViewmodelClip(app,"idle"),adsDown=pairedAdsDown(app);outgoing.scene=std::move(app.scene);outgoing.worldActor=std::move(app.hiddenWorldActor);outgoing.worldModelAsset=app.classWorldModelAsset;outgoing.worldWeaponAsset=app.classWorldWeaponAsset;outgoing.baseModelPath=app.loadedBaseModelPath;outgoing.rigModelPaths=app.loadedRigModelPaths;outgoing.attachmentPaths=app.loadedAttachmentPaths;outgoing.idleAnimation=idle.value_or(static_cast<std::size_t>(-1));outgoing.adsDownAnimation=adsDown.value_or(static_cast<std::size_t>(-1));outgoing.profile=app.weaponProfile;outgoing.profile.stats=app.weaponTiming;outgoing.profilePath=app.weaponProfilePath;}auto& cached=*app.classSlotRigs[slot];if(cached.scene.skeleton.bones.empty())return;app.scene=std::move(cached.scene);app.worldSelectionKey.reset();app.playerWorldActionCache.clear();app.hiddenWorldActor=std::move(cached.worldActor);app.classWorldModelAsset=cached.worldModelAsset;app.classWorldWeaponAsset=cached.worldWeaponAsset;restoreEngineViewHeight(app);app.viewmodelAnimationPrefix=cached.animationPrefix;app.equippedRigAssets=cached.rigAssets;app.loadedBaseModelPath=cached.baseModelPath;app.loadedRigModelPaths=cached.rigModelPaths;app.loadedAttachmentPaths=cached.attachmentPaths;app.meleeKnifeBone=cached.meleeKnifeBone;app.selectedWeaponAsset=cached.weaponAsset;app.activeClassSlot=slot;activateWeaponProfile(app,cached.profile,cached.profilePath);if(cached.weaponAsset<app.assetCatalog.entries.size())app.gameplayWeapon=gameplayWeaponClass(app.weaponProfile,app.assetCatalog.entries[cached.weaponAsset]);app.nextFireTime=0;app.burstShotsRemaining=0;app.gameplayRechamber=false;app.pendingWeaponRechamber=false;resetWeaponAimState(app);app.viewmodelAdsBaseAnimation=cached.adsDownAnimation;if(app.viewmodelAdsBaseAnimation<app.scene.animations.size()){app.viewmodelAdsBaseFrame=static_cast<float>(app.scene.animations[app.viewmodelAdsBaseAnimation].durationFrames);app.viewmodelAdsTransitionElapsed=app.weaponTiming.adsOut;}app.viewmodelSprintEntering=false;app.viewmodelSprintExiting=false;app.interruptPoseSource.clear();app.interruptPoseElapsed=app.interruptPoseDuration=0;app.interruptPoseCameraRelative=false;app.actionActive=app.actionOverlay=false;app.activeAction=scene::ActionRole::None;app.runtimeLayers.clear();app.rendererError.clear();if(!app.classGpuResident)uploadResidentClassScenes(app);if(app.classGpuResident)app.renderer.setActiveClassSlot(slot);else if(!uploadMainScene(app))app.status="Cached class rig GPU upload failed";if(cached.weaponAsset<app.assetCatalog.entries.size())selectViewmodelIdle(app,app.assetCatalog.entries[cached.weaponAsset]);}
+void activateClassSlot(AppState& app,int slot){if(slot<0||slot>2||!app.classSlotRigs[slot])return;if(app.activeClassSlot==slot)return;if(app.activeClassSlot>=0)app.lastClassSlot=app.activeClassSlot;if(app.activeClassSlot>=0&&app.activeClassSlot<3&&app.activeClassSlot!=slot&&app.classSlotRigs[app.activeClassSlot]){auto& outgoing=*app.classSlotRigs[app.activeClassSlot];const auto idle=findViewmodelClip(app,"idle"),adsDown=pairedAdsDown(app);outgoing.scene=std::move(app.scene);outgoing.worldActor=std::move(app.hiddenWorldActor);outgoing.worldModelAsset=app.classWorldModelAsset;outgoing.worldWeaponAsset=app.classWorldWeaponAsset;outgoing.baseModelPath=app.loadedBaseModelPath;outgoing.rigModelPaths=app.loadedRigModelPaths;outgoing.attachmentPaths=app.loadedAttachmentPaths;outgoing.idleAnimation=idle.value_or(static_cast<std::size_t>(-1));outgoing.adsDownAnimation=adsDown.value_or(static_cast<std::size_t>(-1));outgoing.profile=app.weaponProfile;outgoing.profile.stats=app.weaponTiming;outgoing.profilePath=app.weaponProfilePath;}auto& cached=*app.classSlotRigs[slot];if(cached.scene.skeleton.bones.empty())return;app.scene=std::move(cached.scene);app.worldSelectionKey.reset();app.playerWorldActionCache.clear();app.hiddenWorldActor=std::move(cached.worldActor);app.classWorldModelAsset=cached.worldModelAsset;app.classWorldWeaponAsset=cached.worldWeaponAsset;restoreEngineViewHeight(app);app.viewmodelAnimationPrefix=cached.animationPrefix;app.equippedRigAssets=cached.rigAssets;app.loadedBaseModelPath=cached.baseModelPath;app.loadedRigModelPaths=cached.rigModelPaths;app.loadedAttachmentPaths=cached.attachmentPaths;app.meleeKnifeBone=cached.meleeKnifeBone;if(app.meleeKnifeBone<app.scene.skeleton.bones.size())app.scene.hiddenBones.insert(app.meleeKnifeBone);app.selectedWeaponAsset=cached.weaponAsset;app.activeClassSlot=slot;activateWeaponProfile(app,cached.profile,cached.profilePath);if(cached.weaponAsset<app.assetCatalog.entries.size())app.gameplayWeapon=gameplayWeaponClass(app.weaponProfile,app.assetCatalog.entries[cached.weaponAsset]);app.nextFireTime=0;app.burstShotsRemaining=0;app.gameplayRechamber=false;app.pendingWeaponRechamber=false;resetWeaponAimState(app);app.viewmodelAdsBaseAnimation=cached.adsDownAnimation;if(app.viewmodelAdsBaseAnimation<app.scene.animations.size()){app.viewmodelAdsBaseFrame=static_cast<float>(app.scene.animations[app.viewmodelAdsBaseAnimation].durationFrames);app.viewmodelAdsTransitionElapsed=app.weaponTiming.adsOut;}app.viewmodelSprintEntering=false;app.viewmodelSprintExiting=false;app.interruptPoseSource.clear();app.interruptPoseElapsed=app.interruptPoseDuration=0;app.interruptPoseCameraRelative=false;app.actionActive=app.actionOverlay=false;app.activeAction=scene::ActionRole::None;app.runtimeLayers.clear();app.rendererError.clear();if(!app.classGpuResident)uploadResidentClassScenes(app);if(app.classGpuResident)app.renderer.setActiveClassSlot(slot);else if(!uploadMainScene(app))app.status="Cached class rig GPU upload failed";if(cached.weaponAsset<app.assetCatalog.entries.size())selectViewmodelIdle(app,app.assetCatalog.entries[cached.weaponAsset]);}
 
 bool cachedClassSlotMatches(const AppState& app,int slot,std::size_t weaponIndex){if(slot<0||slot>2||weaponIndex>=app.assetCatalog.entries.size()||!app.classSlotRigs[slot])return false;const auto hands=classHandsForWeapon(app,app.assetCatalog.entries[weaponIndex]);return hands<app.assetCatalog.entries.size()&&app.classSlotRigs[slot]->weaponAsset==weaponIndex&&app.classSlotRigs[slot]->baseModelPath==app.assetCatalog.entries[hands].path&&!app.classSlotRigs[slot]->scene.skeleton.bones.empty();}
 
@@ -9449,13 +10159,13 @@ void loadBothClassSlots(AppState& app){
     if(app.classPrimaryAsset>=app.assetCatalog.entries.size()||app.classSecondaryAsset>=app.assetCatalog.entries.size()||app.pendingClassFuture)return;
     if(app.experimentalThirdWeapon&&app.classThirdAsset>=app.assetCatalog.entries.size()){app.status="Select a third weapon before loading the class";return;}
     // An explicitly chosen new class supersedes the suspended live loadout.
-    app.liveClassBeforeTake.reset();app.liveClassSlotBeforeTake=-1;app.liveStandaloneBeforeTake.reset();
+    app.liveClassBeforeTake.reset();app.liveClassSlotBeforeTake=-1;app.liveStandaloneBeforeTake.reset();app.liveThirdWeaponBeforeTake.reset();
     app.pendingModelKind=app.pendingModelStage=0;app.pendingViewWeapon=static_cast<std::size_t>(-1);app.pendingRigAssets.clear();app.pendingRigCursor=0;
     app.pendingAnimationFiles.clear();app.pendingAnimationCursor=0;
     app.pendingClassPrimary=app.classPrimaryAsset;app.pendingClassSecondary=app.classSecondaryAsset;app.pendingClassThird=app.experimentalThirdWeapon?app.classThirdAsset:static_cast<std::size_t>(-1);
     app.pendingClassLoadStage=0;app.pendingClassStarted=app.loadingStartTime=glfwGetTime();
     app.loadingActive=true;app.loadingProgress=0.05f;app.loadingLabel="Loading Create-a-Class";
-    app.loadingDetail="Building both weapon rigs in background";app.status="Create-a-Class is loading in the background";
+    app.loadingDetail=app.experimentalThirdWeapon?"Building three weapon rigs in background":"Building both weapon rigs in background";app.status="Create-a-Class is loading in the background";
     {
         std::lock_guard<std::mutex> lock(app.loadingLogMutex);
         app.loadingLogs.clear();
@@ -9471,12 +10181,12 @@ void loadBothClassSlots(AppState& app){
     // snapshot reads to the worker: UI edits must remain isolated from this job.
     app.pendingClassFuture.emplace(std::async(std::launch::async,[
         catalog=app.assetCatalog,primary=app.classPrimaryAsset,secondary=app.classSecondaryAsset,third=app.pendingClassThird,
-        hands=app.classViewhandsOverride,faction=app.classFaction,saluki=app.defaultSalukiDirectory,
+        melee=app.classMeleeAsset,hands=app.classViewhandsOverride,faction=app.classFaction,saluki=app.defaultSalukiDirectory,
         t5Root=app.t5WeaponRoot,iw5Root=app.iw5WeaponRoot,autoPm=app.autoPlayerModel,
         manualPm=app.manualPlayerModelAsset,pmGame=app.playermodelCustomGame,
         worldModel=app.classWorldModelAsset,gameRef=app.gameReferenceSetups,
         botAnimCache=app.botAnimationCache,&app]() mutable {
-        ClassLoadResult result;try{AppState worker;worker.deferSceneUpload=true;worker.assetCatalog=std::move(catalog);worker.classPrimaryAsset=primary;worker.classSecondaryAsset=secondary;worker.classThirdAsset=third;worker.experimentalThirdWeapon=third<worker.assetCatalog.entries.size();worker.classViewhandsOverride=hands;worker.classFaction=faction;worker.defaultSalukiDirectory=std::move(saluki);worker.t5WeaponRoot=std::move(t5Root);worker.iw5WeaponRoot=std::move(iw5Root);
+        ClassLoadResult result;try{AppState worker;worker.deferSceneUpload=true;worker.assetCatalog=std::move(catalog);worker.classPrimaryAsset=primary;worker.classSecondaryAsset=secondary;worker.classThirdAsset=third;worker.classMeleeAsset=melee;worker.experimentalThirdWeapon=third<worker.assetCatalog.entries.size();worker.classViewhandsOverride=hands;worker.classFaction=faction;worker.defaultSalukiDirectory=std::move(saluki);worker.t5WeaponRoot=std::move(t5Root);worker.iw5WeaponRoot=std::move(iw5Root);
         worker.autoPlayerModel=autoPm;worker.manualPlayerModelAsset=manualPm;worker.playermodelCustomGame=std::move(pmGame);worker.classWorldModelAsset=worldModel;worker.gameReferenceSetups=std::move(gameRef);
         worker.botAnimationCache=std::move(botAnimCache);
         worker.classAnimationIndex=std::make_unique<assets::AnimationFileIndex>();
@@ -9512,6 +10222,9 @@ void processPendingClassLoad(AppState& app){
         }
     }
     app.liveStandaloneBeforeTake.reset();
+    app.weaponSwitchStage=0;app.weaponSwitchElapsed=0;app.weaponSwitchTarget=0;
+    app.yyReturning=app.yyTowardPutaway=app.yyReverse=app.queuedWeaponSwap=false;
+    app.transitioning=false;app.lastClassSlot=1;
     app.classSlotRigs=std::move(result.rigs);app.classPrimaryAsset=app.pendingClassPrimary;app.classSecondaryAsset=app.pendingClassSecondary;app.classThirdAsset=app.pendingClassThird;
     for(auto& slot:app.classSlotRigs)if(slot){for(std::size_t i=0;i<slot->scene.animations.size();++i){const auto& clip=slot->scene.animations[i];const auto source=lowerText(clip.sourceName);if(clip.domain==scene::AnimationDomain::ViewModel&&clip.action==scene::ActionRole::None&&!clip.tracks.empty()&&source.starts_with(slot->animationPrefix)&&source.find("_idle.cast")!=std::string::npos){slot->idleAnimation=i;break;}}if(slot->idleAnimation<slot->scene.animations.size()){const auto warmedPose=slot->scene.samplePose(slot->idleAnimation,0.0f);(void)warmedPose;}}
     app.activeClassSlot=-1;app.classGpuResident=false;app.loadingProgress=0.92f;app.loadingDetail="Uploading and warming both weapon rigs";if(!uploadResidentClassScenes(app)){logLoading(app,"ERROR: GPU residency failed: "+app.rendererError,1.0f);app.loadingActive=false;app.pendingClassLoadStage=-1;app.status="Create-a-Class GPU residency failed: "+app.rendererError;return;}
@@ -9523,13 +10236,13 @@ void processPendingClassLoad(AppState& app){
 bool classWeaponCombo(AppState& app,const char* label,const std::string& game,int category,std::string_view search,std::size_t& selected){
     const char* preview=selected<app.assetCatalog.entries.size()?app.assetCatalog.entries[selected].name.c_str():"Select weapon";bool changed=false;
     const auto wanted=lowerText(std::string(search));
-    if(ImGui::BeginCombo(label,preview)){for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto& asset=app.assetCatalog.entries[i];const auto name=lowerText(asset.name);if(asset.role!=assets::Role::ViewWeapon||(!app.showAllWeaponVariants&&(app.weaponPickerCache.isImportedVariant(app.assetCatalog,asset)||isMw3CamoVariant(asset)||isAwWeaponVariant(asset)||isColdWarVariant(app,asset)))||(!game.empty()&&lowerText(asset.game)!=lowerText(game))||name.find("knife_base")!=std::string::npos||(!wanted.empty()&&name.find(wanted)==std::string::npos))continue;if(category&&classCategoryForWeapon(app,asset)!=category)continue;
+    if(ImGui::BeginCombo(label,preview)){for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto& asset=app.assetCatalog.entries[i];const auto name=lowerText(asset.name);if(asset.role!=assets::Role::ViewWeapon||app.weaponPickerCache.isSource2SkinVariant(app.assetCatalog,asset)||(!app.showAllWeaponVariants&&(app.weaponPickerCache.isImportedVariant(app.assetCatalog,asset)||isMw3CamoVariant(asset)||isAwWeaponVariant(asset)||isColdWarVariant(app,asset)))||(!game.empty()&&lowerText(asset.game)!=lowerText(game))||name.find("knife_base")!=std::string::npos||(!wanted.empty()&&name.find(wanted)==std::string::npos))continue;if(category&&classCategoryForWeapon(app,asset)!=category)continue;
             ImGui::PushID(static_cast<int>(i));const std::string entry=(asset.game.empty()?std::string{}:"["+asset.game+"] ")+asset.name;if(ImGui::Selectable(entry.c_str(),selected==i)){selected=i;changed=true;}ImGui::PopID();}ImGui::EndCombo();}return changed;
 }
 
 bool drawClassSlotPicker(AppState& app,const char* slot,std::string& game,int& category,std::array<char,128>& search,std::size_t& selected){
     bool changed=false;ImGui::PushID(slot);if(ImGui::TreeNodeEx(slot,ImGuiTreeNodeFlags_DefaultOpen)){const auto games=rippedGames(app);const char* gamePreview=game.empty()?"All games":game.c_str();if(ImGui::BeginCombo("Game",gamePreview)){if(ImGui::Selectable("All games",game.empty())){game.clear();selected=static_cast<std::size_t>(-1);changed=true;}for(const auto& value:games)if(ImGui::Selectable(value.c_str(),game==value)){game=value;selected=static_cast<std::size_t>(-1);changed=true;}ImGui::EndCombo();}
-        const char* categories[]={"All classes","Assault rifles","SMGs","LMGs","Shotguns","Sniper rifles","Pistols / dual wield","Launchers","Special / equipment"};if(ImGui::Combo("Class",&category,categories,static_cast<int>(std::size(categories)))){selected=static_cast<std::size_t>(-1);changed=true;}ImGui::SameLine();ImGui::Checkbox("All variants",&app.showAllWeaponVariants);ImGui::InputTextWithHint("Search","Weapon name",search.data(),search.size());changed|=classWeaponCombo(app,"Weapon",game,category,search.data(),selected);changed|=drawMw3CamoVariant(app,selected);changed|=drawAwWeaponVariant(app,selected);changed|=drawColdWarVariant(app,selected);ImGui::TreePop();}ImGui::PopID();return changed;
+        const char* categories[]={"All classes","Assault rifles","SMGs","LMGs","Shotguns","Sniper rifles","Pistols / dual wield","Launchers","Special / equipment","Knives"};if(ImGui::Combo("Class",&category,categories,static_cast<int>(std::size(categories)))){selected=static_cast<std::size_t>(-1);changed=true;}ImGui::SameLine();ImGui::Checkbox("All variants",&app.showAllWeaponVariants);ImGui::InputTextWithHint("Search","Weapon name",search.data(),search.size());changed|=classWeaponCombo(app,"Weapon",game,category,search.data(),selected);changed|=drawSource2Skin(app,selected);changed|=drawMw3CamoVariant(app,selected);changed|=drawAwWeaponVariant(app,selected);changed|=drawColdWarVariant(app,selected);ImGui::TreePop();}ImGui::PopID();return changed;
 }
 
 const std::vector<std::size_t>& botPoolWeapons(const AppState& app,const std::string& game,int category){
@@ -9548,7 +10261,7 @@ const std::vector<std::size_t>& botPoolWeapons(const AppState& app,const std::st
     });
 }
 
-bool drawBotPoolCategory(AppState& app,const char* label,bool& enabled,std::string& game,int& category){bool changed=false;ImGui::PushID(label);if(ImGui::Checkbox("##enabled",&enabled))changed=true;ImGui::SameLine();if(ImGui::TreeNodeEx(label,ImGuiTreeNodeFlags_DefaultOpen)){ImGui::BeginDisabled(!enabled);const auto games=rippedGames(app);if(ImGui::BeginCombo("Game",game.empty()?"All ripped games":game.c_str())){if(ImGui::Selectable("All ripped games",game.empty())){game.clear();changed=true;}for(const auto& value:games)if(ImGui::Selectable(value.c_str(),game==value)){game=value;changed=true;}ImGui::EndCombo();}const char* categories[]={"All classes","Assault rifles","SMGs","LMGs","Shotguns","Sniper rifles","Pistols / dual wield","Launchers","Special / equipment"};if(ImGui::Combo("Weapon class",&category,categories,static_cast<int>(std::size(categories))))changed=true;const auto& candidates=botPoolWeapons(app,game,category);ImGui::TextDisabled("%zu eligible Saluki weapons",candidates.size());ImGui::EndDisabled();ImGui::TreePop();}ImGui::PopID();return changed;}
+bool drawBotPoolCategory(AppState& app,const char* label,bool& enabled,std::string& game,int& category){bool changed=false;ImGui::PushID(label);if(ImGui::Checkbox("##enabled",&enabled))changed=true;ImGui::SameLine();if(ImGui::TreeNodeEx(label,ImGuiTreeNodeFlags_DefaultOpen)){ImGui::BeginDisabled(!enabled);const auto games=rippedGames(app);if(ImGui::BeginCombo("Game",game.empty()?"All ripped games":game.c_str())){if(ImGui::Selectable("All ripped games",game.empty())){game.clear();changed=true;}for(const auto& value:games)if(ImGui::Selectable(value.c_str(),game==value)){game=value;changed=true;}ImGui::EndCombo();}const char* categories[]={"All classes","Assault rifles","SMGs","LMGs","Shotguns","Sniper rifles","Pistols / dual wield","Launchers","Special / equipment","Knives"};if(ImGui::Combo("Weapon class",&category,categories,static_cast<int>(std::size(categories))))changed=true;const auto& candidates=botPoolWeapons(app,game,category);ImGui::TextDisabled("%zu eligible Saluki weapons",candidates.size());ImGui::EndDisabled();ImGui::TreePop();}ImGui::PopID();return changed;}
 
 void ensureBotAnimationCache(AppState& app,const std::string& game){
     const auto key=lowerText(game);auto& documents=app.botAnimationCache[key];if(!documents.empty())return;
@@ -9557,16 +10270,30 @@ void ensureBotAnimationCache(AppState& app,const std::string& game){
     if(!folder&&!app.defaultSalukiDirectory.empty()){const auto candidate=salukiExportRoot(app.defaultSalukiDirectory)/key/"animations";if(std::filesystem::is_directory(candidate))folder=candidate;}
     if(!folder)return;
     std::error_code error;
+    std::vector<std::filesystem::path> nativeBodyFallbacks;
     for(std::filesystem::recursive_directory_iterator it(*folder,std::filesystem::directory_options::skip_permission_denied,error),end;it!=end;it.increment(error)){
         if(error){error.clear();continue;}
         if(!it->is_regular_file(error)||lowerText(it->path().extension().string())!=".cast")continue;
         const auto filename=lowerText(assets::imported::utf8(it->path().filename()));
-        const auto semantic=key=="eldewrito"?assets::imported::dewBodySemantic(filename):std::string{};
+        if(assets::imported::nativeBodyAction(key,filename)){nativeBodyFallbacks.push_back(it->path());continue;}
+        const auto semantic=key=="eldewrito"?assets::imported::dewBodySemantic(filename):assets::imported::additionalBodySemantic(key,filename);
         if(semantic.empty()&&!filename.starts_with("pb_")&&!filename.starts_with("mp_")&&!filename.starts_with("pt_"))continue;
         if(filename.find("dog")!=std::string::npos||filename.find("shepherd")!=std::string::npos||filename.find("vehicle")!=std::string::npos||filename.find("turret")!=std::string::npos)continue;
         scene::Animation metadata;scene::classifyAnimationName(semantic.empty()?filename:semantic,metadata);
         if(metadata.domain!=scene::AnimationDomain::PlayerBody&&metadata.domain!=scene::AnimationDomain::PlayerTorso)continue;
         auto animation=cast::Document::load(it->path());if(animation.valid())documents.push_back(std::move(animation));
+    }
+    const auto normalizedCount=documents.size();std::set<std::string> admitted;
+    std::sort(nativeBodyFallbacks.begin(),nativeBodyFallbacks.end());
+    for(const auto& path:nativeBodyFallbacks){
+        const auto native=assets::imported::nativeBodyAction(key,assets::imported::utf8(path));
+        scene::Animation wanted;wanted.sourceName=assets::imported::utf8(path);wanted.sourceGame=key;scene::imported::classifySourceBodyAnimation(wanted);
+        bool covered=false;
+        for(std::size_t i=0;i<normalizedCount&&!covered;++i){scene::Animation existing;existing.sourceName=documents[i].sourceName();existing.sourceGame=key;scene::imported::classifySourceBodyAnimation(existing);
+            covered=existing.domain==wanted.domain&&existing.action==wanted.action&&existing.motion==wanted.motion&&existing.weapon==wanted.weapon&&existing.stance==wanted.stance;
+        }
+        if(covered||!admitted.insert(native->identity+":"+native->semantic).second)continue;
+        auto document=cast::Document::load(path);if(document.valid())documents.push_back(std::move(document));
     }
 }
 
@@ -9889,7 +10616,7 @@ void loadSpBotScenarios(AppState& app,scene::CastScene& actorScene,const std::st
 
 void resetBotLocomotionCache();
 void prepareBotSpawnCandidates(AppState& app){
-    app.botGeneratedSpawnPoints.clear();if(!app.botSpawnPoints.empty()||!app.mapAuthoredSpawnPoints.empty())return;
+    app.botGeneratedSpawnPoints.clear();
     const auto permitted=[&](scene::Vec3 p){const auto& b=activeBotNavigation(app).boundary;return !gameplay::bot::navigationBlocked(activeBotNavigation(app),p)&&(!b.enabled||(p.z>=b.floorZ&&p.z<=b.ceilingZ&&(b.points.empty()||gameplay::bot::pointInPolygon({p.x,p.y},b.points))));};
     for(const auto& node:activeBotNavigation(app).nodes)if(!node.disabled&&permitted(node.position))app.botGeneratedSpawnPoints.push_back(node.position);
     if(!app.botGeneratedSpawnPoints.empty())return;
@@ -9898,7 +10625,7 @@ void prepareBotSpawnCandidates(AppState& app){
         for(int ring=1;ring<=4;++ring)for(int i=0;i<16;++i){const float angle=i*scene::kPi/8;scene::Vec3 p=app.actorPosition+scene::Vec3{std::cos(angle),std::sin(angle),0}*float(ring*1000);
             p.z=map.groundHeight(p.x,p.y,app.actorPosition.z+145-45,-1e9f);
             if(p.z<-1e8f||std::abs(p.z-app.actorPosition.z)>300)continue;
-            const auto test=gameplay::mantle::sweepRounded(map,p,p,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72));
+            const auto test=actorCollisionSweep(app,map,p,p,scene::course::kPlayerRadius,minimumBotCollisionHeight(app),true);
             if(test.startSolid)continue;
             if(!permitted(p))continue;
             app.botGeneratedSpawnPoints.push_back(p);
@@ -9906,24 +10633,63 @@ void prepareBotSpawnCandidates(AppState& app){
         if(app.botGeneratedSpawnPoints.empty()&&map.hasDefaultSpawnPoint&&permitted(map.defaultSpawnPoint))app.botGeneratedSpawnPoints.push_back(map.defaultSpawnPoint);
     }else for(int i=0;i<12;++i){const float angle=i*scene::kPi/6;scene::Vec3 p{std::cos(angle)*1600,std::sin(angle)*1600,0};p.z=scene::course::groundHeight(p.x,p.y);app.botGeneratedSpawnPoints.push_back(p);}
 }
-scene::Vec3 chooseBotSpawn(AppState& app,scene::Vec3 fallback){
+float botVariantCollisionHeight(const AppState& app,int variant){
+    const float base=variant>=0&&static_cast<std::size_t>(variant)<app.botCollisionBaseHeights.size()?app.botCollisionBaseHeights[variant]:gameplay::iw::worldUnits(72);
+    const float scale=std::isfinite(app.botModelScale)&&app.botModelScale>0?app.botModelScale:1.f;
+    return gameplay::collision::playerStandingHeight(base*scale+gameplay::iw::worldUnits(.25f),app.playerClipHeightCm);
+}
+float minimumBotCollisionHeight(const AppState& app){
+    if(app.botCollisionBaseHeights.empty())return gameplay::collision::playerStandingHeight(gameplay::iw::worldUnits(72),app.playerClipHeightCm);
+    return botVariantCollisionHeight(app,static_cast<int>(std::min_element(app.botCollisionBaseHeights.begin(),app.botCollisionBaseHeights.end())-app.botCollisionBaseHeights.begin()));
+}
+std::optional<scene::Vec3> chooseBotSpawn(AppState& app,scene::Vec3 fallback,float bodyHeight=gameplay::iw::worldUnits(72)){
     const auto& points=!app.botSpawnPoints.empty()?app.botSpawnPoints:!app.mapAuthoredSpawnPoints.empty()?app.mapAuthoredSpawnPoints:app.botGeneratedSpawnPoints;
-    const auto preferred=gameplay::bot::chooseDistantSpawn(points,app.actorPosition,app.botSpawnHistory,std::max(1,app.enemyBotCount)).value_or(fallback);
-    if(!app.loadedMap)return preferred;
+    const auto eye=app.actorPosition+scene::Vec3{0,0,app.actorViewHeight};
+    const auto covered=[&](scene::Vec3 p){
+        const auto occluded=[&](scene::Vec3 sample){
+            if(app.loadedMap){
+                const auto delta=sample-eye;
+                const float distance=scene::length(delta);
+                if(distance<1.f)return false;
+                const auto hit=app.loadedMap->raycastShot(eye,delta/distance,distance);
+                return hit&&hit->distance<distance-1.f;
+            }
+            return gameplay::bot::courseOccludes(eye,sample);
+        };
+        return gameplay::bot::coveredSpawn(eye,p,bodyHeight,
+            customCollisionFootprint(app)?actorCollisionHalfExtents(app):scene::Vec2{scene::course::kPlayerRadius,scene::course::kPlayerRadius},occluded);
+    };
     const auto project=[&](scene::Vec3 p)->std::optional<scene::Vec3>{
+        if(!app.loadedMap){
+            if(std::abs(p.x)>scene::course::kHalfExtent||std::abs(p.y)>scene::course::kHalfExtent)return {};
+            p.z=scene::course::groundHeight(p.x,p.y);
+            return covered(p)?std::optional{p}:std::nullopt;
+        }
         const auto& map=*app.loadedMap;
         const float ground=map.navigationGroundHeight(p.x,p.y,p.z+scene::course::kStepHeight+1-45.f,-1e9f,scene::course::kPlayerRadius*.55f);
         if(!std::isfinite(ground)||std::abs(ground-p.z)>scene::course::kStepHeight)return {};
         p.z=ground;
         const auto& nav=activeBotNavigation(app);const auto& bounds=nav.boundary;
         if(gameplay::bot::navigationBlocked(nav,p)||(bounds.enabled&&(p.z<bounds.floorZ||p.z>bounds.ceilingZ||(!bounds.points.empty()&&!gameplay::bot::pointInPolygon({p.x,p.y},bounds.points)))))return {};
-        if(gameplay::mantle::sweepRounded(map,p,p,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72)).startSolid)return {};
-        return p;
+        if(actorCollisionSweep(app,map,p,p,scene::course::kPlayerRadius,bodyHeight,true).startSolid)return {};
+        return covered(p)?std::optional{p}:std::nullopt;
     };
     const auto occupied=[&](scene::Vec3 p){return std::any_of(app.bots.begin(),app.bots.end(),[&](const auto& b){return b.alive&&std::abs(b.position.z-p.z)<gameplay::iw::worldUnits(72)&&gameplay::bot::horizontalDistance(b.position,p)<scene::course::kPlayerRadius*2+8;});};
-    if(auto p=gameplay::bot::nearbyClearSpawn(preferred,project,occupied))return *p;
-    for(const auto p:points)if(auto safe=project(p);safe&&!occupied(*safe))return *safe;
-    return preferred;
+    const auto separation=[&](scene::Vec3 p){
+        float spacing=2400.f;
+        if(app.botSpawnHistory.last)spacing=gameplay::bot::horizontalDistance(p,*app.botSpawnHistory.last);
+        for(const auto& bot:app.bots)if(bot.alive)
+            spacing=std::min({spacing,gameplay::bot::horizontalDistance(p,bot.position),gameplay::bot::horizontalDistance(p,bot.spawnPosition)});
+        return spacing;
+    };
+    const auto select=[&](const auto& candidates){
+        return gameplay::bot::chooseCoveredSpawn(candidates,app.actorPosition,app.botSpawnScatter,project,occupied,separation);
+    };
+    auto spawn=select(points);
+    if(!spawn&& &points!=&app.botGeneratedSpawnPoints)spawn=select(app.botGeneratedSpawnPoints);
+    if(!spawn)spawn=gameplay::bot::nearbyClearSpawn(fallback,project,occupied);
+    if(spawn)app.botSpawnHistory.last=*spawn;
+    return spawn;
 }
 #include "app/AnimationSetControls.inc"
 #include "app/VisualRandomizer.inc"
@@ -9953,12 +10719,14 @@ void rebuildBotActors(AppState &app) {
     app.bots.clear();app.botActorPoses.clear();app.status="Bots need validated walkable authored collision; this map is preview-only.";return;
   }
   app.botSpRoutes.clear();
+  app.botRagdolls.clear();app.retainedBodies.bodies.clear();
+  app.weaponDropWorld.reset();app.botWeaponAttachmentRanges.clear();
   // optional<CastScene> can reuse its address and clip count across rebuilds.
   resetBotLocomotionCache();
   app.botActionQueryCache.clear();
   app.bots.clear();
   app.botActorPoses.clear();
-  app.botActorScene.reset();
+  app.botActorScene.reset();app.botCollisionBaseHeights.clear();
   app.botSetRuntime={};
   app.botActorGpuReady = false;
   app.botWeaponChoices.clear();
@@ -10018,9 +10786,9 @@ void rebuildBotActors(AppState &app) {
     std::erase_if(teamModels,[&](std::size_t index){
       if(index==app.botModelAsset)return false;
       const auto candidate=cast::Document::load(app.assetCatalog.entries[index].path);
-      return !candidate.valid()||!scene::imported::sharedBodyAssemblyCompatible(actorScene,scene::buildScene(candidate,false));
+      return !candidate.valid()||scene::imported::bodyLayout(actorScene.skeleton).family!=scene::imported::bodyLayout(scene::buildScene(candidate,false).skeleton).family;
     });
-    if(teamModels.size()!=count)actorScene.warnings.push_back("Bot model pool limited to matching native binds; different character rigs require separate actors");
+    if(teamModels.size()!=count)actorScene.warnings.push_back("Bot model pool excluded invalid models or different skeleton families");
   }
   actorScene.meshes.clear();
   actorScene.rigParts.clear();
@@ -10045,8 +10813,11 @@ void rebuildBotActors(AppState &app) {
     const auto &body = app.assetCatalog.entries[bodyIndex];
     auto bodyDocument = cast::Document::load(body.path);
     const auto first = actorScene.meshes.size();
+    const auto variantFirstBone=actorScene.skeleton.bones.size();
+    const auto variantFirstAttachment=actorScene.attachments.size();
     if (bodyDocument.valid())
       scene::appendRigModel(bodyDocument, actorScene, body.name);
+    const auto variantEndBone=actorScene.skeleton.bones.size();
     auto bodyParts=characterAssemblyParts(app,body,true);
     if(lowerText(body.game)!="aw"){
       std::erase_if(bodyParts,[&](auto index){return assets::character::headCompatible(body.game,body.name,app.assetCatalog.entries[index].name);});
@@ -10086,8 +10857,12 @@ void rebuildBotActors(AppState &app) {
         }
       }
     }
+    for(std::size_t a=variantFirstAttachment;a<actorScene.attachments.size();++a)
+      for(std::size_t b=variantFirstBone;b<variantEndBone;++b)
+        if(const auto it=actorScene.bodyVariantDrivers.find(b);it!=actorScene.bodyVariantDrivers.end()&&it->second==actorScene.attachments[a].boneIndex){actorScene.attachments[a].boneIndex=b;break;}
     for (std::size_t mesh = first; mesh < actorScene.meshes.size(); ++mesh)
       actorScene.meshes[mesh].actorVariant = variant;
+    app.botWeaponAttachmentRanges.emplace_back(variantFirstAttachment,actorScene.attachments.size());
     variantWeaponClasses.push_back(weaponClass);
     variantWorldWeapons.push_back(worldIndex);
     variantViewWeapons.push_back(weaponIndex);
@@ -10107,7 +10882,9 @@ void rebuildBotActors(AppState &app) {
   for(auto& game:animationGames)game=availableWorldAnimationGame(app,game);
   // BO2 and BO2_SP are a single bot library; legacy saved selections remain valid.
   const bool pbMovementFallback=std::find(animationGames.begin(),animationGames.end(),"pointblank")!=animationGames.end()&&std::find(animationGames.begin(),animationGames.end(),"bo2")==animationGames.end();
-  if(pbMovementFallback)animationGames.push_back("bo2");
+  const bool bocwMovementFallback=std::any_of(animationGames.begin(),animationGames.end(),[](const auto& game){return lowerText(game)=="bocw"||lowerText(game)=="bocw_sp";})&&
+      std::none_of(animationGames.begin(),animationGames.end(),[](const auto& game){const auto g=lowerText(game);return g=="bo2"||g=="bo2_sp"||g=="bo2+bo2_sp";});
+  if(pbMovementFallback||bocwMovementFallback)animationGames.push_back("bo2");
   for(auto& game:animationGames)if(lowerText(game)=="bo2_sp"||lowerText(game)=="bo2+bo2_sp")game="bo2";
   // The SP rip's ai_ scripts are scenario clips, not a complete MP locomotion
   // library. Keep a native movement foundation when SP is selected explicitly.
@@ -10138,6 +10915,7 @@ void rebuildBotActors(AppState &app) {
     }
     const auto before = actorScene.animations.size();
     for (const auto &animation : app.botAnimationCache[lowerText(animationGame)]){
+      if(bocwMovementFallback&&animationGame=="bo2"){scene::Animation meta;meta.sourceName=std::filesystem::path(animation.sourceName()).filename().string();scene::classifyAnimationName(meta.sourceName,meta);if(!needsWorldMovementFallback(actorScene,meta,before))continue;}
       if(pbMovementFallback&&animationGame=="bo2"){scene::Animation meta;scene::classifyAnimationName(std::filesystem::path(animation.sourceName()).filename().string(),meta);if(meta.domain!=scene::AnimationDomain::PlayerBody||meta.action!=scene::ActionRole::None||meta.contextual)continue;}
       if(!appendPointBlankWorldAnimation(app,animation,actorScene,animationGame,model.game))scene::appendAnimations(animation, actorScene);
     }
@@ -10146,7 +10924,7 @@ void rebuildBotActors(AppState &app) {
     if (lowerText(animationGame) != lowerText(model.game))
       if (const auto sourceSkeleton = playerSkeletonForGame(app, animationGame))
         scene::retargetAnimationRange(actorScene, before, *sourceSkeleton);
-    appendMissingWorldHolds(app,actorScene,animationGame,model.game);
+    if(!(bocwMovementFallback&&animationGame=="bo2"))appendMissingWorldHolds(app,actorScene,animationGame,model.game);
   }
   if (actorScene.animations.empty()&&!scene::imported::bodyLayout(actorScene.skeleton))
     for (std::size_t i = 0; i < app.animationDocuments.size(); ++i) {
@@ -10210,6 +10988,10 @@ void rebuildBotActors(AppState &app) {
   const float authoredFloor =
       actorScene.bounds.valid ? actorScene.bounds.minimum.z : 0.0f;
   app.botHeadHeight = std::max(0.01f, authoredHead - authoredFloor);
+  gameplay::collision::CharacterHeightCache collisionBounds;
+  app.botCollisionBaseHeights.clear();
+  for(std::size_t variant=0;variant<variantCount;++variant)
+    app.botCollisionBaseHeights.push_back(collisionBounds.standingHeight(actorScene,static_cast<int>(variant),1.f,0.f));
   app.botActorScene = std::move(actorScene);
   app.botSetRuntime.owner=&*app.botActorScene;
   prepareBotSpawnCandidates(app);
@@ -10218,6 +11000,8 @@ void rebuildBotActors(AppState &app) {
     bot.id = static_cast<std::uint32_t>(i + 1);
     const auto variant=app.botTeamSide==3 ? roulette.actors[static_cast<std::size_t>(i)] : static_cast<std::size_t>(i)%variantCount;
     bot.modelVariant = static_cast<int>(variant);
+    bot.standingCollisionHeight=botVariantCollisionHeight(app,bot.modelVariant);
+    bot.collisionHalfExtents=customCollisionFootprint(app)?actorCollisionHalfExtents(app):scene::Vec2{};
     bot.weaponSlot = static_cast<int>(variant);
     bot.weaponClass = variantWeaponClasses[variant];
     bot.viewWeaponAsset = variantViewWeapons[variant];
@@ -10242,7 +11026,9 @@ void rebuildBotActors(AppState &app) {
           actorGroundHeight(app, bot.position.x, bot.position.y,
                             std::numeric_limits<float>::max() / 4.0f);
     }
-    bot.position=chooseBotSpawn(app,bot.position);
+    const auto spawn=chooseBotSpawn(app,bot.position,bot.standingCollisionHeight);
+    if(!spawn)continue;
+    bot.position=*spawn;
     bot.spawnPosition = bot.position;
     bot.yaw = scene::kPi;
     bot.waypoint =
@@ -10276,6 +11062,8 @@ void rebuildBotActors(AppState &app) {
                          std::to_string(app.botAnimationClipCount) +
                          " player clips from " + model.name
                    : "Bot actor GPU upload failed";
+  if(app.botActorGpuReady&&app.bots.size()<static_cast<std::size_t>(app.enemyBotCount))
+      app.status+=". No covered spawn for "+std::to_string(app.enemyBotCount-app.bots.size())+" bots.";
 }
 
 std::optional<std::size_t> cachedBotAction(AppState& app,const scene::CastScene& actorScene,const scene::AnimationQuery& query){
@@ -10534,7 +11322,8 @@ std::optional<std::size_t> botDeathAnimation(const scene::CastScene& actorScene,
     app->botDeathHistory.beginBatch(sequence);
     if(app->botDeathChoices.empty()&&!app->botSetRuntime.initialized)app->botDeathChoices=cadence::prepareBotDeaths(actorScene);
     cadence::BotDeathRequest r;
-    r.motion=botMotionRole(bot);r.direction=botMovementDirection(bot);
+    r.motion=botMotionRole(bot);
+    r.direction=r.motion==scene::MotionRole::Idle?scene::Direction::Any:botMovementDirection(bot);
     r.stance=bot.stance;r.weapon=weaponClass;r.actor=bot.id;
     r.spMode=app->activeBotSystemMode==1||std::any_of(app->botDeathChoices.begin(),app->botDeathChoices.end(),[](const auto& c){return c.sp;});r.mix=app->botSpDeathChance;r.tolerance=app->botDeathVarietyTolerance;
     std::vector<std::string> overrides;
@@ -10552,6 +11341,7 @@ std::optional<std::size_t> botDeathAnimation(const scene::CastScene& actorScene,
         app->botDeathHistory.recent={};app->botDeathHistory.batchKeys.clear();
         selected=cadence::selectBotDeath(app->botDeathChoices,app->botDeathHistory,r,overrides);
     }
+    if(selected&&cadence::deathKey(actorScene.animations[*selected].sourceName).find("generic_stand_idle_death")!=std::string::npos)return {};
     return selected;
 }
 
@@ -10562,6 +11352,16 @@ std::optional<std::size_t> botDeathAnimation(const scene::CastScene& actorScene,
 
 void updateBotActors(AppState& app,float delta){
     diagnostic::Scope tracePhase(diagnostic::Phase::Bots);
+    for(std::size_t i=0;i<app.bots.size();++i){
+        auto& bot=app.bots[i];const float height=botVariantCollisionHeight(app,bot.modelVariant);
+        const auto halfExtents=customCollisionFootprint(app)?actorCollisionHalfExtents(app):scene::Vec2{};
+        if(bot.standingCollisionHeight!=height||bot.collisionHalfExtents.x!=halfExtents.x||bot.collisionHalfExtents.y!=halfExtents.y){
+            bot.collisionHalfExtents=halfExtents;
+            app.botRouteProbeCache={};
+            bot.standingCollisionHeight=height;bot.navigationRoute.clear();bot.repathTime=0;
+            if(i<app.botSpRoutes.size())app.botSpRoutes[i].reset();
+        }
+    }
     app.playerMuzzleFlashTime=std::max(0.0f,app.playerMuzzleFlashTime-delta);
     for(auto& time:app.dualMuzzleFlashTime)time=std::max(0.f,time-delta);
     const bool knifeWeapon=isKnifeWeapon(app);
@@ -10622,6 +11422,7 @@ void updateBotActors(AppState& app,float delta){
             muzzlePos = app.lastMuzzleFlashPosition;
         }
 
+        if(!useWorldMuzzleShot&&(app.scene.dualWield||app.scene.pointBlankNativeCentimetres||app.scene.codmNativeCentimetres||!app.scene.muzzleAnchors.empty()||assets::imported::supported(app.scene.importedViewGame)||assets::imported::supported(app.scene.viewHandsDriverGame)))muzzlePos=scene::transformPoint(weaponRigTransform(app,evaluateCurrentPose(app)),muzzlePos);
         scene::Vec3 surfaceHitPos = origin + direction * 12000.0f;
         scene::Vec3 surfaceHitNormal{0, 0, 1};
         bool surfaceHitFound = false;
@@ -10641,6 +11442,22 @@ void updateBotActors(AppState& app,float delta){
             }
         }
         const float surfaceDistance = scene::length(surfaceHitPos - origin);
+        // Match the local Redacted script: nearest alive target to the world
+        // trace endpoint, sniper only, with a radius expressed in CoD units.
+        if(sniperWeapon&&app.experimentalEbRange>0&&!app.takePreview&&app.botActorScene){
+            gameplay::bot::Actor* target=nullptr;float nearest=gameplay::iw::worldUnits(float(app.experimentalEbRange));
+            for(auto& bot:app.bots)if(bot.alive){const float d=scene::length(bot.position-surfaceHitPos);if(d<nearest&&gameplay::practice::ebHit(sniperWeapon,app.takePreview,app.experimentalEbRange,d)){nearest=d;target=&bot;}}
+            if(target){auto& bot=*target;const auto clip=botDeathAnimation(*app.botActorScene,bot,bot.weaponClass,app.recoilSequence,&app);
+                bot.deathVelocity=bot.velocity;bot.deathShotDirection=direction;
+                bot.health=0;bot.alive=false;bot.behavior=gameplay::bot::BehaviorState::Dead;bot.respawnTime=app.botRespawnTime;
+                if(app.scoresOnKills)app.scoreState.kill(app.scoreSettings,app.gameplayClock);
+                bot.deathEffectStart=app.gameplayClock;bot.deathEffectPosition=bot.position+scene::Vec3{0,0,app.botHeadHeight*app.botModelScale*.55f};
+                bot.input={};bot.previousAnimation=bot.animation;bot.previousAnimationFrame=bot.animationFrame;
+                if(clip)bot.animation=*clip;bot.animationFrame=0;bot.animationBlendElapsed=0;
+                bot.actionBlendWeight=bot.spScenarioWeight=bot.firePoseTime=bot.equipmentPoseTime=0;bot.mantling=false;
+                app.hitmarkerTime=.24f;app.hitmarkerKind=app.experimentalEbHeadshot?2:3;
+            }
+        }
         scene::Vec3 actualHitPos = surfaceHitPos;
         bool actualHitFound = surfaceHitFound;
 
@@ -10670,7 +11487,10 @@ void updateBotActors(AppState& app,float delta){
                         }
                         if(bot.health <= 0){
                             const auto clip = botDeathAnimation(*app.botActorScene, bot, bot.weaponClass, app.recoilSequence, &app);
+                            bot.deathVelocity=bot.velocity;bot.deathShotDirection=direction;
                             bot.health = 0; bot.alive = false; bot.behavior = gameplay::bot::BehaviorState::Dead;
+                if(app.scoresOnKills)app.scoreState.kill(app.scoreSettings,app.gameplayClock);
+                            bot.deathEffectStart=app.gameplayClock;bot.deathEffectPosition=bot.position+scene::Vec3{0,0,app.botHeadHeight*app.botModelScale*.55f};
                             bot.respawnTime = app.botRespawnTime; bot.velocity.x *= 0.35f; bot.velocity.y *= 0.35f;
                             bot.input = {}; bot.animationFrame = 0; app.hitmarkerTime = 0.24f; app.hitmarkerKind = 3;
                             bot.previousAnimation=bot.animation;bot.previousAnimationFrame=0;bot.animationBlendElapsed=0;
@@ -10682,7 +11502,7 @@ void updateBotActors(AppState& app,float delta){
                             flinch.weapon = bot.weaponClass; flinch.stance = bot.stance; flinch.direction = botMovementDirection(bot);
                             auto reaction = scene::findBestAnimation(*app.botActorScene, flinch);
                             if(!reaction){ flinch.weapon = scene::WeaponClass::Any; reaction = scene::findBestAnimation(*app.botActorScene, flinch); }
-                            if(reaction){ bot.actionAnimation = *reaction; bot.actionFrame = 0; bot.firePoseTime = 0.24f; bot.fireCooldown = std::max(bot.fireCooldown, 0.24f); bot.targetVisibleTime = 0; }
+                            if(reaction){ bot.actionCrossfade.select(bot.actionAnimation,bot.actionFrame,*reaction,bot.actionBlendWeight); bot.actionAnimation = *reaction; bot.actionFrame = 0; bot.firePoseTime = 0.24f; bot.fireCooldown = std::max(bot.fireCooldown, 0.24f); bot.targetVisibleTime = 0; }
                             app.gameplayStatus = (headshot ? "Sniper Headshot — " : "Sniper hit — ") + std::to_string(static_cast<int>(bot.health)) + " health";
                         }
                     }
@@ -10698,8 +11518,8 @@ void updateBotActors(AppState& app,float delta){
                 trail.start = muzzlePos;
                 trail.viewmodelOrigin = !useWorldMuzzleShot;
                 trail.end = surfaceHitPos;
-                trail.dir = direction;
-                trail.distance = surfaceDistance;
+                trail.distance = scene::length(surfaceHitPos-muzzlePos);
+                trail.dir = trail.distance>.001f?scene::normalize(surfaceHitPos-muzzlePos):direction;
                 trail.lifetime = app.sniperTrailLifetime;
                 trail.width = app.sniperTrailWidth;
                 trail.color = app.sniperTrailColor;
@@ -10749,7 +11569,10 @@ void updateBotActors(AppState& app,float delta){
                 }
                 if(hit->health <= 0){
                     const auto clip = botDeathAnimation(*app.botActorScene, *hit, hit->weaponClass, app.recoilSequence, &app);
+                    hit->deathVelocity=hit->velocity;hit->deathShotDirection=direction;
                     hit->health = 0; hit->alive = false; hit->behavior = gameplay::bot::BehaviorState::Dead;
+                if(app.scoresOnKills)app.scoreState.kill(app.scoreSettings,app.gameplayClock);
+                    hit->deathEffectStart=app.gameplayClock;hit->deathEffectPosition=hit->position+scene::Vec3{0,0,app.botHeadHeight*app.botModelScale*.55f};
                     hit->respawnTime = app.botRespawnTime; hit->velocity.x *= 0.35f; hit->velocity.y *= 0.35f;
                     hit->input = {}; hit->animationFrame = 0; app.hitmarkerTime = 0.24f; app.hitmarkerKind = 3;
                     hit->previousAnimation=hit->animation;hit->previousAnimationFrame=0;hit->animationBlendElapsed=0;
@@ -10761,7 +11584,7 @@ void updateBotActors(AppState& app,float delta){
                     flinch.weapon = hit->weaponClass; flinch.stance = hit->stance; flinch.direction = botMovementDirection(*hit);
                     auto reaction = scene::findBestAnimation(*app.botActorScene, flinch);
                     if(!reaction){ flinch.weapon = scene::WeaponClass::Any; reaction = scene::findBestAnimation(*app.botActorScene, flinch); }
-                    if(reaction){ hit->actionAnimation = *reaction; hit->actionFrame = 0; hit->firePoseTime = 0.24f; hit->fireCooldown = std::max(hit->fireCooldown, 0.24f); hit->targetVisibleTime = 0; }
+                    if(reaction){ hit->actionCrossfade.select(hit->actionAnimation,hit->actionFrame,*reaction,hit->actionBlendWeight); hit->actionAnimation = *reaction; hit->actionFrame = 0; hit->firePoseTime = 0.24f; hit->fireCooldown = std::max(hit->fireCooldown, 0.24f); hit->targetVisibleTime = 0; }
                     app.gameplayStatus = (headshot ? "Headshot — " : "Enemy hit — ") + std::to_string(static_cast<int>(hit->health)) + " health";
                 }
             } else {
@@ -10886,7 +11709,7 @@ void updateBotActors(AppState& app,float delta){
       const float probeDistNear = gameplay::iw::worldUnits(96.0f);
       const float probeDistFar = gameplay::iw::worldUnits(160.0f);
       const float playerRadius = scene::course::kPlayerRadius;
-      const float playerHeight = gameplay::iw::worldUnits(72.0f);
+      const float playerHeight = gameplay::bot::collisionHeight(b);
       const float stepHeight = scene::course::kStepHeight;
 
       for (float angle : angles) {
@@ -10898,10 +11721,10 @@ void updateBotActors(AppState& app,float delta){
         const scene::Vec3 candDir{std::cos(candYaw), std::sin(candYaw), 0};
         const scene::Vec3 targetNear = b.position + candDir * probeDistNear;
 
-        if (app.loadedMap->navigationSegmentClear(b.position, targetNear, playerRadius, playerHeight, stepHeight)) {
+        if (collisionNavigationClear(app,*app.loadedMap,b.position, targetNear, playerRadius, playerHeight, stepHeight)) {
           foundClear = true;
           const scene::Vec3 targetFar = b.position + candDir * probeDistFar;
-          const bool farClear = app.loadedMap->navigationSegmentClear(b.position, targetFar, playerRadius, playerHeight, stepHeight);
+          const bool farClear = collisionNavigationClear(app,*app.loadedMap,b.position, targetFar, playerRadius, playerHeight, stepHeight);
 
           float score = farClear ? 2.5f : 1.0f;
           score += scene::dot(candDir, toDestDir) * 1.2f;
@@ -10940,7 +11763,7 @@ void updateBotActors(AppState& app,float delta){
       return true;
     };
 
-app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPresentationThisUpdate=false;const weapon::Stats& botTiming=bot.cachedWeaponStats;if(!bot.alive){bot.behavior=gameplay::bot::BehaviorState::Dead;bot.input={};bot.respawnTime=std::max(0.0f,bot.respawnTime-delta);if(!bot.grounded){if(app.loadedMap)gameplay::bot::stepCorpseOnMap(bot,delta,*app.loadedMap);else{bot.velocity.z-=gameplay::iw::kGravity*delta;bot.position=bot.position+bot.velocity*delta;const float ground=scene::course::groundHeight(bot.position.x,bot.position.y);if(bot.position.z<=ground){bot.position.z=ground;bot.velocity={};bot.grounded=true;}}}if(app.botAutoRespawn&&bot.respawnTime<=0){const auto index=static_cast<std::size_t>(&bot-app.bots.data());gameplay::bot::respawnActor(bot,chooseBotSpawn(app,bot.spawnPosition));if(index<app.botSpRoutes.size())app.botSpRoutes[index].reset();if(index<app.botSpContextStates.size())app.botSpContextStates[index]={};}}
+app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPresentationThisUpdate=false;const weapon::Stats& botTiming=bot.cachedWeaponStats;if(!bot.alive){bot.behavior=gameplay::bot::BehaviorState::Dead;bot.input={};bot.respawnTime=std::max(0.0f,bot.respawnTime-delta);if(!bot.grounded){if(app.loadedMap)gameplay::bot::stepCorpseOnMap(bot,delta,*app.loadedMap);else{bot.velocity.z-=gameplay::iw::kGravity*delta;bot.position=bot.position+bot.velocity*delta;const float ground=scene::course::groundHeight(bot.position.x,bot.position.y);if(bot.position.z<=ground){bot.position.z=ground;bot.velocity={};bot.grounded=true;}}}if(app.botAutoRespawn&&bot.respawnTime<=0){if(const auto spawn=chooseBotSpawn(app,bot.spawnPosition,bot.standingCollisionHeight)){const auto index=static_cast<std::size_t>(&bot-app.bots.data());gameplay::bot::respawnActor(bot,*spawn);if(index<app.botSpRoutes.size())app.botSpRoutes[index].reset();if(index<app.botSpContextStates.size())app.botSpContextStates[index]={};}else bot.respawnTime=1.f;}}
       if (bot.alive) {
         const auto* navigation=app.botUseAuthoredNavigation?&activeBotNavigation(app):nullptr;
         if(bot.navigation!=navigation){bot.navigation=navigation;bot.navigationRoute.clear();bot.repathTime=0;}
@@ -11004,7 +11827,7 @@ app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPrese
                 for (int i = 0; i < 8; ++i) {
                   const float a = static_cast<float>(i) * (scene::kPi / 4.0f) + gameplay::bot::personalityValue(bot.id * 31u) * 0.5f;
                   const scene::Vec3 candPt = bot.position + scene::Vec3{std::cos(a), std::sin(a), 0} * exploreDist;
-                  if (app.loadedMap->navigationSegmentClear(bot.position, candPt, scene::course::kPlayerRadius, gameplay::iw::worldUnits(72.0f), scene::course::kStepHeight)) {
+                  if (collisionNavigationClear(app,*app.loadedMap,bot.position, candPt, scene::course::kPlayerRadius, gameplay::bot::collisionHeight(bot), scene::course::kStepHeight)) {
                     bot.wanderTarget = candPt;
                     picked = true;
                     break;
@@ -11121,6 +11944,21 @@ app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPrese
             const bool cover=i<app.botSpContextStates.size()&&(app.botSpContextStates[i].cover>0||app.botSpContextStates[i].weight>.01f);
             if(!cover){bot.spMoveGoal=app.botAreaPing.point;bot.spWantsMove=true;bot.spMoveThrottle=1.f;bot.spCombatMoving=bot.targetVisible;steerSpBotOnMap(app,bot,delta,pingYawBeforePolicy);if(!bot.spWantsMove)app.botAreaPing.remove(bot.id);}
         }
+        if(bot.experimentalRoam&&bot.alive&&!bot.mantling){
+            const float radius=std::max(0.f,app.experimentalRoamRadius);
+            bot.experimentalRoamTime-=delta;
+            if(bot.experimentalRoamTime<=0||gameplay::bot::horizontalDistance(bot.position,bot.experimentalRoamGoal)<25.f||gameplay::bot::horizontalDistance(bot.spawnPosition,bot.experimentalRoamGoal)>radius){
+                bot.experimentalRoamGoal=bot.spawnPosition+gameplay::practice::roamOffset(bot.id,++bot.experimentalRoamSequence,radius);
+                bot.experimentalRoamTime=3.f;
+            }
+            const auto target=gameplay::bot::horizontalDistance(bot.position,bot.spawnPosition)>radius?bot.spawnPosition:bot.experimentalRoamGoal;
+            const auto offset=target-bot.position;const float yawBefore=bot.yaw;
+            bot.input={};bot.stance=scene::Stance::Stand;bot.spScenarioWeight=0;bot.firePoseTime=0;bot.equipmentPoseTime=0;bot.stanceBehaviorTime=0;
+            bot.behavior=gameplay::bot::BehaviorState::Patrol;bot.spMoveGoal=target;bot.spWantsMove=radius>1.f;bot.spMoveThrottle=1.f;bot.movementThrottle=1.f;
+            bot.yaw=std::atan2(offset.y,offset.x);bot.input.forward=radius>1.f?1.f:0.f;bot.routeDiversionTime=0;
+            if(app.loadedMap&&radius>1.f)steerSpBotOnMap(app,bot,delta,yawBefore);
+            if(radius<=1.f)bot.velocity.x=bot.velocity.y=0;
+        }
         tAiAccum += std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tAiStart).count();
         updateBotLocomotionDirection(bot, delta);
         if(app.activeBotSystemMode==1)bot.spAnimatedSpeed+=(gameplay::bot::horizontalSpeed(bot)-bot.spAnimatedSpeed)*(1.f-std::exp(-12.f*delta));
@@ -11150,23 +11988,12 @@ app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPrese
         if(app.activeBotSystemMode==1&&bot.spPatrolWalking&&bot.grounded&&!bot.mantling&&!bot.targetVisible&&!app.botSpWalkClips.empty()&&bot.weaponClass!=scene::WeaponClass::Pistol&&bot.spAnimatedSpeed>12.f)animation=app.botSpWalkClips[bot.id%app.botSpWalkClips.size()];
         if(const auto context=spContextBaseAnimation(app,bot))animation=context;
         if(app.animationSetForBots)if(auto assigned=app.botSetRuntime.find(query))animation=assigned;
-        if (animation && *animation != bot.animation) {
-            bot.previousAnimation = bot.animation;
-            bot.previousAnimationFrame = bot.animationFrame;
-            bot.animation = *animation;
-            bot.animationFrame = 0;
-            if(app.activeBotSystemMode==1&&bot.previousAnimation<actorScene.animations.size()){
-                const auto& before=actorScene.animations[bot.previousAnimation];const auto& next=actorScene.animations[bot.animation];
-                const auto gait=[](scene::MotionRole m){return m==scene::MotionRole::Walk||m==scene::MotionRole::Run||m==scene::MotionRole::Sprint;};
-                if(gait(before.motion)&&gait(next.motion)&&before.durationFrames&&next.durationFrames)bot.animationFrame=std::fmod(bot.previousAnimationFrame/static_cast<float>(before.durationFrames),1.f)*next.durationFrames;
-            }
-            bot.animationBlendElapsed = 0;
-        }
+        if(animation)gameplay::bot::selectLocomotionAnimation(bot,*animation,actorScene.animations,app.activeBotSystemMode==1);
 
         const auto tPhysStart = std::chrono::steady_clock::now();
         bot.obstacleAvoidTime = std::max(0.0f, bot.obstacleAvoidTime - delta);
         bot.obstacleProbeTime = std::max(0.0f, bot.obstacleProbeTime - delta);
-        if (app.activeBotSystemMode!=1&&!app.botAreaPing.contains(bot.id)&&bot.routeDiversionTime > 0.0f) {
+        if (app.activeBotSystemMode!=1&&!bot.experimentalRoam&&!app.botAreaPing.contains(bot.id)&&bot.routeDiversionTime > 0.0f) {
           const float maxTurn = 4.9f * delta;
           const float yawDiff = gameplay::bot::wrapAngle(bot.diversionYaw - bot.yaw);
           bot.yaw = gameplay::bot::wrapAngle(bot.yaw + std::clamp(yawDiff, -maxTurn, maxTurn));
@@ -11177,20 +12004,20 @@ app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPrese
             const scene::Vec3 dest = (bot.behavior == gameplay::bot::BehaviorState::Engage || bot.targetVisible)
                 ? app.actorPosition
                 : (scene::dot(bot.wanderTarget, bot.wanderTarget) > 1.0f ? bot.wanderTarget : bot.lastKnownPlayer);
-            if (app.loadedMap->navigationSegmentClear(bot.position, dest, scene::course::kPlayerRadius,
-                                                      gameplay::iw::worldUnits(72.0f), scene::course::kStepHeight)) {
+            if (collisionNavigationClear(app,*app.loadedMap,bot.position, dest, scene::course::kPlayerRadius,
+                                                      gameplay::bot::collisionHeight(bot), scene::course::kStepHeight)) {
               bot.routeDiversionTime = 0.0f;
             }
           }
-        } else if (app.activeBotSystemMode!=1&&!app.botAreaPing.contains(bot.id)&&app.loadedMap && bot.obstacleProbeTime <= 0.0f &&
+        } else if (app.activeBotSystemMode!=1&&!bot.experimentalRoam&&!app.botAreaPing.contains(bot.id)&&app.loadedMap && bot.obstacleProbeTime <= 0.0f &&
                    std::abs(bot.input.forward) + std::abs(bot.input.right) > 0.2f) {
           bot.obstacleProbeTime = 0.12f + 0.02f * (bot.id % 6u);
           const float probeDistance = gameplay::iw::worldUnits(84.0f);
           const scene::Vec3 forward{std::cos(bot.yaw), std::sin(bot.yaw), 0};
-          if (!app.loadedMap->navigationSegmentClear(
+          if (!collisionNavigationClear(app,*app.loadedMap,
                   bot.position, bot.position + forward * probeDistance,
                   scene::course::kPlayerRadius,
-                  gameplay::iw::worldUnits(72.0f),
+                  gameplay::bot::collisionHeight(bot),
                   scene::course::kStepHeight)) {
             bot.blockedHeading = bot.yaw;
             bot.blockedHeadingMemory = 3.5f;
@@ -11213,9 +12040,9 @@ app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPrese
             const bool aboveCeil=bot.position.z>activeBotNavigation(app).boundary.ceilingZ;
             const bool outsidePoly=!activeBotNavigation(app).boundary.points.empty()&&!gameplay::bot::pointInPolygon(scene::Vec2{bot.position.x,bot.position.y},activeBotNavigation(app).boundary.points);
             if(belowFloor||aboveCeil||outsidePoly){
-                scene::Vec3 spawn=bot.spawnPosition;
-                spawn=chooseBotSpawn(app,spawn);
-                bot.position=spawn;
+                const auto spawn=chooseBotSpawn(app,bot.spawnPosition,bot.standingCollisionHeight);
+                if(!spawn)continue;
+                bot.position=*spawn;
                 bot.velocity={};
                 bot.grounded=true;
                 bot.obstacleAvoidTime=0;
@@ -11223,21 +12050,26 @@ app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPrese
             }
         }
         if(app.loadedMap&&!bot.mantling){
-            const bool needsCrouch=app.loadedMap->gameplay.crouch(bot.position,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72));
+            const bool needsCrouch=app.loadedMap->gameplay.crouch(bot.position,scene::course::kPlayerRadius,gameplay::bot::collisionHeight(bot,scene::Stance::Stand));
             if(needsCrouch){if(bot.stance==scene::Stance::Stand)bot.authoredCrouch=true;if(bot.authoredCrouch)bot.stance=scene::Stance::Crouch;bot.input.sprint=false;}
-            else if(bot.authoredCrouch&&!gameplay::mantle::sweepRounded(*app.loadedMap,bot.position,bot.position,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72)).startSolid){bot.authoredCrouch=false;if(bot.stance==scene::Stance::Crouch)bot.stance=scene::Stance::Stand;}
+            else if(bot.authoredCrouch&&!actorCollisionSweep(app,*app.loadedMap,bot.position,bot.position,scene::course::kPlayerRadius,gameplay::bot::collisionHeight(bot,scene::Stance::Stand),true).startSolid){bot.authoredCrouch=false;if(bot.stance==scene::Stance::Crouch)bot.stance=scene::Stance::Stand;}
         }
         const auto botOldPosition = bot.position;
-        if(app.activeBotSystemMode!=1&&app.loadedMap&&!bot.mantling&&bot.grounded&&(bot.obstacleAvoidTime>0.0f||bot.routeDiversionTime>0.0f)&&std::abs(bot.input.forward)>0.2f){const scene::Vec3 facing{std::cos(bot.yaw),std::sin(bot.yaw),0};if(const auto target=app.loadedMap->mantleTarget(bot.position,facing,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72.0f),scene::course::kStepHeight,gameplay::iw::worldUnits(57.0f),gameplay::iw::worldUnits(20.0f))){bot.mantling=true;bot.mantleStart=bot.position;bot.mantleEnd=*target;bot.mantleElapsed=0;const float height=target->z-bot.position.z;bot.mantleDuration=0.38f+std::clamp(height/gameplay::iw::worldUnits(57.0f),0.0f,1.0f)*0.30f;bot.velocity={};bot.input.fire=bot.input.ads=bot.input.sprint=false;bot.previousAnimation=bot.animation;bot.animationBlendElapsed=0;}}
-        float locomotionScale=bot.movementThrottle*(bot.input.forward>0.05f?1.20f:1.0f);if(bot.animation<app.botClipAuthoredSpeeds.size()&&app.botClipAuthoredSpeeds[bot.animation]>0.0f){const float forwardFactor=bot.input.forward<0?gameplay::iw::kBackSpeedScale:1.0f,sideFactor=bot.input.sprint?gameplay::iw::kSprintStrafeSpeedScale:gameplay::iw::kStrafeSpeedScale,stanceFactor=bot.input.sprint?gameplay::iw::kSprintScale:gameplay::iw::stanceSpeedScale(bot.stance);const float unscaled=gameplay::iw::kRunSpeed*stanceFactor*std::sqrt(bot.input.forward*bot.input.forward*forwardFactor*forwardFactor+bot.input.right*bot.input.right*sideFactor*sideFactor);if(unscaled>1.0f)locomotionScale*=std::clamp(app.botClipAuthoredSpeeds[bot.animation]/unscaled,0.25f,1.75f);}if(app.activeBotSystemMode==1)locomotionScale=bot.movementThrottle;if(bot.mantling&&app.activeBotSystemMode==1){bot.mantleElapsed=std::min(bot.mantleDuration,bot.mantleElapsed+delta);const auto intended=gameplay::bot::spMantlePosition(bot.mantleStart,bot.mantleEnd,bot.mantleElapsed/std::max(.01f,bot.mantleDuration),bot.mantleClearanceZ);const auto resolved=app.loadedMap?gameplay::mantle::sweepRounded(*app.loadedMap,bot.position,intended,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72)).end:intended;bot.position=resolved;bot.velocity={};bot.grounded=false;if(scene::length(resolved-intended)>1.f){bot.mantling=false;}else if(bot.mantleElapsed>=bot.mantleDuration){bot.mantling=false;bot.grounded=true;bot.groundGrace=.12f;}bot.input.fire=bot.input.ads=bot.input.sprint=false;}else if(bot.mantling){bot.mantleElapsed=std::min(bot.mantleDuration,bot.mantleElapsed+delta);const float p=bot.mantleDuration>0?bot.mantleElapsed/bot.mantleDuration:1.0f,lift=std::clamp(p*1.65f,0.0f,1.0f),travel=std::clamp((p-.18f)/.82f,0.0f,1.0f),sl=lift*lift*(3-2*lift),st=travel*travel*(3-2*travel);bot.position={bot.mantleStart.x+(bot.mantleEnd.x-bot.mantleStart.x)*st,bot.mantleStart.y+(bot.mantleEnd.y-bot.mantleStart.y)*st,bot.mantleStart.z+(bot.mantleEnd.z-bot.mantleStart.z)*sl};bot.grounded=false;bot.velocity={};if(p>=1){bot.mantling=false;bot.position=bot.mantleEnd;bot.grounded=true;bot.groundGrace=.12f;bot.obstacleAvoidTime=0;bot.routeDiversionTime=0;}}else if(app.activeBotSystemMode==1&&app.loadedMap)gameplay::bot::stepOnMap(bot,delta,locomotionScale,*app.loadedMap);else gameplay::bot::step(bot,delta,locomotionScale,!app.loadedMap);
+        if(app.activeBotSystemMode!=1&&app.loadedMap&&!bot.mantling&&bot.grounded&&(bot.obstacleAvoidTime>0.0f||bot.routeDiversionTime>0.0f)&&std::abs(bot.input.forward)>0.2f){const scene::Vec3 facing{std::cos(bot.yaw),std::sin(bot.yaw),0};if(const auto target=app.loadedMap->mantleTarget(bot.position,facing,scene::course::kPlayerRadius,gameplay::bot::collisionHeight(bot),scene::course::kStepHeight,gameplay::iw::worldUnits(57.0f),gameplay::iw::worldUnits(20.0f))){bot.mantling=true;bot.mantleStart=bot.position;bot.mantleEnd=*target;bot.mantleElapsed=0;const float height=target->z-bot.position.z;bot.mantleDuration=0.38f+std::clamp(height/gameplay::iw::worldUnits(57.0f),0.0f,1.0f)*0.30f;bot.velocity={};bot.input.fire=bot.input.ads=bot.input.sprint=false;bot.previousAnimation=bot.animation;bot.animationBlendElapsed=0;}}
+        float locomotionScale=bot.movementThrottle*(bot.input.forward>0.05f?1.20f:1.0f);if(bot.animation<app.botClipAuthoredSpeeds.size()&&app.botClipAuthoredSpeeds[bot.animation]>0.0f){const float forwardFactor=bot.input.forward<0?gameplay::iw::kBackSpeedScale:1.0f,sideFactor=bot.input.sprint?gameplay::iw::kSprintStrafeSpeedScale:gameplay::iw::kStrafeSpeedScale,stanceFactor=bot.input.sprint?gameplay::iw::kSprintScale:gameplay::iw::stanceSpeedScale(bot.stance);const float unscaled=gameplay::iw::kRunSpeed*stanceFactor*std::sqrt(bot.input.forward*bot.input.forward*forwardFactor*forwardFactor+bot.input.right*bot.input.right*sideFactor*sideFactor);if(unscaled>1.0f)locomotionScale*=std::clamp(app.botClipAuthoredSpeeds[bot.animation]/unscaled,0.25f,1.75f);}if(app.activeBotSystemMode==1)locomotionScale=bot.movementThrottle;if(bot.mantling&&app.activeBotSystemMode==1){bot.mantleElapsed=std::min(bot.mantleDuration,bot.mantleElapsed+delta);const auto intended=gameplay::bot::spMantlePosition(bot.mantleStart,bot.mantleEnd,bot.mantleElapsed/std::max(.01f,bot.mantleDuration),bot.mantleClearanceZ);const auto resolved=app.loadedMap?actorCollisionSweep(app,*app.loadedMap,bot.position,intended,scene::course::kPlayerRadius,gameplay::bot::collisionHeight(bot,scene::Stance::Stand),true).end:intended;bot.position=resolved;bot.velocity={};bot.grounded=false;if(scene::length(resolved-intended)>1.f){bot.mantling=false;}else if(bot.mantleElapsed>=bot.mantleDuration){bot.mantling=false;bot.grounded=true;bot.groundGrace=.12f;}bot.input.fire=bot.input.ads=bot.input.sprint=false;}else if(bot.mantling){bot.mantleElapsed=std::min(bot.mantleDuration,bot.mantleElapsed+delta);const float p=bot.mantleDuration>0?bot.mantleElapsed/bot.mantleDuration:1.0f,lift=std::clamp(p*1.65f,0.0f,1.0f),travel=std::clamp((p-.18f)/.82f,0.0f,1.0f),sl=lift*lift*(3-2*lift),st=travel*travel*(3-2*travel);bot.position={bot.mantleStart.x+(bot.mantleEnd.x-bot.mantleStart.x)*st,bot.mantleStart.y+(bot.mantleEnd.y-bot.mantleStart.y)*st,bot.mantleStart.z+(bot.mantleEnd.z-bot.mantleStart.z)*sl};if(app.loadedMap&&(customCollisionFootprint(app)||app.playerClipHeightCm>0)){const auto hit=actorCollisionSweep(app,*app.loadedMap,botOldPosition,bot.position,scene::course::kPlayerRadius,gameplay::bot::collisionHeight(bot),true);bot.position=hit.end;if(hit.startSolid||hit.fraction<.9999f)bot.mantling=false;}bot.grounded=false;bot.velocity={};if(p>=1&&bot.mantling){bot.mantling=false;bot.position=bot.mantleEnd;bot.grounded=true;bot.groundGrace=.12f;bot.obstacleAvoidTime=0;bot.routeDiversionTime=0;}}else if(app.activeBotSystemMode==1&&app.loadedMap)gameplay::bot::stepOnMap(bot,delta,locomotionScale,*app.loadedMap);else gameplay::bot::step(bot,delta,locomotionScale,!app.loadedMap);
         if (app.activeBotSystemMode!=1&&app.loadedMap&&!bot.mantling) {
           const auto diff = bot.position - botOldPosition;
           const bool moved = scene::dot(diff, diff) > 0.0001f || !bot.grounded;
           if (moved) {
-            bot.position = app.loadedMap->constrainMove(
+            bot.position = constrainCollisionMap(app,*app.loadedMap,
                 botOldPosition, bot.position, scene::course::kPlayerRadius,
-                gameplay::iw::worldUnits(bot.stance==scene::Stance::Stand?72:bot.stance==scene::Stance::Crouch?40:20), scene::course::kStepHeight);
-            const float ground = app.loadedMap->navigationGroundHeight(
+                gameplay::bot::collisionHeight(bot), scene::course::kStepHeight);
+            const float ground = customCollisionFootprint(app)
+                ? (bot.velocity.z<=0.f?gameplay::movement::playerSupport(
+                    *app.loadedMap,bot.position,actorCollisionHalfExtents(app),
+                    gameplay::bot::collisionHeight(bot),bot.grounded?
+                    scene::course::kStepHeight+gameplay::iw::worldUnits(4.0f):.1f).value_or(-1e9f):-1e9f)
+                : app.loadedMap->navigationGroundHeight(
                 bot.position.x, bot.position.y,
                 botOldPosition.z + scene::course::kStepHeight +
                     gameplay::iw::worldUnits(4.0f),
@@ -11252,6 +12084,8 @@ app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPrese
                 bot.velocity.z = 0;
               bot.grounded = true;
               bot.groundGrace = 0.12f;
+            } else if(customCollisionFootprint(app)) {
+              bot.grounded = false;
             }
           }
           if (bot.grounded && bot.fixedPresentationThisUpdate && bot.physicsDeltaThisUpdate>0) {
@@ -11335,6 +12169,8 @@ app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPrese
             const bool pbMelee=bot.weaponClass==scene::WeaponClass::Knife&&bot.viewWeaponAsset<app.assetCatalog.entries.size()&&lowerText(app.assetCatalog.entries[bot.viewWeaponAsset].game)=="pointblank";
             auto query=bot_animation::actionQuery(bot.input.equipment?scene::ActionRole::Throw:(bot.reloadStarted?scene::ActionRole::Reload:pbMelee?scene::ActionRole::Melee:scene::ActionRole::Fire),bot.input.equipment?scene::WeaponClass::Grenade:bot.weaponClass,bot.stance);
             query.ads=bot.input.ads;
+            if(bot.viewWeaponAsset<app.assetCatalog.entries.size()&&lowerText(app.assetCatalog.entries[bot.viewWeaponAsset].game)=="pointblank")
+                query.preferredWeaponFamily=scene::pointblank::meleeFamilyFromViewmodel(app.assetCatalog.entries[bot.viewWeaponAsset].name);
             auto action=cachedBotAction(app,actorScene,query);
             if(!action&&bot.input.equipment){query.action=scene::ActionRole::GrenadePrep;action=cachedBotAction(app,actorScene,query);}
             if(!action&&bot.input.equipment){query.domain=scene::AnimationDomain::PlayerBody;query.action=scene::ActionRole::Throw;action=cachedBotAction(app,actorScene,query);}
@@ -11343,6 +12179,7 @@ app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPrese
             if(action){
                 const auto& clip=actorScene.animations[*action];
                 const bool continuous=bot.cachedWeaponStats.fullAuto||bot.cachedWeaponStats.burstCount>1;
+                bot.actionCrossfade.select(bot.actionAnimation,bot.actionFrame,*action,bot.actionBlendWeight);
                 if(gameplay::bot::restartBotAction(bot.actionAnimation==*action,actionWasActive,query.action,continuous,bot.actionFrame,static_cast<float>(clip.durationFrames)))bot.actionFrame=0;
                 bot.actionAnimation=*action;
                 if(query.action==scene::ActionRole::Fire||query.action==scene::ActionRole::Melee)bot.lastActionShotTime=bot.behaviorClock;
@@ -11353,6 +12190,11 @@ app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPrese
             const auto& clip=actorScene.animations[bot.actionAnimation];
             bot.actionFrame=gameplay::bot::advanceBotAction(bot.actionFrame,delta,clip.framerate,static_cast<float>(clip.durationFrames));
         }
+        bot.actionCrossfade.elapsed+=delta;
+        if(bot.actionCrossfade.previous<actorScene.animations.size()){
+            const auto& previous=actorScene.animations[bot.actionCrossfade.previous];
+            bot.actionCrossfade.frame=gameplay::bot::advanceBotAction(bot.actionCrossfade.frame,delta,previous.framerate,static_cast<float>(previous.durationFrames));
+        }
         const float actionTarget=bot.alive&&bot.firePoseTime>0&&bot.actionAnimation<actorScene.animations.size()?1.f:0.f;
         bot.actionBlendWeight+=(actionTarget-bot.actionBlendWeight)*std::min(1.f,delta/std::max(.001f,app.botLocomotionBlend));
         updateSpBotScenario(app,bot,delta);
@@ -11361,16 +12203,32 @@ app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPrese
     }
     app.botActorPoses.resize(app.bots.size());
     if(app.showBotAnimationClips)app.botAnimationLabels.assign(app.bots.size(),{});
+    app.botRagdolls.resize(app.bots.size());
+    const void* ragdollMap=app.loadedMap?app.loadedMap->collision.data():nullptr;
+    if(app.ragdollRigIdentity!=actorScene.skeleton.bones.data()||app.ragdollMapIdentity!=ragdollMap){
+        app.retainedBodies.bodies.clear();app.botRagdolls.assign(app.bots.size(),{});
+        app.weaponDropWorld.reset();
+        app.ragdollRigIdentity=actorScene.skeleton.bones.data();app.ragdollMapIdentity=ragdollMap;
+    }
+    const auto ragdollContact=[&](scene::Vec3 a,scene::Vec3 b,float r){return gameplay::ragdoll::contact(app.loadedMap?&*app.loadedMap:nullptr,a,b,r);};
+    app.retainedBodies.advance(delta,ragdollContact);
+    if(app.weaponDropWorld.use_count()==1)app.weaponDropWorld.reset();
+    if(app.weaponDropWorld)app.weaponDropWorld->step(delta);
     // The evaluator is serial. Retain scratch capacity across bots instead of
     // allocating each blend layer once per actor per frame.
     auto& poseScratch=app.botPoseScratch;
     for(auto& slot:poseScratch)slot.nodes.reserve(1);
+    // All assembled variants share actorScene's animation skeleton/bind frame.
+    // Resolve once per update, not once per bot or from attached weapon bones.
+    const float botPresentationYaw=scene::imported::bodyPresentationYaw(actorScene.skeleton);
     const auto evaluateBotPose = [&](std::size_t i) {
         auto& bot = app.bots[i];
         auto& local=app.botLocalPoseScratch;
         const auto tSampleStart = std::chrono::steady_clock::now();
-        if(actorScene.animations.empty()){
-            actorScene.sampleLocalPoseInto(0,0,local);
+        if(bot.animation>=actorScene.animations.size()){
+            // No selected action yet: retain the rest pose, never an arbitrary
+            // first/last clip merely because the library contains animations.
+            actorScene.sampleLocalPoseInto(std::numeric_limits<std::size_t>::max(),0,local);
         } else {
             const bool blending=bot.previousAnimation<actorScene.animations.size()&&bot.animationBlendElapsed<app.botLocomotionBlend;
             const std::size_t base=blending?bot.previousAnimation:std::min(bot.animation,actorScene.animations.size()-1);
@@ -11382,11 +12240,29 @@ app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPrese
             }
             if(bot.alive&&!bot.mantling&&bot.stance!=scene::Stance::Prone&&(app.botAnimationGame=="pointblank"||(app.botAnimationGame.empty()&&scene::pointblank::body(actorScene.skeleton)))){
                 scene::AnimationQuery q;q.domain=scene::AnimationDomain::PlayerTorso;q.motion=gameplay::bot::horizontalSpeed(bot)>10?scene::MotionRole::Run:scene::MotionRole::Idle;q.weapon=bot.weaponClass;q.stance=bot.stance;q.preferredGame="pointblank";
+                if(bot.viewWeaponAsset<app.assetCatalog.entries.size()&&lowerText(app.assetCatalog.entries[bot.viewWeaponAsset].game)=="pointblank")
+                    q.preferredWeaponFamily=scene::pointblank::meleeFamilyFromViewmodel(app.assetCatalog.entries[bot.viewWeaponAsset].name);
                 if(const auto idle=cachedBotAction(app,actorScene,q)){const auto& c=actorScene.animations[*idle];const float weight=bot.actionAnimation<actorScene.animations.size()?1-std::clamp(bot.actionBlendWeight,0.f,1.f):1;slots[1].nodes.push_back({*idle,c.durationFrames?std::fmod(bot.behaviorClock*c.framerate,static_cast<float>(c.durationFrames)):0,weight,scene::LayerMode::Override,true});}
+            }
+            const auto& baseGame=actorScene.animations[std::min(bot.animation,actorScene.animations.size()-1)].sourceGame;
+            if(bot.alive&&!bot.mantling&&bot.stance!=scene::Stance::Prone&&scene::imported::usesNativeHoldingTorso(baseGame)){
+                scene::AnimationQuery q;q.domain=scene::AnimationDomain::PlayerTorso;q.motion=scene::imported::holdingTorsoMotion(baseGame,actorScene.animations[std::min(bot.animation,actorScene.animations.size()-1)].motion);q.weapon=bot.weaponClass;q.stance=bot.stance;q.preferredGame=baseGame;
+                if(auto hold=cachedBotAction(app,actorScene,q);hold&&scene::imported::isNativeHoldingTorso(actorScene.animations[*hold])){
+                    const bool actionOwns=bot.actionAnimation<actorScene.animations.size()&&
+                        (bot_animation::postureCompatible(actorScene.animations[bot.actionAnimation],bot.stance)||(app.animationSetForBots&&app.botSetRuntime.assignedPosture(bot.actionAnimation,bot.stance)));
+                    const float weight=actionOwns?1.f-std::clamp(bot.actionBlendWeight,0.f,1.f):1.f;
+                    const auto& h=actorScene.animations[*hold];const float heldFrame=baseGame=="cso2"&&h.durationFrames?std::fmod(bot.behaviorClock*h.framerate,static_cast<float>(h.durationFrames)):0;
+                    slots[1].nodes.push_back({*hold,heldFrame,weight,scene::LayerMode::Override,true});
+                }
             }
             if(bot.alive&&!(app.activeBotSystemMode==1&&bot.mantling)&&bot.actionBlendWeight>0.001f&&bot.actionAnimation<actorScene.animations.size()&&
                (bot_animation::postureCompatible(actorScene.animations[bot.actionAnimation],bot.stance)||(app.animationSetForBots&&app.botSetRuntime.assignedPosture(bot.actionAnimation,bot.stance)))){
-                slots[1].nodes.push_back({bot.actionAnimation,bot.actionFrame,bot.actionBlendWeight,scene::LayerMode::Override,true});
+                const auto& fade=bot.actionCrossfade;
+                const bool outgoing=fade.previous<actorScene.animations.size()&&fade.elapsed<app.botLocomotionBlend&&
+                    (bot_animation::postureCompatible(actorScene.animations[fade.previous],bot.stance)||(app.animationSetForBots&&app.botSetRuntime.assignedPosture(fade.previous,bot.stance)));
+                const float incoming=outgoing?fade.incoming(app.botLocomotionBlend):1.f;
+                if(outgoing)slots[1].nodes.push_back({fade.previous,fade.frame,bot.actionBlendWeight*(1.f-incoming),scene::LayerMode::Override,true});
+                slots[1].nodes.push_back({bot.actionAnimation,bot.actionFrame,bot.actionBlendWeight*incoming,scene::LayerMode::Override,true});
             }
             if(bot.alive&&app.activeBotSystemMode==1&&bot.spScenarioWeight>0&&bot.spScenario<actorScene.animations.size()&&
                bot.stance==bot.spScenarioStance&&bot.stance!=scene::Stance::Prone)
@@ -11438,8 +12314,65 @@ app.botActorPoses.resize(app.bots.size());for(auto& bot:app.bots){bot.fixedPrese
         if(pose.empty()){local.assign(actorScene.skeleton.bones.size(),scene::Transform{});actorScene.globalPoseInto(local,pose);}
         scene::imported::suppressBodyRootMotion(actorScene.skeleton,pose,bot.animation<actorScene.animations.size()&&actorScene.animations[bot.animation].sourceGame=="pointblank");
         const float groundLift=(actorScene.bounds.valid?-actorScene.bounds.minimum.z*app.botModelScale:0.f)+gameplay::iw::worldUnits(0.25f);
-        const auto transform=scene::translation(gameplay::bot::presentationPosition(bot)+scene::Vec3{0,0,groundLift})*scene::rotation(scene::fromEulerRadians({0,0,bot.yaw}))*scene::scale({app.botModelScale,app.botModelScale,app.botModelScale});
+        const auto transform=scene::translation(gameplay::bot::presentationPosition(bot)+scene::Vec3{0,0,groundLift})*scene::rotation(scene::fromEulerRadians({0,0,bot.yaw+botPresentationYaw}))*scene::scale({app.botModelScale,app.botModelScale,app.botModelScale});
         for(auto& bone:pose)bone=transform*bone;
+        auto& ragdoll=app.botRagdolls[i];
+        if(bot.alive||ragdoll.deathStamp!=bot.deathEffectStart||ragdoll.initial.size()>0&&ragdoll.initial.size()!=pose.size()){
+            auto history=std::move(ragdoll.history);auto previousHistory=std::move(ragdoll.previousHistory);const float historyDelta=ragdoll.historyDelta;
+            if(ragdoll.active){auto body=ragdoll.initial;ragdoll.apply(body);app.retainedBodies.retain(std::move(ragdoll),body);}
+            ragdoll={};ragdoll.deathStamp=bot.deathEffectStart;ragdoll.weaponDropTrigger=bot.alive?0:app.weaponDrop.trigger;ragdoll.history=std::move(history);ragdoll.previousHistory=std::move(previousHistory);ragdoll.historyDelta=historyDelta;
+        }
+        if(!bot.alive){
+            const bool noDeath=bot.animation>=actorScene.animations.size()||actorScene.animations[bot.animation].action!=scene::ActionRole::Death;
+            const bool finished=noDeath||
+                (bot.animationFrame>=actorScene.animations[bot.animation].durationFrames&&bot.animationBlendElapsed>=app.botLocomotionBlend);
+            if(ragdoll.active){
+                ragdoll.advance(delta,ragdollContact);ragdoll.apply(pose);
+            }else if(app.deathRagdoll.enabled&&finished&&!ragdoll.attempted){
+                if(noDeath&&ragdoll.history.size()==pose.size()){pose=ragdoll.history;ragdoll.history=std::move(ragdoll.previousHistory);}
+                ragdoll.begin(actorScene.skeleton,pose,app.deathRagdoll,bot.deathVelocity,bot.deathShotDirection);ragdoll.variant=bot.modelVariant;
+            }
+            const int trigger=ragdoll.weaponDropTrigger;
+            if(!ragdoll.weapon&&(trigger==2||(trigger==1&&ragdoll.active))&&bot.modelVariant>=0&&
+               static_cast<std::size_t>(bot.modelVariant)<app.botWeaponAttachmentRanges.size()){
+                const auto [first,last]=app.botWeaponAttachmentRanges[bot.modelVariant];
+                const auto& releasePose=trigger==2&&ragdoll.history.size()==pose.size()?ragdoll.history:pose;
+                auto weapon=std::make_shared<gameplay::ragdoll::DroppedWeapon>();
+                scene::Vec3 grip,scale;scene::Quat rotation;
+                scene::Bounds bounds;
+                for(auto i=first;i<last;++i){
+                    const auto& attachment=actorScene.attachments[i];
+                    if(attachment.boneIndex>=releasePose.size())continue;
+                    const auto mount=releasePose[attachment.boneIndex]*attachment.localMatrix();
+                    if(weapon->local.empty())scene::decomposeAffine(mount,grip,rotation,scale);
+                    weapon->local.push_back({static_cast<std::uint32_t>(i),mount});
+                    const auto inBox=scene::rotation({-rotation.x,-rotation.y,-rotation.z,rotation.w})*scene::translation(-grip)*mount;
+                    for(std::size_t m=attachment.firstMesh;m<actorScene.meshes.size()&&m-attachment.firstMesh<attachment.meshCount;++m){
+                        const auto& mesh=actorScene.meshes[m];
+                        const auto model=inBox*mesh.modelTransform;
+                        for(const auto& v:mesh.vertices){
+                            const auto p=scene::transformPoint(model,v.position);
+                            if(!bounds.valid)bounds={p,p,true};
+                            bounds.minimum={std::min(bounds.minimum.x,p.x),std::min(bounds.minimum.y,p.y),std::min(bounds.minimum.z,p.z)};
+                            bounds.maximum={std::max(bounds.maximum.x,p.x),std::max(bounds.maximum.y,p.y),std::max(bounds.maximum.z,p.z)};
+                        }
+                    }
+                }
+                if(bounds.valid){
+                    const auto center=grip+scene::transformPoint(scene::rotation(rotation),bounds.center());
+                    const auto inverse=scene::inverseAffine(scene::trs(center,rotation,{1,1,1}));
+                    for(auto& part:weapon->local)part.mount=inverse*part.mount;
+                    if(!app.weaponDropWorld)app.weaponDropWorld=std::make_shared<gameplay::ragdoll::DropWorld>(app.loadedMap?&*app.loadedMap:nullptr);
+                    const auto impulse=scene::normalize(bot.deathShotDirection)*app.deathRagdoll.shotImpulse;
+                    const auto spin=scene::Vec3{1.f,2.5f,bot.id%2?1.5f:-1.5f}*std::clamp(app.weaponDrop.spin,0.f,10.f);
+                    weapon->id=app.weaponDropWorld->add(center,rotation,(bounds.maximum-bounds.minimum)*.5f,
+                        (bot.deathVelocity+impulse)*std::clamp(app.weaponDrop.carry,0.f,5.f),spin,app.weaponDrop);
+                    weapon->world=app.weaponDropWorld;
+                    ragdoll.weapon=std::move(weapon);
+                }
+            }
+            if(!ragdoll.active&&app.deathRagdoll.enabled){ragdoll.history=pose;ragdoll.historyDelta=delta;}
+        }else if(app.deathRagdoll.enabled||app.weaponDrop.trigger==2){ragdoll.previousHistory=std::move(ragdoll.history);ragdoll.history=pose;ragdoll.historyDelta=delta;}
         tFkAccum += std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tFkStart).count();
     };
     for(std::size_t i=0;i<app.bots.size();++i)evaluateBotPose(i);
@@ -11516,9 +12449,11 @@ void drawBotActors(AppState& app){
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Remove bots")) {
+      app.botRagdolls.clear();app.retainedBodies.bodies.clear();
+      app.weaponDropWorld.reset();app.botWeaponAttachmentRanges.clear();
       app.bots.clear();
       app.botActorPoses.clear();
-      app.botActorScene.reset();
+      app.botActorScene.reset();app.botCollisionBaseHeights.clear();
       app.botSetRuntime={};
       app.botActorGpuReady = false;
       (void)app.renderer.replaceBotScene(nullptr,app.rendererError);
@@ -11559,6 +12494,7 @@ void drawBotActors(AppState& app){
       ImGui::EndCombo();
     }ImGui::EndDisabled();
     ImGui::SliderInt("Enemy bot count", &app.enemyBotCount, 0, 18);
+    ImGui::SliderFloat("Spawn scatter",&app.botSpawnScatter,0.f,1.f,"%.2f",ImGuiSliderFlags_AlwaysClamp);
     if(ImGui::TreeNode("Action set")){drawAnimationSetPresets(app);if(ImGui::Button("Apply and rebuild bots"))rebuildBotActors(app);ImGui::TreePop();}
     if(ImGui::DragFloat("Bot size",&app.botModelScale,.01f,.1f,3.f,"%.2fx")){
         if(!std::isfinite(app.botModelScale)||app.botModelScale<=0)app.botModelScale=1.f;
@@ -11750,7 +12686,7 @@ bool loadNavigationSidecar(AppState& app,bool missingIsError,std::string& error)
         if(!gameplay::bot::readCastNavigation(input,parsed,error))return false;
     }
     auto& graph=parsed.graph;
-    graph.links.erase(std::remove_if(graph.links.begin(),graph.links.end(),[&](const auto& link){return !app.loadedMap->navigationSegmentClear(graph.nodes[link.from].position,graph.nodes[link.to].position,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72),scene::course::kStepHeight);}),graph.links.end());
+    graph.links.erase(std::remove_if(graph.links.begin(),graph.links.end(),[&](const auto& link){return !collisionNavigationClear(app,*app.loadedMap,graph.nodes[link.from].position,graph.nodes[link.to].position,scene::course::kPlayerRadius,minimumBotCollisionHeight(app),scene::course::kStepHeight);}),graph.links.end());
     if(missingIsError&&!jsonSpawns){
         // The explicit authoring reload button restores editable custom data.
         app.botNavigation=std::move(graph);app.botSpawnPoints=std::move(parsed.spawns);
@@ -11764,7 +12700,7 @@ bool loadNavigationSidecar(AppState& app,bool missingIsError,std::string& error)
                 const float ground=map.groundHeight(p.x,p.y,p.z+scene::course::kStepHeight,-1e9f);
                 if(ground<-1e8f||std::abs(ground-p.z)>scene::course::kStepHeight)continue;
                 p.z=ground;
-                if(gameplay::mantle::sweepRounded(map,p,p,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72)).startSolid)continue;
+                if(actorCollisionSweep(app,map,p,p,scene::course::kPlayerRadius,minimumBotCollisionHeight(app),true).startSolid)continue;
                 app.mapAuthoredSpawnPoints.push_back(p);
             }
         }
@@ -11778,7 +12714,7 @@ bool generateNavigationFromSeeds(AppState& app,std::string& error){
     const auto keyFor=[&](scene::Vec3 point){const auto x=static_cast<long long>(std::llround(point.x/spacing)),y=static_cast<long long>(std::llround(point.y/spacing)),z=static_cast<long long>(std::llround(point.z/std::max(20.0f,scene::course::kStepHeight)));return std::to_string(x)+":"+std::to_string(y)+":"+std::to_string(z);};const auto addLink=[&](std::size_t from,std::size_t to){if(from==to)return;if(!std::any_of(generated.links.begin(),generated.links.end(),[&](const auto& link){return (link.from==from&&link.to==to)||(link.bidirectional&&link.from==to&&link.to==from);}))generated.links.push_back({from,to,1.0f,true});};
     for(const auto& source:app.botNavigation.nodes)if(!source.disabled&&!gameplay::bot::navigationBlocked(generated,source.position)){auto node=source;const float ground=app.loadedMap->navigationGroundHeight(node.position.x,node.position.y,node.position.z+scene::course::kStepHeight+4.0f,node.position.z,scene::course::kPlayerRadius*0.55f);node.position.z=ground;const auto key=keyFor(node.position);if(cells.contains(key))continue;const auto index=generated.nodes.size();generated.nodes.push_back(node);cells.emplace(key,index);queue.push_back(index);seedPositions.push_back(node.position);}
     if(queue.empty()){error="None of the placed points are on reachable map ground";return false;}constexpr std::array<scene::Vec2,8> directions={scene::Vec2{1,0},scene::Vec2{-1,0},scene::Vec2{0,1},scene::Vec2{0,-1},scene::Vec2{0.70710678f,0.70710678f},scene::Vec2{-0.70710678f,0.70710678f},scene::Vec2{0.70710678f,-0.70710678f},scene::Vec2{-0.70710678f,-0.70710678f}};constexpr float noGround=-std::numeric_limits<float>::max()*0.25f;std::size_t cursor{};
-    while(cursor<queue.size()&&generated.nodes.size()<limit){const auto currentIndex=queue[cursor++];const auto current=generated.nodes[currentIndex].position;for(const auto direction:directions){scene::Vec3 candidate{current.x+direction.x*spacing,current.y+direction.y*spacing,current.z};bool withinCoverage=false;for(const auto seed:seedPositions)if(gameplay::bot::horizontalDistance(candidate,seed)<=coverage){withinCoverage=true;break;}if(!withinCoverage)continue;candidate.z=app.loadedMap->navigationGroundHeight(candidate.x,candidate.y,current.z+scene::course::kStepHeight+4.0f,noGround,scene::course::kPlayerRadius*0.55f);if(candidate.z<=noGround*0.5f||gameplay::bot::navigationBlocked(generated,candidate)||!app.loadedMap->navigationSegmentClear(current,candidate,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72.0f),scene::course::kStepHeight))continue;const auto key=keyFor(candidate);std::size_t candidateIndex;if(const auto found=cells.find(key);found!=cells.end())candidateIndex=found->second;else{gameplay::bot::NavigationNode node;node.position=candidate;node.radius=std::min(gameplay::iw::worldUnits(16.0f),spacing*0.3f);candidateIndex=generated.nodes.size();generated.nodes.push_back(node);cells.emplace(key,candidateIndex);queue.push_back(candidateIndex);}addLink(currentIndex,candidateIndex);if(generated.nodes.size()>=limit)break;}}
+    while(cursor<queue.size()&&generated.nodes.size()<limit){const auto currentIndex=queue[cursor++];const auto current=generated.nodes[currentIndex].position;for(const auto direction:directions){scene::Vec3 candidate{current.x+direction.x*spacing,current.y+direction.y*spacing,current.z};bool withinCoverage=false;for(const auto seed:seedPositions)if(gameplay::bot::horizontalDistance(candidate,seed)<=coverage){withinCoverage=true;break;}if(!withinCoverage)continue;candidate.z=app.loadedMap->navigationGroundHeight(candidate.x,candidate.y,current.z+scene::course::kStepHeight+4.0f,noGround,scene::course::kPlayerRadius*0.55f);if(candidate.z<=noGround*0.5f||gameplay::bot::navigationBlocked(generated,candidate)||!collisionNavigationClear(app,*app.loadedMap,current,candidate,scene::course::kPlayerRadius,minimumBotCollisionHeight(app),scene::course::kStepHeight))continue;const auto key=keyFor(candidate);std::size_t candidateIndex;if(const auto found=cells.find(key);found!=cells.end())candidateIndex=found->second;else{gameplay::bot::NavigationNode node;node.position=candidate;node.radius=std::min(gameplay::iw::worldUnits(16.0f),spacing*0.3f);candidateIndex=generated.nodes.size();generated.nodes.push_back(node);cells.emplace(key,candidateIndex);queue.push_back(candidateIndex);}addLink(currentIndex,candidateIndex);if(generated.nodes.size()>=limit)break;}}
     app.botNavigation=std::move(generated);app.selectedNavigationNode=app.selectedNavigationBlock=app.navigationClickLastNode=-1;for(auto& bot:app.bots){bot.navigation=app.botUseAuthoredNavigation?&activeBotNavigation(app):nullptr;bot.navigationRoute.clear();bot.repathTime=0;}error.clear();return true;
 }
 
@@ -11813,10 +12749,12 @@ bool loadWorldProps(AppState& app){if(!app.loadedMap)return false;std::ifstream 
 
 bool loadMapFile(AppState& app, const std::filesystem::path& path) {
     if (app.pendingMapFuture) {
-        app.status = "Map loading already in progress";
-        return false;
+        app.queuedMapPath=path;
+        app.status = "Map replacement queued: " + path.filename().string();
+        return true;
     }
     app.worldProps.clear();
+    setActorInputCapture(app,false);setCameraInputCapture(app,false);
     app.loadingActive = true;
     app.loadingProgress = 0.05f;
     app.loadingStartTime = glfwGetTime();
@@ -11849,7 +12787,9 @@ bool loadMapFile(AppState& app, const std::filesystem::path& path) {
 
     appendLog("Initiating " + std::string(isC2M ? "C2M" : "GLB") + " import: " + path.filename().string(), 0.05f);
 
-    app.pendingMapFuture = std::async(std::launch::async, [path, isC2M, mapScale, appendLog,codmSidecar,collisionOptions]() -> AppState::MapLoadResult {
+    const float destinationClearance=minimumBotCollisionHeight(app);
+    const auto destinationFootprint=customCollisionFootprint(app)?actorCollisionHalfExtents(app):scene::Vec2{};
+    app.pendingMapFuture = std::async(std::launch::async, [path, isC2M, mapScale, appendLog,codmSidecar,collisionOptions,destinationClearance,destinationFootprint]() -> AppState::MapLoadResult {
         AppState::MapLoadResult res;
         res.path = path;
         if(collisionOptions.renderGeometryCollision)appendLog("Collision: rebuilding from visible geometry; authored clipping ignored",.06f);
@@ -11862,7 +12802,7 @@ bool loadMapFile(AppState& app, const std::filesystem::path& path) {
             goals.erase(std::remove_if(goals.begin(),goals.end(),[&](auto& goal){
                 const float z=res.loaded.navigationGroundHeight(goal.position.x,goal.position.y,goal.position.z+80-45,-1e9f,scene::course::kPlayerRadius*.7f);
                 if(std::abs(z-goal.position.z)>160)return true;goal.position.z=z+.05f;
-                return gameplay::mantle::sweepRounded(res.loaded,goal.position,goal.position,scene::course::kPlayerRadius,gameplay::iw::worldUnits(72)).startSolid;
+                return (destinationFootprint.x>0?gameplay::movement::sweep(res.loaded,goal.position,goal.position,destinationFootprint,destinationClearance):gameplay::mantle::sweepRounded(res.loaded,goal.position,goal.position,scene::course::kPlayerRadius,destinationClearance)).startSolid;
             }),goals.end());
         }
         return res;
@@ -11871,14 +12811,23 @@ bool loadMapFile(AppState& app, const std::filesystem::path& path) {
     return true;
 }
 
+void drawLoadingConsoleModal(AppState& app);
+#include "MapLoadingHeartbeat.inc"
+
 void processPendingMapLoad(AppState& app) {
     if (!app.pendingMapFuture) return;
     if (app.pendingMapFuture->wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
 
     auto result = cadence::consumeBackgroundLoad(app.pendingMapFuture);
     app.pendingMapFuture.reset();
+    if(app.queuedMapPath){
+        auto next=std::move(*app.queuedMapPath);app.queuedMapPath.reset();
+        result.loaded={}; // Discard superseded startup import before allocating its replacement.
+        loadMapFile(app,next);return;
+    }
+    MapLoadingHeartbeat heartbeat(app);
 
-    const auto appendLog = [&app](std::string_view msg, float progress) {
+    const auto appendLog = [&app,&heartbeat](std::string_view msg, float progress) {
         const double elapsed = app.loadingStartTime > 0.0 ? (glfwGetTime() - app.loadingStartTime) : 0.0;
         char timeBuf[32];
         std::snprintf(timeBuf, sizeof(timeBuf), "[%5.2fs] ", elapsed);
@@ -11891,6 +12840,7 @@ void processPendingMapLoad(AppState& app) {
             }
         }
         std::cout << fullMsg << std::endl;
+        heartbeat.pulse();
     };
 
     if (result.ok) {
@@ -11898,6 +12848,8 @@ void processPendingMapLoad(AppState& app) {
         if(app.loadedMap)app.customNavigationByMap[app.loadedMap->sourcePath.lexically_normal().generic_string()]={app.botNavigation,app.botSpawnPoints};
         if(!app.loadedMap||app.loadedMap->sourcePath!=result.loaded.sourcePath){app.water.enabled=false;app.waterSeconds=0;}
         app.loadedMap = std::move(result.loaded);
+        // The old map's residency cannot be reused for a newly imported map.
+        app.mapGpuReady=false;
         app.authoredLadder={};app.authoredCrouch=false;app.actorOnLadder=false;
         for(const auto& warning:app.loadedMap->gameplay.warnings)appendLog("Gameplay sidecar: "+warning,.89f);
         const auto custom=app.customNavigationByMap.find(app.loadedMap->sourcePath.lexically_normal().generic_string());
@@ -11944,8 +12896,9 @@ void processPendingMapLoad(AppState& app) {
         app.actorRenderPosition = app.actorPosition;
 
         char uploadInfo[160];
-        std::snprintf(uploadInfo, sizeof(uploadInfo), "[Loading] Starting GPU scene upload (%zu map submeshes, resolution: %dx%d, compression: %s)...",
-                      app.loadedMap->scene.meshes.size(), app.mapTextureResolution, app.mapTextureResolution,
+        const auto textureSizeLabel=app.mapTextureResolution==0?std::string("Original"):std::to_string(app.mapTextureResolution);
+        std::snprintf(uploadInfo, sizeof(uploadInfo), "[Loading] Starting GPU scene upload (%zu map submeshes, texture limit: %s, compression: %s)...",
+                      app.loadedMap->scene.meshes.size(), textureSizeLabel.c_str(),
                       app.mapTextureCompression ? "BC1/BC3" : "RGBA8");
         appendLog(uploadInfo, 0.92f);
         if (uploadMainScene(app, appendLog)) {
@@ -11978,6 +12931,13 @@ void drawLoadingConsoleModal(AppState& app) {
     const std::string title = app.loadingLabel.empty() ? "Operation Progress" : (app.loadingLabel + "###loading_modal");
 
     if (ImGui::Begin(title.c_str(), nullptr, flags)) {
+        if(app.loadingActive){
+            const auto p=ImGui::GetCursorScreenPos();const float radius=8.f;
+            auto* draw=ImGui::GetWindowDrawList();const float phase=float(glfwGetTime()*5.);
+            draw->PathArcTo({p.x+radius+2,p.y+radius+2},radius,phase,phase+scene::kPi*1.5f,24);
+            draw->PathStroke(ImGui::GetColorU32(ImGuiCol_CheckMark),0,2.f);
+            ImGui::Dummy({22,22});ImGui::SameLine();
+        }
         ImGui::TextDisabled("Task: %s — %s", app.loadingLabel.c_str(), app.loadingDetail.c_str());
 
         const double elapsed = app.loadingStartTime > 0.0 ? glfwGetTime() - app.loadingStartTime : 0.0;
@@ -12033,6 +12993,14 @@ void drawWorldMap(AppState& app){
     uiHelp("Load C2M v3 / CODM C2MX or binary glTF. C2MX uses its authored collision only. Ordinary maps retain render-derived approximate collision; GLB can explicitly load the CODM sidecar below.");
     {
 
+    int mapTextureChoice=app.mapTextureResolution==0?3:(app.mapTextureResolution<=512?0:(app.mapTextureResolution<=1024?1:2));
+    const char* mapTextureChoices[]={"512","1024","2048","Original texture size"};
+    ImGui::BeginDisabled(app.pendingMapFuture.has_value());
+    if(ImGui::Combo("Texture size on load",&mapTextureChoice,mapTextureChoices,4)){
+        constexpr int limits[]={512,1024,2048,0};app.mapTextureResolution=limits[mapTextureChoice];
+    }
+    ImGui::EndDisabled();
+    if(app.mapTextureResolution==0){GLint maximum{};glGetIntegerv(GL_MAX_TEXTURE_SIZE,&maximum);ImGui::Text("GPU maximum texture dimension: %d",maximum);}
     if(ImGui::Button("Load .c2m map")){
         if(const auto path=chooseC2MFile()){
             app.pendingC2mPromptPath=*path;
@@ -12146,6 +13114,7 @@ void captureWeaponRigState(AppState& app){
 }
 
 void autoSaveWeaponProfile(AppState& app){
+    if(app.takePreview)return; // Replay edits belong to the take, not the live weapfile.
     captureWeaponRigState(app);
     app.weaponProfile.stats=app.weaponTiming;
     app.weaponProfile.animationPrefix=app.viewmodelAnimationPrefix;
@@ -12192,7 +13161,7 @@ bool saveCustomContentPackage(AppState& app,bool gun,std::string displayName,std
     const auto assetFolder=folder/"assets";
     std::error_code ec;std::filesystem::create_directories(assetFolder,ec);if(ec){error="Could not create package folder: "+ec.message();return false;}
     std::string originGame;if(app.selectedWeaponAsset<app.assetCatalog.entries.size())originGame=app.assetCatalog.entries[app.selectedWeaponAsset].game;
-    if(originGame=="Custom Guns"&&!app.assetCatalog.entries[app.selectedWeaponAsset].customManifest.empty()){CustomContentPackage existing;std::string ignored;if(loadCustomContentManifest(app.assetCatalog.entries[app.selectedWeaponAsset].customManifest,existing,ignored))originGame=existing.originGame;}
+    if(originGame=="Saved weapons"&&!app.assetCatalog.entries[app.selectedWeaponAsset].customManifest.empty()){CustomContentPackage existing;std::string ignored;if(loadCustomContentManifest(app.assetCatalog.entries[app.selectedWeaponAsset].customManifest,existing,ignored))originGame=existing.originGame;}
     std::filesystem::path weaponModel;
     if(gun){if(app.selectedWeaponAsset>=app.assetCatalog.entries.size()){error="No selected weapon to package";return false;}weaponModel=app.assetCatalog.entries[app.selectedWeaponAsset].path;captureWeaponRigState(app);app.weaponProfile.stats=app.weaponTiming;app.weaponProfile.animationPrefix=app.viewmodelAnimationPrefix;app.weaponProfile.name=displayName;if(!weapon::save(app.weaponProfile,folder/"weapon.iwweapon",error))return false;}
     if(app.loadedBaseModelPath.empty()||!std::filesystem::is_regular_file(app.loadedBaseModelPath)){error="The current base viewhands/player model is missing";return false;}
@@ -12205,7 +13174,7 @@ bool saveCustomContentPackage(AppState& app,bool gun,std::string displayName,std
     out.close();if(!out){error="Could not finish package manifest";return false;}refreshCustomContentCatalog(app);error.clear();return true;
 }
 
-void drawCustomContent(AppState& app){static bool wasOpen=false;const bool open=ImGui::CollapsingHeader("Portable Custom Content");const bool justOpened=open&&!wasOpen;wasOpen=open;if(!open)return;uiHelp("Packages live beside Cadence, appear as Custom Guns or Custom Players, list required ripped content, and embed custom GLB attachments.");ImGui::InputText("Package name",app.customContentName.data(),app.customContentName.size());if(ImGui::Button("Save current gun")){std::string error;if(saveCustomContentPackage(app,true,app.customContentName.data(),error))app.status="Saved custom gun package";else app.status=error;}ImGui::SameLine();if(ImGui::Button("Save current player")){std::string error;if(saveCustomContentPackage(app,false,app.customContentName.data(),error))app.status="Saved custom player package";else app.status=error;}ImGui::SameLine();if(ImGui::Button("Refresh packages")){refreshCustomContentCatalog(app);app.status="Refreshed portable custom content";}const auto packages=customContentPackages(justOpened);for(const auto& package:*packages){ImGui::PushID(package.manifest.string().c_str());if(ImGui::TreeNode((package.name+"  ["+package.type+"]").c_str())){std::size_t missing{};for(const auto& dependency:package.dependencies)if(!std::filesystem::is_regular_file(packagePath(package,dependency)))++missing;ImGui::Text("Origin: %s",package.originGame.empty()?"Custom":package.originGame.c_str());ImGui::TextColored(missing?ImVec4(1,.45f,.25f,1):ImVec4(.4f,1,.55f,1),missing?"Missing dependencies: %zu":"All %zu dependencies available",missing?missing:package.dependencies.size());if(ImGui::Button("Load package now")){app.liveStandaloneBeforeTake.reset();if(package.type=="player"){loadFile(app,packagePath(package,package.baseModel));std::string error;if(!applyCustomContentPackage(app,package.manifest,error))app.status=error;else app.status=error.empty()?"Loaded custom player "+package.name:error;}else{refreshCustomContentCatalog(app);for(std::size_t i=0;i<app.assetCatalog.entries.size();++i)if(app.assetCatalog.entries[i].role==assets::Role::ViewWeapon&&app.assetCatalog.entries[i].customPackageId==package.id){app.selectedWeaponAsset=i;app.selectedBaseAsset=classHandsForWeapon(app,app.assetCatalog.entries[i]);queueViewWeaponLoad(app,i);break;}}}ImGui::TreePop();}ImGui::PopID();}}
+void drawCustomContent(AppState& app){static bool wasOpen=false;const bool open=ImGui::CollapsingHeader("Portable Custom Content");const bool justOpened=open&&!wasOpen;wasOpen=open;if(!open)return;uiHelp("Packages live beside Cadence, appear as Saved weapons or Custom Players, list required ripped content, and embed custom GLB attachments.");ImGui::InputText("Package name",app.customContentName.data(),app.customContentName.size());if(ImGui::Button("Save current gun")){std::string error;if(saveCustomContentPackage(app,true,app.customContentName.data(),error))app.status="Saved custom gun package";else app.status=error;}ImGui::SameLine();if(ImGui::Button("Save current player")){std::string error;if(saveCustomContentPackage(app,false,app.customContentName.data(),error))app.status="Saved custom player package";else app.status=error;}ImGui::SameLine();if(ImGui::Button("Refresh packages")){refreshCustomContentCatalog(app);app.status="Refreshed portable custom content";}const auto packages=customContentPackages(justOpened);for(const auto& package:*packages){ImGui::PushID(package.manifest.string().c_str());if(ImGui::TreeNode((package.name+"  ["+package.type+"]").c_str())){std::size_t missing{};for(const auto& dependency:package.dependencies)if(!std::filesystem::is_regular_file(packagePath(package,dependency)))++missing;ImGui::Text("Origin: %s",package.originGame.empty()?"Custom":package.originGame.c_str());ImGui::TextColored(missing?ImVec4(1,.45f,.25f,1):ImVec4(.4f,1,.55f,1),missing?"Missing dependencies: %zu":"All %zu dependencies available",missing?missing:package.dependencies.size());if(ImGui::Button("Load package now")){app.liveStandaloneBeforeTake.reset();if(package.type=="player"){loadFile(app,packagePath(package,package.baseModel));std::string error;if(!applyCustomContentPackage(app,package.manifest,error))app.status=error;else app.status=error.empty()?"Loaded custom player "+package.name:error;}else{refreshCustomContentCatalog(app);for(std::size_t i=0;i<app.assetCatalog.entries.size();++i)if(app.assetCatalog.entries[i].role==assets::Role::ViewWeapon&&app.assetCatalog.entries[i].customPackageId==package.id){app.selectedWeaponAsset=i;app.selectedBaseAsset=classHandsForWeapon(app,app.assetCatalog.entries[i]);queueViewWeaponLoad(app,i);break;}}}ImGui::TreePop();}ImGui::PopID();}}
 
 bool rebuildWeaponProfileRig(AppState& app){
     const auto base=std::filesystem::u8path(app.weaponProfile.baseModel);if(app.weaponProfile.baseModel.empty()||!std::filesystem::is_regular_file(base))return false;const auto profile=app.weaponProfile;const auto path=app.weaponProfilePath;const auto sources=app.animationSources;auto documents=std::move(app.animationDocuments);loadFile(app,base);app.animationSources=sources;app.animationDocuments=std::move(documents);for(const auto& modelText:profile.rigModels){const auto model=std::filesystem::u8path(modelText);if(std::filesystem::is_regular_file(model))addRigModelFile(app,model,false);}finishRigMerge(app);activateWeaponProfile(app,profile,path);applyWeaponRigState(app);if(const auto idle=findViewmodelClip(app,"idle")){app.animationIndex=app.previousAnimationIndex=*idle;app.animationFrame=app.previousAnimationFrame=0;}return true;
@@ -12225,12 +13194,18 @@ void applyWeaponRigState(AppState& app){
 #include "app/CurveEditor.inc"
 #include "app/AttachmentSetupPresets.inc"
 #include "app/CameraMotionControls.inc"
+#include "app/ScoreWorkspace.inc"
 #include "app/RecoilControls.inc"
 
 bool animationMatchesProfileKey(const scene::Animation& clip,std::string key){if(const auto dot=key.find('.');dot!=std::string::npos)key.resize(dot);const auto source=lowerText(clip.sourceName);if(lowerText(clip.sourceGame)=="codm")return cadence::codm_actions::slotForName(source)==key;if(key=="mantle")return source.find("ladder")==std::string::npos&&(clip.motion==scene::MotionRole::Climb||source.find("mantle")!=std::string::npos||source.find("vault")!=std::string::npos);if(key=="idle")return clip.action==scene::ActionRole::None&&source.find("idle")!=std::string::npos;if(key=="fire")return clip.action==scene::ActionRole::Fire&&!clip.ads&&source.find("ads_fire")==std::string::npos;if(key=="ads_fire")return clip.action==scene::ActionRole::Fire&&(clip.ads||source.find("ads_fire")!=std::string::npos);if(key=="reload")return clip.action==scene::ActionRole::Reload&&source.find("empty")==std::string::npos;if(key=="reload_empty")return clip.action==scene::ActionRole::Reload&&source.find("empty")!=std::string::npos;if(key=="ads_up")return weapon::isAdsUpClip(source);if(key=="ads_down")return weapon::isAdsDownClip(source);if(key.starts_with("sprint_"))return source.find(key)!=std::string::npos;if(key=="inspect")return source.find("inspect")!=std::string::npos;if(key=="melee")return clip.action==scene::ActionRole::Melee;if(key=="rechamber")return source.find("rechamber")!=std::string::npos&&source.find("ads_")==std::string::npos&&source.find("rechamber_ads")==std::string::npos;if(key=="ads_rechamber")return source.find("ads_rechamber")!=std::string::npos||source.find("rechamber_ads")!=std::string::npos;if(key=="first_raise")return clip.action==scene::ActionRole::FirstRaise||source.find("first_raise")!=std::string::npos||source.find("raise_first")!=std::string::npos||source.find("first_pullout")!=std::string::npos||source.find("pullout_first")!=std::string::npos||source.find("firstput")!=std::string::npos;if(key=="pullout")return (clip.action==scene::ActionRole::Equip||clip.action==scene::ActionRole::FirstRaise||source.find("pullout")!=std::string::npos)&&source.find("first")==std::string::npos;if(key=="putaway")return clip.action==scene::ActionRole::Unequip||source.find("putaway")!=std::string::npos;return source.find(key)!=std::string::npos;}
 
 void drawAttachments(AppState& app);
 void drawWeaponProfileEditor(AppState& app){
+    if(ImGui::Button("Save to Saved weapons")){
+        std::string error;
+        if(saveCustomContentPackage(app,true,app.weaponProfile.name,error))app.status="Saved weapon in CadenceAssets";
+        else app.status="Could not save weapon: "+error;
+    }
     uiHelp("Generated profiles combine a weapon-class baseline with native BO1, BO2, or MW3 weapon-file values and animation mappings. Every field can be changed and saved as a portable custom weapon.");
 
     if(ImGui::InputText("Profile name",app.weaponProfileName.data(),app.weaponProfileName.size())){app.weaponProfile.name=app.weaponProfileName.data();app.weaponProfileDirty=true;}
@@ -12249,7 +13224,7 @@ void drawWeaponProfileEditor(AppState& app){
     }
     uiHelp("Edits below affect only this loaded weapon instance until Save or Save as is used.");
     if(ImGui::Button("Reset to weaponfile defaults")&&app.selectedWeaponAsset<app.assetCatalog.entries.size()){activateWeaponProfile(app,generatedWeaponProfile(app,app.assetCatalog.entries[app.selectedWeaponAsset]));if(app.activeClassSlot>=0&&app.classSlotRigs[app.activeClassSlot])app.classSlotRigs[app.activeClassSlot]->profile=app.weaponProfile;app.status="Reset current instance to imported weaponfile defaults";}ImGui::SameLine();if(ImGui::Button("Reset to class baseline")){const auto name=app.weaponProfile.name,prefix=app.weaponProfile.animationPrefix;activateWeaponProfile(app,weapon::makeGenerated(name,app.weaponProfile.archetype,prefix));if(app.activeClassSlot>=0&&app.classSlotRigs[app.activeClassSlot])app.classSlotRigs[app.activeClassSlot]->profile=app.weaponProfile;app.status="Reset current instance to archetype defaults";}
-    if(ImGui::Button("Open profile")){if(const auto path=chooseWeaponProfileFile(false)){weapon::Profile loaded;std::string error;if(weapon::load(*path,loaded,error)){activateWeaponProfile(app,std::move(loaded),*path);const bool rebuilt=rebuildWeaponProfileRig(app);if(!rebuilt)applyWeaponRigState(app);app.status=std::string("Loaded weapon profile ")+path->filename().string()+(rebuilt?" with saved models":" onto current rig");}else app.status="Weapon profile load failed: "+error;}}
+    if(ImGui::Button("Open profile")){if(const auto path=chooseWeaponProfileFile(false)){weapon::Profile loaded;std::string error;if(weapon::load(*path,loaded,error)){activateWeaponProfile(app,std::move(loaded),*path);const bool rebuilt=!app.takePreview&&rebuildWeaponProfileRig(app);if(!rebuilt)applyWeaponRigState(app);app.status=std::string("Loaded weapon profile ")+path->filename().string()+(rebuilt?" with saved models":" onto current rig");}else app.status="Weapon profile load failed: "+error;}}
     ImGui::SameLine();if(ImGui::Button("Save")){auto path=app.weaponProfilePath.empty()?chooseWeaponProfileFile(true):std::optional<std::filesystem::path>{app.weaponProfilePath};if(path){captureWeaponRigState(app);app.weaponProfile.stats=app.weaponTiming;app.weaponProfile.animationPrefix=app.viewmodelAnimationPrefix;std::string error;if(weapon::save(app.weaponProfile,*path,error)){app.weaponProfilePath=*path;app.weaponProfileDirty=false;app.status="Saved weapon profile "+path->filename().string();}else app.status="Weapon profile save failed: "+error;}}
     ImGui::SameLine();if(ImGui::Button("Save as")){if(const auto path=chooseWeaponProfileFile(true)){captureWeaponRigState(app);app.weaponProfile.stats=app.weaponTiming;app.weaponProfile.animationPrefix=app.viewmodelAnimationPrefix;std::string error;if(weapon::save(app.weaponProfile,*path,error)){app.weaponProfilePath=*path;app.weaponProfileDirty=false;app.status="Saved new weapon "+path->filename().string();}else app.status="Weapon profile save failed: "+error;}}
     ImGui::SameLine();ImGui::TextDisabled("%s",app.weaponProfileDirty?"modified":"saved/generated");
@@ -12266,9 +13241,15 @@ if(ImGui::CollapsingHeader("Knife")){
     ImGui::EndDisabled();
 }
 if(ImGui::CollapsingHeader("Fire & reload")){
+changed|=ImGui::Checkbox("Treat as grenade",&s.grenade);
+float firePlayback= s.firePlaybackScale;
+if(ImGui::DragFloat("Fire animation speed",&firePlayback,.01f,.01f,10.f,"%.2fx")&&std::isfinite(firePlayback)&&firePlayback>0){s.firePlaybackScale=firePlayback;changed=true;}
 changed|=ImGui::DragFloat("Weapon damage",&s.damage,1.0f,1.0f,5000.0f,"%.0f dmg");changed|=ImGui::DragFloat("Fire interval",&s.fireTime,.001f,.001f,5.0f,"%.3f sec");changed|=ImGui::DragFloat("Reload",&s.reloadTime,.01f,0,20,"%.3f sec");changed|=ImGui::DragFloat("Reload empty",&s.reloadEmptyTime,.01f,0,20,"%.3f sec");changed|=ImGui::DragFloat("Rechamber",&s.rechamberTime,.01f,0,10,"%.3f sec");float fireLength=std::max(.03f,s.fireTime);if(const auto fireClip=findViewmodelClip(app,"fire"))fireLength=app.scene.animations[*fireClip].durationFrames/std::max(1.f,app.scene.animations[*fireClip].framerate);float boltOffset=s.rechamberDelayFromFireEnd?s.rechamberStartDelay:weapon::rechamberStartSeconds(s,fireLength)-fireLength;if(ImGui::DragFloat("Rechamber start delay",&boltOffset,.01f,-5,5,"%.3f sec")){s.rechamberStartDelay=boltOffset;s.rechamberDelayFromFireEnd=true;changed=true;}if(ImGui::IsItemHovered())uiHelp("Relative to the fire clip end: negative blends into the current fire pose early; 0 starts at its end; positive waits longer. Does not bypass shot cooldown. Unedited legacy weaponfiles retain their timing.");
 }
 if(ImGui::CollapsingHeader("Aim & weapon switching")){
+changed|=ImGui::Checkbox("Instant scope",&s.instantScope);
+if(ImGui::Checkbox("Disable ADS",&s.disableAds)){changed=true;if(s.disableAds)resetWeaponAimState(app);}
+{bool hidden=app.weaponProfile.hideCrosshair.value_or(weapon::isSniper(app.weaponProfile.archetype)||app.weaponProfile.meleeWeapon);if(ImGui::Checkbox("Hide crosshair",&hidden)){app.weaponProfile.hideCrosshair=hidden;changed=true;}}
 changed|=ImGui::DragFloat("ADS in",&s.adsIn,.005f,.001f,5,"%.3f sec");changed|=ImGui::DragFloat("ADS out",&s.adsOut,.005f,.001f,5,"%.3f sec");changed|=ImGui::DragFloat("Putaway",&s.dropTime,.005f,.001f,5,"%.3f sec");changed|=ImGui::DragFloat("Pullout",&s.raiseTime,.005f,.001f,5,"%.3f sec");changed|=ImGui::DragFloat("First raise",&s.firstRaiseTime,.005f,0,10,"%.3f sec");changed|=ImGui::DragFloat("Quick putaway",&s.quickDropTime,.005f,.001f,5,"%.3f sec");changed|=ImGui::DragFloat("Quick pullout",&s.quickRaiseTime,.005f,.001f,5,"%.3f sec");changed|=ImGui::DragFloat("YY return multiplier",&s.yyReturnScale,.01f,.1f,12.0f,"%.2fx");
 }
 if(ImGui::CollapsingHeader("Sprint timing")){
@@ -12281,10 +13262,22 @@ ImGui::TreePop();}
 
     if(ImGui::TreeNode("Per-weapon materials")){auto& material=app.weaponProfile.materials;bool materialChanged=false;materialChanged|=ImGui::Checkbox("Use base-color luma mask##profile",&material.useBaseColorLumaMask);materialChanged|=ImGui::Checkbox("Invert camo mask##profile",&material.invertCamoMask);materialChanged|=ImGui::SliderFloat("Camo alpha low##profile",&material.camoAlphaLow,0,1,"%.3f");materialChanged|=ImGui::SliderFloat("Camo alpha high##profile",&material.camoAlphaHigh,0,1,"%.3f");uiHelp("Alpha and luma endpoints may cross to invert the mapping.");ImGui::BeginDisabled(!material.useBaseColorLumaMask);materialChanged|=ImGui::SliderFloat("Luma black##profile",&material.camoLumaLow,0,1,"%.3f");materialChanged|=ImGui::SliderFloat("Luma white##profile",&material.camoLumaHigh,0,1,"%.3f");materialChanged|=ImGui::SliderFloat("Luma gamma##profile",&material.camoLumaGamma,.05f,5,"%.3f",ImGuiSliderFlags_Logarithmic);materialChanged|=ImGui::SliderFloat("Luma contrast##profile",&material.camoLumaContrast,0,4,"%.3f");ImGui::EndDisabled();materialChanged|=ImGui::Checkbox("Override metalness##profile",&material.overrideMetalness);if(material.overrideMetalness){materialChanged|=ImGui::Checkbox("Follow diffuse map##metalness",&material.metalnessFromDiffuse);if(material.metalnessFromDiffuse){materialChanged|=ImGui::SliderFloat("Metalness black##profile",&material.metalnessBlack,0,1,"%.3f");materialChanged|=ImGui::SliderFloat("Metalness white##profile",&material.metalnessWhite,0,1,"%.3f");materialChanged|=ImGui::SliderFloat("Metalness gamma##profile",&material.metalnessGamma,.05f,5,"%.3f",ImGuiSliderFlags_Logarithmic);}else materialChanged|=ImGui::SliderFloat("Metalness##profile",&material.metalness,0,1,"%.3f");}materialChanged|=ImGui::SliderFloat("Specular multiplier##profile",&material.specularMultiplier,0,8,"%.2fx");materialChanged|=ImGui::SliderFloat("Cubemap specular intensity##profile",&material.cubemapSpecularIntensity,0,8,"%.2fx");materialChanged|=ImGui::ColorEdit3("Specular input black##profile",&material.specularColorLow.x,ImGuiColorEditFlags_Float);materialChanged|=ImGui::ColorEdit3("Specular input white##profile",&material.specularColorHigh.x,ImGuiColorEditFlags_Float);if(materialChanged){app.camoLumaMask=material.useBaseColorLumaMask;app.camoInvert=material.invertCamoMask;app.camoAlphaLow=material.camoAlphaLow;app.camoAlphaHigh=material.camoAlphaHigh;app.camoLumaLow=material.camoLumaLow;app.camoLumaHigh=material.camoLumaHigh;app.camoLumaGamma=material.camoLumaGamma;app.camoLumaContrast=material.camoLumaContrast;app.weaponSpecularMultiplier=material.specularMultiplier;app.weaponCubemapMultiplier=material.cubemapSpecularIntensity;app.weaponSpecularLow=material.specularColorLow;app.weaponSpecularHigh=material.specularColorHigh;app.weaponProfileDirty=true;if(app.activeClassSlot>=0&&app.classSlotRigs[app.activeClassSlot])app.classSlotRigs[app.activeClassSlot]->profile=app.weaponProfile;}ImGui::TreePop();}
 
+    if(ImGui::TreeNode("IW4 weapon turning")){
+        auto& p=app.weaponProfile;bool changed=ImGui::Checkbox("Use separate settings",&p.overrideWeaponTurning);
+        ImGui::BeginDisabled(!p.overrideWeaponTurning);
+        changed|=ImGui::Checkbox("Enable turning",&p.weaponTurningEnabled);
+        changed|=ImGui::SliderFloat("Hip multiplier",&p.weaponTurningHipMultiplier,0.f,3.f,"%.3fx");
+        changed|=ImGui::SliderFloat("ADS multiplier",&p.weaponTurningAdsMultiplier,0.f,3.f,"%.3fx");
+        ImGui::EndDisabled();
+        if(changed){app.weaponProfileDirty=true;app.weaponTurn={};if(app.activeClassSlot>=0&&app.classSlotRigs[app.activeClassSlot])app.classSlotRigs[app.activeClassSlot]->profile=p;}
+        ImGui::TreePop();
+    }
     if(ImGui::TreeNodeEx("Gun position",ImGuiTreeNodeFlags_DefaultOpen)){
         bool positionChanged=false;
         positionChanged|=ImGui::SliderFloat("Weapon FOV multiplier",&app.weaponProfile.viewmodelFovMultiplier,.1f,3.f,"%.3fx");
         positionChanged|=ImGui::SliderFloat("Sprint bob multiplier",&app.weaponProfile.sprintBobMultiplier,0.f,2.f,"%.3fx");
+        positionChanged|=ImGui::Checkbox("Disable sprint animations",&app.weaponProfile.disableSprintAnimations);
+        positionChanged|=ImGui::SliderFloat("Sprint bob speed multiplier",&app.weaponProfile.sprintBobSpeedMultiplier,0.f,3.f,"%.3fx");
         positionChanged|=ImGui::Checkbox("Flip viewmodel",&app.weaponProfile.flipViewmodel);
         positionChanged|=ImGui::Checkbox("Separate ADS position",&app.weaponProfile.separateAdsPosition);
         positionChanged|=ImGui::DragFloat("Gun X",&app.weaponProfile.gunPosition.x,.05f,-1000.0f,1000.0f,"%+.2f");
@@ -12301,6 +13294,19 @@ ImGui::TreePop();}
     }
 
     static constexpr const char* mapKeys[]={"idle","fire","ads_fire","reload","reload_empty","ads_up","ads_down","sprint_in","sprint_loop","sprint_out","inspect","melee","rechamber","ads_rechamber","pullout","first_raise","putaway","pullout.from_primary","pullout.from_sidearm","putaway.to_primary","putaway.to_sidearm","mantle","jump_takeoff","jump_land"};
+    if(ImGui::TreeNode("Weapon transform per hands rig")){
+        const auto key=weaponHandRigKey(app);ImGui::TextWrapped("Hands rig: %s",key.c_str());
+        bool enabled=app.weaponProfile.rigWeaponTransforms.contains(key);
+        if(ImGui::Checkbox("Override for these hands",&enabled)){if(enabled)app.weaponProfile.rigWeaponTransforms[key]={};else app.weaponProfile.rigWeaponTransforms.erase(key);app.weaponProfileDirty=true;}
+        if(enabled){auto& transform=app.weaponProfile.rigWeaponTransforms[key];bool edited=false;
+            edited|=ImGui::DragFloat3("Weapon position (cm)",&transform.position.x,.05f);
+            edited|=ImGui::DragFloat3("Weapon rotation (degrees)",&transform.rotationDegrees.x,.25f);
+            edited|=ImGui::DragFloat("Weapon scale",&transform.scale,.005f,.01f,10.f,"%.3fx");
+            if(ImGui::Button("Reset weapon transform")){transform={};edited=true;}
+            if(edited){if(!std::isfinite(transform.scale)||transform.scale<=0)transform.scale=1;app.weaponProfileDirty=true;}
+        }
+        ImGui::TreePop();
+    }
     if(ImGui::TreeNode("Animation set and overrides")){app.weaponAnimationEditKey=std::clamp(app.weaponAnimationEditKey,0,static_cast<int>(std::size(mapKeys))-1);if(ImGui::Combo("Action",&app.weaponAnimationEditKey,mapKeys,static_cast<int>(std::size(mapKeys)))){app.weaponAnimationOverride.fill(0);if(const auto found=app.weaponProfile.animations.find(mapKeys[app.weaponAnimationEditKey]);found!=app.weaponProfile.animations.end())std::snprintf(app.weaponAnimationOverride.data(),app.weaponAnimationOverride.size(),"%s",found->second.c_str());}
         if(app.weaponAnimationOverride[0]=='\0')if(const auto found=app.weaponProfile.animations.find(mapKeys[app.weaponAnimationEditKey]);found!=app.weaponProfile.animations.end())std::snprintf(app.weaponAnimationOverride.data(),app.weaponAnimationOverride.size(),"%s",found->second.c_str());
         if(ImGui::InputText("Cast clip",app.weaponAnimationOverride.data(),app.weaponAnimationOverride.size())){app.weaponProfile.animations[mapKeys[app.weaponAnimationEditKey]]=app.weaponAnimationOverride.data();app.weaponProfile.animationVariants.erase(mapKeys[app.weaponAnimationEditKey]);app.weaponProfileDirty=true;}ImGui::SameLine();if(ImGui::Button("Use playing")&&app.animationIndex<app.scene.animations.size()){const auto& source=app.scene.animations[app.animationIndex].sourceName;app.weaponProfile.animations[mapKeys[app.weaponAnimationEditKey]]=source;app.weaponProfile.animationVariants.erase(mapKeys[app.weaponAnimationEditKey]);std::snprintf(app.weaponAnimationOverride.data(),app.weaponAnimationOverride.size(),"%s",source.c_str());app.weaponProfileDirty=true;}ImGui::SameLine();if(ImGui::Button("Clear mapping")){app.weaponProfile.animations.erase(mapKeys[app.weaponAnimationEditKey]);app.weaponProfile.animationVariants.erase(mapKeys[app.weaponAnimationEditKey]);app.weaponAnimationOverride.fill(0);app.weaponProfileDirty=true;}
@@ -12337,6 +13343,34 @@ ImGui::TreePop();}
             ImGui::EndCombo();
         }
         if(ImGui::TreeNode("Import animations from other games")){static bool onlyAction=true;ImGui::Checkbox("Only selected action type",&onlyAction);std::vector<std::string> catalogGames;for(const auto& asset:app.assetCatalog.entries)if(!asset.game.empty()&&std::find(catalogGames.begin(),catalogGames.end(),asset.game)==catalogGames.end())catalogGames.push_back(asset.game);for(const auto& game:catalogGames){bool selected=app.animationLoadGames.contains(game);if(ImGui::Checkbox(game.c_str(),&selected)){if(selected)app.animationLoadGames.insert(game);else app.animationLoadGames.erase(game);}}ImGui::BeginDisabled(app.animationLoadGames.empty()||app.loadingActive);if(ImGui::Button(onlyAction?"Load selected action":"Load full libraries")){std::vector<std::filesystem::path> folders;for(const auto& game:app.animationLoadGames)for(const auto& asset:app.assetCatalog.entries)if(asset.game==game)if(const auto folder=animationFolderFor(asset)){if(std::find(folders.begin(),folders.end(),*folder)==folders.end())folders.push_back(*folder);break;}if(!folders.empty())queueAnimationFolders(app,folders,onlyAction?mapKeys[app.weaponAnimationEditKey]:std::string{});}ImGui::EndDisabled();ImGui::TreePop();}
+        static std::array<char,160> weaponImportFilter{};
+        ImGui::InputTextWithHint("Import filename filter","e.g. eq",weaponImportFilter.data(),weaponImportFilter.size());
+        ImGui::BeginDisabled(app.animationLoadGames.empty()||app.loadingActive);
+        const bool allWeapons=ImGui::Button("Load all weapon animations");ImGui::SameLine();
+        ImGui::BeginDisabled(!weaponImportFilter[0]);const bool filteredWeapons=ImGui::Button("Load matching weapon animations");ImGui::EndDisabled();
+        if(allWeapons||filteredWeapons){
+            std::vector<std::filesystem::path> folders;
+            for(const auto& game:app.animationLoadGames)for(const auto& asset:app.assetCatalog.entries)if(asset.game==game)if(const auto folder=animationFolderFor(asset)){
+                if(std::find(folders.begin(),folders.end(),*folder)==folders.end())folders.push_back(*folder);break;
+            }
+            if(!folders.empty())queueAnimationFolders(app,folders,{},true,filteredWeapons?weaponImportFilter.data():"");
+            else app.status="No animation folders found for selected games";
+        }
+        ImGui::EndDisabled();
+        ImGui::BeginDisabled(app.loadingActive);
+        if(ImGui::BeginCombo("Available weapon animation files","Choose file to load")){
+            for(const auto& path:app.weaponAnimationChoices){
+                const auto name=path.filename().string();if(!searchFilter.empty()&&lowerText(name).find(searchFilter)==std::string::npos)continue;
+                ImGui::PushID(path.string().c_str());
+                if(ImGui::Selectable(("["+gameFromExportPath(path)+"] "+name).c_str())){
+                    app.pendingAnimationFiles={path};app.pendingAnimationCursor=app.pendingAnimationClips=app.pendingAnimationMapped=app.pendingAnimationFailed=0;
+                    app.loadingActive=true;app.loadingProgress=0;app.loadingLabel="Loading selected weapon animation";
+                    app.weaponProfile.animations[mapKeys[app.weaponAnimationEditKey]]=name;
+                    app.weaponProfile.animationFiles[mapKeys[app.weaponAnimationEditKey]]=path.string();
+                    app.weaponProfile.animationVariants.erase(mapKeys[app.weaponAnimationEditKey]);app.weaponProfileDirty=true;
+                }ImGui::PopID();
+            }ImGui::EndCombo();
+        }ImGui::EndDisabled();
         if(ImGui::Button("Save animation selections to weapfile"))autoSaveWeaponProfile(app);
         uiHelp("Pair-aware mappings choose different pullout/putaway clips when the other class slot is a sidearm versus another primary.");ImGui::TreePop();}
 
@@ -12345,6 +13379,19 @@ ImGui::TreePop();}
     if(ImGui::TreeNode("Classic weaponfile sources")){ImGui::TextWrapped("BO1: %s",app.t5WeaponRoot.string().c_str());if(ImGui::Button("Set BO1 weapon folder"))if(const auto folder=chooseFolder()){app.t5WeaponRoot=*folder;app.status="BO1 weaponfile source set to "+folder->string();}ImGui::TextWrapped("MW3: %s",app.iw5WeaponRoot.string().c_str());if(ImGui::Button("Set MW3 weapon folder"))if(const auto folder=chooseFolder()){app.iw5WeaponRoot=*folder;app.status="MW3 weaponfile source set to "+folder->string();}ImGui::TreePop();}
 }
 
+void resetPlayerLoadout(AppState& app){
+    app.classSlotRigs={};app.activeClassSlot=-1;app.lastClassSlot=1;app.classGpuResident=false;
+    app.liveClassBeforeTake.reset();app.liveStandaloneBeforeTake.reset();app.liveThirdWeaponBeforeTake.reset();
+    app.scene={};app.document.reset();app.hiddenWorldActor.reset();app.hiddenWorldActorPose.clear();app.worldActorGpuReady=false;
+    app.selectedBaseAsset=app.selectedWeaponAsset=app.classHandsAsset=app.classWorldWeaponAsset=static_cast<std::size_t>(-1);
+    app.loadedBaseModelPath.clear();app.loadedRigModelPaths.clear();app.loadedAttachmentPaths.clear();app.equippedRigAssets.clear();
+    app.pendingModelKind=app.pendingModelStage=0;app.pendingAnimationFiles.clear();app.pendingAnimationCursor=0;
+    app.weaponSwitchStage=0;app.weaponSwitchElapsed=0;app.queuedWeaponSwap=app.yyReturning=app.yyReverse=app.yyTowardPutaway=false;
+    app.actionActive=app.actionOverlay=app.transitioning=false;app.runtimeLayers.clear();app.interruptPoseSource.clear();
+    app.pendingWeaponRechamber=app.gameplayRechamber=false;app.burstShotsRemaining=0;resetWeaponAimState(app);
+    app.animationIndex=app.actionAnimationIndex=static_cast<std::size_t>(-1);app.animationFrame=0;
+    uploadMainScene(app);setActorControllerEnabled(app,true);app.status="Loadout reset — player has no weapons";
+}
 void drawCreateAClass(AppState& app){
     ImGui::BeginDisabled(app.pendingClassLoadStage>=0||app.pendingClassFuture.has_value()||app.takeRecording||app.takePreview);
     if(ImGui::Checkbox("Third weapon##enable_third_weapon",&app.experimentalThirdWeapon)){
@@ -12355,14 +13402,21 @@ void drawCreateAClass(AppState& app){
     ImGui::EndDisabled();
     uiHelp("Each slot can use any game and weapon class, including a primary weapon in the secondary slot. Its weaponfile supplies that slot's viewhands, animations, timings, and behavior. Both rigs remain cached; press Q in Actor mode to switch.");
     ImGui::BeginDisabled(app.pendingClassLoadStage>=0);
-    const char* handsPreview=app.classViewhandsOverride<app.assetCatalog.entries.size()?app.assetCatalog.entries[app.classViewhandsOverride].name.c_str():"Weapon default";if(ImGui::BeginCombo("Viewhands",handsPreview)){if(ImGui::Selectable("Weapon default",app.classViewhandsOverride>=app.assetCatalog.entries.size())){app.classViewhandsOverride=static_cast<std::size_t>(-1);app.classSlotRigs={};}for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto& asset=app.assetCatalog.entries[i];if(asset.role!=assets::Role::ViewHands)continue;const std::string label=(asset.game.empty()?std::string{}:"["+asset.game+"] ")+asset.name;if(ImGui::Selectable(label.c_str(),app.classViewhandsOverride==i)){app.classViewhandsOverride=i;app.classSlotRigs={};}}ImGui::EndCombo();}uiHelp("Selected hands remain loaded for both weapon slots; cross-game animation bind poses are retargeted automatically.");
-    const char* factions[]={"SEAL Team Six","PMC"};if(ImGui::Combo("Faction",&app.classFaction,factions,2)){app.classSlotRigs={};}
+    drawViewhandsPicker(app,"Viewhands",app.classViewhandsOverride,"Weapon default");
+    uiHelp("Selected hands remain loaded for both weapon slots; cross-game animation bind poses are retargeted automatically.");
+    const char* factions[]={"SEAL Team Six","PMC"};ImGui::Combo("Faction",&app.classFaction,factions,2);
     drawPlayermodelAssembler(app);
-    if(drawClassSlotPicker(app,"Primary",app.classPrimaryGame,app.classPrimaryCategory,app.classPrimarySearch,app.classPrimaryAsset)){app.classSlotRigs[0].reset();}if(drawClassSlotPicker(app,"Secondary",app.classSecondaryGame,app.classSecondaryCategory,app.classSecondarySearch,app.classSecondaryAsset))app.classSlotRigs[1].reset();
-    if(app.experimentalThirdWeapon&&drawClassSlotPicker(app,"Third weapon",app.classThirdGame,app.classThirdCategory,app.classThirdSearch,app.classThirdAsset))app.classSlotRigs[2].reset();
-    if(app.classPrimaryAsset<app.assetCatalog.entries.size()){static constexpr const char* categoryNames[]={"All","Assault","SMG","LMG","Shotgun","Sniper","Pistol / dual wield","Launcher","Special / equipment"};const auto category=std::clamp(classCategoryForWeapon(app,app.assetCatalog.entries[app.classPrimaryAsset]),0,8);uiHelp("Primary class: %s",categoryNames[category]);
+    drawClassSlotPicker(app,"Primary",app.classPrimaryGame,app.classPrimaryCategory,app.classPrimarySearch,app.classPrimaryAsset);drawClassSlotPicker(app,"Secondary",app.classSecondaryGame,app.classSecondaryCategory,app.classSecondarySearch,app.classSecondaryAsset);
+    if(app.experimentalThirdWeapon)drawClassSlotPicker(app,"Third weapon",app.classThirdGame,app.classThirdCategory,app.classThirdSearch,app.classThirdAsset);
+    drawClassSlotPicker(app,"Melee weapon (Tactical knife)",app.classMeleeGame,app.classMeleeCategory,app.classMeleeSearch,app.classMeleeAsset);
+    if(app.classPrimaryAsset<app.assetCatalog.entries.size()){static constexpr const char* categoryNames[]={"All","Assault","SMG","LMG","Shotgun","Sniper","Pistol / dual wield","Launcher","Special / equipment","Knives"};const auto category=std::clamp(classCategoryForWeapon(app,app.assetCatalog.entries[app.classPrimaryAsset]),0,9);uiHelp("Primary class: %s",categoryNames[category]);
         uiHelp("World actor: %s",app.classWorldModelAsset<app.assetCatalog.entries.size()?app.assetCatalog.entries[app.classWorldModelAsset].name.c_str():"not found");uiHelp("Viewhands: %s",app.classHandsAsset<app.assetCatalog.entries.size()?app.assetCatalog.entries[app.classHandsAsset].name.c_str():"not found");}
-    ImGui::BeginDisabled(app.classPrimaryAsset>=app.assetCatalog.entries.size()||app.classSecondaryAsset>=app.assetCatalog.entries.size()||app.pendingClassLoadStage>=0);if(ImGui::Button(app.experimentalThirdWeapon?"Load class (three weapons)":"Load class (both weapons)"))loadBothClassSlots(app);ImGui::EndDisabled();
+    const bool missingThird=app.experimentalThirdWeapon&&app.classThirdAsset>=app.assetCatalog.entries.size();
+    if(missingThird)ImGui::TextWrapped("Select a third weapon or disable Third weapon. Tactical melee is a separate slot.");
+    ImGui::BeginDisabled(app.classPrimaryAsset>=app.assetCatalog.entries.size()||app.classSecondaryAsset>=app.assetCatalog.entries.size()||missingThird||app.pendingClassLoadStage>=0);if(ImGui::Button(app.experimentalThirdWeapon?"Load class (three weapons)":"Load class (both weapons)"))loadBothClassSlots(app);ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(app.pendingClassFuture.has_value()||app.pendingClassLoadStage>=0||app.takeRecording||app.takePreview||app.takePreparationFuture.has_value());
+    if(ImGui::Button("Reset loadout (unarmed)"))resetPlayerLoadout(app);
     ImGui::EndDisabled();
     if(app.pendingClassLoadStage>=0){ImGui::ProgressBar(std::clamp(app.loadingProgress.load(),0.0f,1.0f),ImVec2(-1.0f,0.0f));ImGui::TextWrapped("%s",app.loadingDetail.c_str());}
     if(app.hiddenWorldActor)uiHelp("Hidden world proxy ready: %zu bones / %zu clips / %s",app.hiddenWorldActor->skeleton.bones.size(),app.hiddenWorldActor->animations.size(),app.classWorldWeaponAsset<app.assetCatalog.entries.size()?app.assetCatalog.entries[app.classWorldWeaponAsset].name.c_str():"no world weapon");
@@ -12396,13 +13450,14 @@ void drawAssetLibrary(AppState& app){
     if(ImGui::Button(app.assetFirstPerson?"Load viewmodel":"Load player model")){queueBaseModelLoad(app,app.assetCatalog.entries[app.selectedBaseAsset].path);}
     ImGui::SameLine();if(ImGui::Button("Load game animations")){if(const auto folder=animationFolderFor(app.assetCatalog.entries[app.selectedBaseAsset]))queueAnimationFolder(app,*folder);else app.status="No sibling animations folder found";}
     ImGui::EndDisabled();
-    const char* weaponCategories[]={"All weapon classes","Assault rifles","SMGs","LMGs","Shotguns","Sniper rifles","Pistols","Launchers","Special / equipment"};
+    const char* weaponCategories[]={"All weapon classes","Assault rifles","SMGs","LMGs","Shotguns","Sniper rifles","Pistols","Launchers","Special / equipment","Knives"};
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.65f);
     if(ImGui::Combo("Weapon class",&app.assetWeaponCategory,weaponCategories,static_cast<int>(std::size(weaponCategories))))app.selectedWeaponAsset=static_cast<std::size_t>(-1);
     ImGui::SameLine();ImGui::Checkbox("All variants",&app.showAllWeaponVariants);
     if(assetCombo(app,app.assetFirstPerson?"Viewmodel weapon":"World weapon",weaponRole,app.selectedWeaponAsset)){
         if(app.selectedWeaponAsset<app.assetCatalog.entries.size())app.status="Selected "+app.assetCatalog.entries[app.selectedWeaponAsset].name;
     }
+    if(drawSource2Skin(app,app.selectedWeaponAsset))app.status="Selected weapon skin";
     if(app.assetFirstPerson&&drawMw3CamoVariant(app,app.selectedWeaponAsset))app.status="Selected MW3 weapon camo model "+app.assetCatalog.entries[app.selectedWeaponAsset].name;
     if(app.assetFirstPerson&&drawAwWeaponVariant(app,app.selectedWeaponAsset))app.status="Selected AW weapon variant "+app.assetCatalog.entries[app.selectedWeaponAsset].name;
     if(app.assetFirstPerson&&drawColdWarVariant(app,app.selectedWeaponAsset))app.status="Selected Cold War variant "+app.assetCatalog.entries[app.selectedWeaponAsset].name;
@@ -12429,6 +13484,8 @@ void drawAssetLibrary(AppState& app){
 }
 
 void toggleTakeRecording(AppState& app){
+    if(app.exportActive||app.pendingPreparedTakeOpen||app.pendingTakeAction)return;
+    if(!app.takeRecording&&!guardTakeReplacement(app,[&app]{toggleTakeRecording(app);}))return;
     if(!app.scene.skeleton.bones.empty()&&!app.takePlaying){
         if(!app.takeRecording){app.demoLibrary.recording={};if(app.loadedMap){app.demoLibrary.recording.map=cadence::content::utf8(app.loadedMap->sourcePath);app.demoLibrary.recording.mapScale=app.loadedMap->scaleMultiplier;}}
         for(const auto& p:cadence::content::constructionDocuments())app.demoLibrary.recording.construction.push_back(cadence::content::utf8(p));
@@ -12438,11 +13495,15 @@ void toggleTakeRecording(AppState& app){
         for(const auto index:{app.selectedWeaponAsset,app.classPrimaryAsset,app.classSecondaryAsset,app.classThirdAsset})if(index<app.assetCatalog.entries.size()){auto profile=cadence::content::resolve(weaponDefaultProfilePath(app.assetCatalog.entries[index]));if(std::filesystem::is_regular_file(profile))app.demoLibrary.recording.construction.push_back(cadence::content::utf8(profile));}
         auto& dependencies=app.demoLibrary.recording.construction;std::sort(dependencies.begin(),dependencies.end());dependencies.erase(std::unique(dependencies.begin(),dependencies.end()),dependencies.end());
     }
-    if(app.scene.skeleton.bones.empty()||app.takePlaying)return;if(app.takeRecording){app.takeRecording=false;app.takePlaying=false;app.takePreview=false;app.takeTime=0;app.exportStart=app.takeTrimStart=0;app.exportEnd=app.takeTrimEnd=app.recordedTake.duration();app.status="Recording stored — Save take when ready (F6 discards only while recording)";return;}
-    setCameraInputCapture(app,false);app.cameraEditMode=false;const float rate=app.recordedTake.sampleRate;app.recordedTake.clear();app.takeMemory.reset();app.takeRecordingCost={};app.recordedTake.sampleRate=rate;app.recordedTake.boneCount=app.scene.skeleton.bones.size();for(int slot=0;slot<(app.classSlotRigs[2]?3:2);++slot)app.recordedTake.actorSlotBoneCounts[slot]=(slot==app.activeClassSlot||!app.classSlotRigs[slot])?app.scene.skeleton.bones.size():app.classSlotRigs[slot]->scene.skeleton.bones.size();captureTakeActorManifest(app);captureTakeWorldActorManifest(app);captureTakeBotManifest(app);app.takeTime=0;app.takeAccumulator=0;app.takePreview=false;app.takeFirstPersonView=false;app.takePlaybackSlot=app.activeClassSlot;app.takeRecording=true;app.dollyCameraActive=false;captureTakeSample(app,0);app.status="Recording player world proxy + "+std::to_string(app.recordedTake.botCount)+" bot actors";
+    if(app.scene.skeleton.bones.empty()||app.takePlaying)return;if(app.takeRecording){app.takeRecording=false;app.takePlaying=false;app.takePreview=false;app.takeTime=0;app.exportStart=0;app.takeTrimStart=0;app.exportEnd=app.recordedTake.duration();app.takeTrimEnd=int(app.recordedTake.samples.size())-1;app.takeDirty=true;app.status="Unsaved take";return;}
+    setCameraInputCapture(app,false);app.cameraEditMode=false;const float rate=app.recordedTake.sampleRate;app.recordedTake.clear();app.takeTrimHistory.clear();app.takeDirty=true;app.takeFilePath.clear();app.cameraHistory.reset({});app.takeMemory.reset();app.takeRecordingCost={};app.recordedTake.sampleRate=rate;app.recordedTake.boneCount=app.scene.skeleton.bones.size();for(int slot=0;slot<(app.classSlotRigs[2]?3:2);++slot)app.recordedTake.actorSlotBoneCounts[slot]=(slot==app.activeClassSlot||!app.classSlotRigs[slot])?app.scene.skeleton.bones.size():app.classSlotRigs[slot]->scene.skeleton.bones.size();captureTakeActorManifest(app);captureTakeWorldActorManifest(app);captureTakeBotManifest(app);app.takeTime=0;app.takeAccumulator=0;app.takePreview=false;app.takeFirstPersonView=false;app.takePlaybackSlot=app.activeClassSlot;app.takeRecording=true;app.dollyCameraActive=false;captureTakeSample(app,0);app.status="Recording player world proxy + "+std::to_string(app.recordedTake.botCount)+" bot actors";
 }
 
-void discardTakeRecording(AppState& app){if(!app.takeRecording)return;app.takeRecording=false;app.takePlaying=false;app.takePreview=false;app.recordedTake.clear();app.takeTime=app.takeAccumulator=0;app.takePlaybackSlot=-1;app.status="Recording discarded";}
+void clearUiTake(AppState& app){
+    if(!guardTakeReplacement(app,[&app]{clearUiTake(app);}))return;
+    returnToLiveGameplay(app);app.takeRecording=false;app.takePlaying=false;app.takePreview=false;app.takeFirstPersonView=false;app.takeTrimStart=app.takeTrimEnd=app.exportStart=app.exportEnd=0;app.recordedTake.clear();app.takeTrimHistory.clear();app.takeDirty=false;app.takeFilePath.clear();app.cameraHistory.reset({});app.takeTime=app.takeAccumulator=0;app.takePlaybackSlot=app.selectedCampath=app.selectedCampathNode=-1;app.status="Take cleared";
+}
+void discardTakeRecording(AppState& app){clearUiTake(app);}
 
 void toggleTakePlayback(AppState& app){
     if(app.recordedTake.samples.empty()||app.takeRecording)return;
@@ -12491,7 +13552,7 @@ void handleTakeCameraInput(AppState& app,float deltaSeconds){
     if(!cadence::workspace::runtime(app.workspaceMode))return;
     if(app.recordedTake.samples.empty()||app.takeRecording||app.exportActive)return;
     auto& io=ImGui::GetIO();
-    if(io.WantTextInput)return;
+    if(io.WantTextInput||ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId|ImGuiPopupFlags_AnyPopupLevel)||(!app.cameraInputCaptured&&ImGui::IsAnyItemActive()))return;
     // Perspective is a replay command even before the first playback tick.
     if(ImGui::IsKeyPressed(ImGuiKey_F2,false)||(app.takePreview&&ImGui::IsKeyPressed(ImGuiKey_F8,false))){toggleTakePerspective(app);return;}
     if(!app.takePreview)return;
@@ -12504,6 +13565,19 @@ void handleTakeCameraInput(AppState& app,float deltaSeconds){
     if(!app.cameraEditMode||!app.cameraInputCaptured)return;if(ImGui::IsKeyPressed(ImGuiKey_K,false))placeDollyNode(app);if(ImGui::IsKeyPressed(ImGuiKey_L,false)){app.recordedTake.dollyCamera.clear();app.dollyCameraActive=false;app.freeCameraActive=true;app.status="Dolly camera nodes cleared";}if(ImGui::IsKeyPressed(ImGuiKey_J,false))toggleDollyPath(app);if(!app.freeCameraActive)return;
     double cursorX{},cursorY{};glfwGetCursorPos(app.window,&cursorX,&cursorY);if(app.cameraCursorInitialized){const float dx=static_cast<float>(cursorX-app.cameraLastCursorX),dy=static_cast<float>(cursorY-app.cameraLastCursorY);app.freeCameraRotationDegrees.x=std::clamp(app.freeCameraRotationDegrees.x+dy*app.freeCameraMouseSpeed*app.freeCameraFov/90.0f,-89.9f,89.9f);app.freeCameraRotationDegrees.y-=dx*app.freeCameraMouseSpeed*app.freeCameraFov/90.0f;}app.cameraLastCursorX=cursorX;app.cameraLastCursorY=cursorY;app.cameraCursorInitialized=true;
     const float pitch=app.freeCameraRotationDegrees.x*scene::kPi/180.0f,yaw=app.freeCameraRotationDegrees.y*scene::kPi/180.0f;const scene::Vec3 forward{std::cos(yaw)*std::cos(pitch),std::sin(yaw)*std::cos(pitch),-std::sin(pitch)},left{-std::sin(yaw),std::cos(yaw),0};float speed=app.freeCameraSpeed*deltaSeconds;if(actorKey(app,GLFW_KEY_LEFT_SHIFT))speed*=3.0f;if(actorKey(app,GLFW_KEY_LEFT_CONTROL))speed*=0.1f;if(actorKey(app,GLFW_KEY_W))app.freeCameraPosition=app.freeCameraPosition+forward*speed;if(actorKey(app,GLFW_KEY_S))app.freeCameraPosition=app.freeCameraPosition-forward*speed;if(actorKey(app,GLFW_KEY_A))app.freeCameraPosition=app.freeCameraPosition+left*speed;if(actorKey(app,GLFW_KEY_D))app.freeCameraPosition=app.freeCameraPosition-left*speed;if(actorKey(app,GLFW_KEY_E))app.freeCameraPosition.z+=speed;if(actorKey(app,GLFW_KEY_Q))app.freeCameraPosition.z-=speed;
+    if(app.gamepad.connected){
+        if(std::abs(app.gamepad.rightStickX)>0.001f||std::abs(app.gamepad.rightStickY)>0.001f){
+            app.freeCameraRotationDegrees.x=std::clamp(app.freeCameraRotationDegrees.x-app.gamepad.rightStickY*app.freeCameraMouseSpeed*app.freeCameraFov/90.0f*45.0f*deltaSeconds,-89.9f,89.9f);
+            app.freeCameraRotationDegrees.y-=app.gamepad.rightStickX*app.freeCameraMouseSpeed*app.freeCameraFov/90.0f*45.0f*deltaSeconds;
+        }
+        if(std::abs(app.gamepad.leftStickX)>0.001f||std::abs(app.gamepad.leftStickY)>0.001f){
+            float gpCamSpeed=app.freeCameraSpeed*deltaSeconds;if(app.gamepad.leftThumb)gpCamSpeed*=3.0f;
+            app.freeCameraPosition=app.freeCameraPosition+forward*(app.gamepad.leftStickY*gpCamSpeed);
+            app.freeCameraPosition=app.freeCameraPosition-left*(app.gamepad.leftStickX*gpCamSpeed);
+        }
+        if(app.gamepad.rightBumper)app.freeCameraPosition.z+=app.freeCameraSpeed*deltaSeconds;
+        if(app.gamepad.leftBumper)app.freeCameraPosition.z-=app.freeCameraSpeed*deltaSeconds;
+    }
     if(glfwGetMouseButton(app.window,GLFW_MOUSE_BUTTON_MIDDLE)==GLFW_PRESS){app.freeCameraRotationDegrees={};app.freeCameraFov=90.0f;}else if(actorKey(app,GLFW_KEY_LEFT_ALT))app.freeCameraScrollDelta-=io.MouseWheel*2.0f;else app.freeCameraRotationDegrees.z+=io.MouseWheel*2.0f;const float smoothing=std::clamp(1.0f-15.0f*deltaSeconds,0.0f,1.0f);if(std::abs(app.freeCameraScrollDelta)>0.001f){app.freeCameraFov=std::clamp(app.freeCameraFov+app.freeCameraScrollDelta*deltaSeconds*64.0f,1.0f,179.0f);app.freeCameraScrollDelta*=smoothing;}else app.freeCameraScrollDelta=0;
 }
 
@@ -12511,7 +13585,11 @@ void drawTakeFileControls(AppState& app);
 void drawTakeQuickControls(AppState& app){
     drawTakeFileControls(app);
     {
-if(ImGui::Button(app.takeRecording?"Store recording  [F5]":"Record take  [F5]"))toggleTakeRecording(app);ImGui::SameLine();if(app.takeRecording){if(ImGui::Button("Discard recording  [F6]"))discardTakeRecording(app);}else{ImGui::BeginDisabled(app.recordedTake.samples.empty());if(ImGui::Button(app.takePlaying?"Pause replay  [F6]":"Play replay  [F6]"))toggleTakePlayback(app);ImGui::EndDisabled();}ImGui::SameLine();ImGui::BeginDisabled(app.recordedTake.samples.empty()||app.takeRecording);if(ImGui::Button(app.takeFirstPersonView?"Third person  [F2]":"First person  [F2]"))toggleTakePerspective(app);ImGui::EndDisabled();ImGui::SameLine();if(ImGui::Button("Live  [F7]")){returnToLiveGameplay(app);}uiHelp("F5 stores without opening replay. F6 discards only an active recording.");
+if(ImGui::Button(app.takeRecording?"Stop take  [F5]":"Record take  [F5]"))toggleTakeRecording(app);
+uiSameLine(145);ImGui::BeginDisabled(app.recordedTake.samples.empty()||app.takeRecording);
+if(ImGui::Button(app.takePlaying?"Pause replay  [F6]":"Play replay  [F6]"))toggleTakePlayback(app);
+uiSameLine(145);if(ImGui::Button(app.takeFirstPersonView?"Third person  [F2]":"First person  [F2]"))toggleTakePerspective(app);
+ImGui::EndDisabled();uiSameLine(90);ImGui::BeginDisabled(app.takeRecording);if(ImGui::Button("Live  [F7]"))returnToLiveGameplay(app);ImGui::EndDisabled();
 }
 }
 
@@ -13079,6 +14157,15 @@ void drawIWXMVMGraphEditor(AppState& app,float width,float height){
 }
 
 void drawDollyCamera(AppState& app){
+    cadence::ui::CameraEdits current{app.recordedTake.dollyCamera,app.recordedTake.cameraPaths};
+    ImGui::BeginDisabled(app.exportActive||app.takeRecording||app.cameraHistory.previous.empty());
+    const bool undo=ImGui::Button("Undo##camera");ImGui::EndDisabled();uiSameLine(60);
+    ImGui::BeginDisabled(app.exportActive||app.takeRecording||app.cameraHistory.next.empty());
+    const bool redo=ImGui::Button("Redo##camera");ImGui::EndDisabled();
+    if((undo&&app.cameraHistory.undo(current))||(redo&&app.cameraHistory.redo(current))){
+        app.recordedTake.dollyCamera=std::move(current.nodes);app.recordedTake.cameraPaths=std::move(current.paths);
+        app.selectedCampathNode=-1;app.selectedCampath=-1;app.takeDirty=true;
+    }
     uiHelp("IWXMVM-compatible camera placement. Camera nodes are locked to exact take ticks and saved inside the take.");bool placement=app.cameraEditMode;if(ImGui::Checkbox("Camera placement mode",&placement)){if(placement)enterCameraPlacement(app);else {app.cameraEditMode=false;app.freeCameraActive=false;app.dollyCameraActive=false;setCameraInputCapture(app,false);}}
     ImGui::BeginDisabled(!app.cameraEditMode||app.recordedTake.samples.empty());if(ImGui::Button("Place node  [K]"))placeDollyNode(app);if(ImGui::Button(app.dollyCameraActive?"Exit path  [J]":"Play path  [J]"))toggleDollyPath(app);if(ImGui::Button("Clear nodes  [L]")){app.recordedTake.dollyCamera.clear();app.dollyCameraActive=false;app.status="Dolly camera nodes cleared";}ImGui::EndDisabled();
     if(ImGui::CollapsingHeader("Path visibility")){
@@ -13089,6 +14176,11 @@ void drawDollyCamera(AppState& app){
     uiHelp("Spline automatically hides during active dolly camera playback [J] for clean captures.");
     }
     if(ImGui::CollapsingHeader("Camera movement")){
+    if(ImGui::TreeNode("Screen shake (experimental)")){
+        auto& s=app.screenShake;ImGui::Checkbox("Enable shake",&s.enabled);ImGui::Checkbox("Affect viewmodel",&s.viewmodel);
+        ImGui::SliderFloat("Speed",&s.speed,0,10);ImGui::SliderFloat("Amount",&s.amount,0,10);
+        ImGui::SliderFloat("Position amount",&s.position,0,10,"%.3f cm");ImGui::SliderFloat("Rotation amount",&s.rotation,0,10,"%.3f deg");ImGui::TreePop();
+    }
     ImGui::DragFloat("Freecam speed",&app.freeCameraSpeed,1.0f,1.0f,gameplay::iw::worldUnits(5000.0f),"%.0f units/sec",ImGuiSliderFlags_AlwaysClamp);ImGui::DragFloat("Mouse speed",&app.freeCameraMouseSpeed,0.005f,0.01f,2.0f,"%.3f",ImGuiSliderFlags_AlwaysClamp);
     }
     if(ImGui::CollapsingHeader("Shared camera clipping")){
@@ -13109,7 +14201,7 @@ if(ImGui::CollapsingHeader("Saved paths & nodes")){
 ImGui::InputText("Campath name",app.campathName.data(),app.campathName.size());ImGui::BeginDisabled(app.recordedTake.dollyCamera.empty());if(ImGui::Button("Store / update")){const std::string name=app.campathName.data();auto found=std::find_if(app.recordedTake.cameraPaths.begin(),app.recordedTake.cameraPaths.end(),[&](const auto& p){return p.name==name;});if(found==app.recordedTake.cameraPaths.end()){app.recordedTake.cameraPaths.push_back({name.empty()?"Campath "+std::to_string(app.recordedTake.cameraPaths.size()+1):name,app.recordedTake.dollyCamera});app.selectedCampath=static_cast<int>(app.recordedTake.cameraPaths.size()-1);}else{found->keyframes=app.recordedTake.dollyCamera;app.selectedCampath=static_cast<int>(found-app.recordedTake.cameraPaths.begin());}app.status="Campath stored inside take";}ImGui::EndDisabled();
     if(ImGui::BeginCombo("Saved campaths",app.selectedCampath>=0&&app.selectedCampath<static_cast<int>(app.recordedTake.cameraPaths.size())?app.recordedTake.cameraPaths[app.selectedCampath].name.c_str():"None")){for(std::size_t i=0;i<app.recordedTake.cameraPaths.size();++i)if(ImGui::Selectable(app.recordedTake.cameraPaths[i].name.c_str(),app.selectedCampath==static_cast<int>(i))){app.selectedCampath=static_cast<int>(i);app.recordedTake.dollyCamera=app.recordedTake.cameraPaths[i].keyframes;std::snprintf(app.campathName.data(),app.campathName.size(),"%s",app.recordedTake.cameraPaths[i].name.c_str());}ImGui::EndCombo();}ImGui::BeginDisabled(app.selectedCampath<0||app.selectedCampath>=static_cast<int>(app.recordedTake.cameraPaths.size()));if(ImGui::Button("Delete saved path")){app.recordedTake.cameraPaths.erase(app.recordedTake.cameraPaths.begin()+app.selectedCampath);app.selectedCampath=-1;}ImGui::EndDisabled();
     ImGui::TextDisabled("%zu nodes · linear below 4, IWXMVM cubic spline at 4+",app.recordedTake.dollyCamera.size());int deleteNode=-1;if(ImGui::BeginTable("dolly_nodes",5,ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerV)){ImGui::TableSetupColumn("Tick");ImGui::TableSetupColumn("Time");ImGui::TableSetupColumn("Position");ImGui::TableSetupColumn("FOV");ImGui::TableSetupColumn("",ImGuiTableColumnFlags_WidthFixed,28);ImGui::TableHeadersRow();for(std::size_t i=0;i<app.recordedTake.dollyCamera.size();++i){const auto& node=app.recordedTake.dollyCamera[i];ImGui::PushID(static_cast<int>(i));ImGui::TableNextRow();ImGui::TableNextColumn();if(ImGui::Selectable(std::to_string(node.tick).c_str(),app.selectedCampathNode==static_cast<int>(i),ImGuiSelectableFlags_SpanAllColumns)){app.selectedCampathNode=static_cast<int>(i);app.takeTime=static_cast<float>(node.tick)/std::max(1.0f,app.recordedTake.sampleRate);app.takePreview=true;app.takePlaying=false;}ImGui::TableNextColumn();ImGui::Text("%.3f",static_cast<float>(node.tick)/std::max(1.0f,app.recordedTake.sampleRate));ImGui::TableNextColumn();ImGui::Text("%.1f  %.1f  %.1f",node.position.x,node.position.y,node.position.z);ImGui::TableNextColumn();ImGui::Text("%.1f",node.fov);ImGui::TableNextColumn();if(ImGui::SmallButton("X"))deleteNode=static_cast<int>(i);ImGui::PopID();}ImGui::EndTable();}if(deleteNode>=0){app.recordedTake.dollyCamera.erase(app.recordedTake.dollyCamera.begin()+deleteNode);if(app.selectedCampathNode==deleteNode)app.selectedCampathNode=-1;}
-    if(ImGui::CollapsingHeader("Bezier tangents")){
+    if(ImGui::CollapsingHeader("Camera node properties")){
         uiHelp("Default playback uses IWXMVM cubic spline interpolation. Controls below allow inspecting and editing selected node coordinates.");
         if(app.selectedCampathNode>=0&&app.selectedCampathNode<static_cast<int>(app.recordedTake.dollyCamera.size())){
             auto& node=app.recordedTake.dollyCamera[app.selectedCampathNode];
@@ -13124,19 +14216,61 @@ ImGui::InputText("Campath name",app.campathName.data(),app.campathName.size());I
 }
 }
 
-void closeProResExport(AppState& app){app.cameraCsv.close();app.cameraCsvOpen=false;for(FILE** pipe:{&app.exportMoviePipe,&app.exportDepthPipe,&app.exportViewmodelPipe,&app.exportNavigationPipe})if(*pipe){_pclose(*pipe);*pipe=nullptr;}}
+std::string closeProResExport(AppState& app){
+    app.cameraCsv.close();app.cameraCsvOpen=false;
+    const auto streams={&app.exportMoviePipe,&app.exportDepthPipe,&app.exportViewmodelPipe,
+                        &app.exportPlayermodelPipe,&app.exportNavigationPipe};
+    for(auto* stream:streams)if(*stream)(*stream)->endInput();
+    std::string error;
+    for(auto* stream:streams)if(*stream){
+        auto result=(*stream)->finish();
+        if(error.empty())error=std::move(result);
+        stream->reset();
+    }
+    return error;
+}
+void updatePresentInterval(AppState& app){
+    const bool vsync=app.vsync&&!app.exportActive;
+    if(app.presentVsync==vsync)return;
+    glfwSwapInterval(vsync?1:0);
+    app.presentVsync=vsync;
+}
 std::filesystem::path passOutputPath(const std::filesystem::path& base,std::wstring_view suffix){return base.parent_path()/(base.stem().wstring()+std::wstring(suffix)+base.extension().wstring());}
-bool openProResPipe(AppState& app,FILE*& pipe,const std::filesystem::path& path,bool alpha,bool depth16=false){
+bool openProResPipe(AppState& app,std::unique_ptr<cadence::capture::ProResExportStream>& pipe,
+                   const std::filesystem::path& path,std::string name,bool alpha,bool depth16=false){
     const auto encoder=cadence::portable::ffmpegExecutable();if(encoder.empty())return false;
     const auto encoderCommand=L"\""+encoder.wstring()+L"\"";
-    app.exportCameraOnly=false;
-    const std::wstring command=depth16?
-(encoderCommand+L" -hide_banner -loglevel error -y -f rawvideo -pixel_format yuv444p10le -video_size "+std::to_wstring(app.exportWidth)+L"x"+std::to_wstring(app.exportHeight)+L" -framerate "+std::to_wstring(app.exportFps)+L" -thread_queue_size 512 -color_range "+std::wstring(app.exportDepthFullRange?L"pc":L"tv")+L" -i pipe:0 -vf vflip -an -c:v prores_ks -threads 0 -profile:v "+std::wstring(app.exportDepthXq?L"5":L"4")+L" -qscale:v "+std::wstring(app.exportDepthXq?L"1":L"4")+L" -pix_fmt yuv444p10le -color_range "+std::wstring(app.exportDepthFullRange?L"pc":L"tv")+L" \""+path.wstring()+L"\""):
-        (encoderCommand+L" -hide_banner -loglevel error -y -f rawvideo -pixel_format rgba -video_size "+std::to_wstring(app.exportWidth)+L"x"+std::to_wstring(app.exportHeight)+L" -framerate "+std::to_wstring(app.exportFps)+L" -thread_queue_size 512 -i pipe:0 -vf vflip -an -c:v prores_ks -threads 0 -profile:v "+std::wstring(alpha?L"4":L"3")+L" -pix_fmt "+std::wstring(alpha?L"yuva444p10le":L"yuv422p10le")+L" \""+path.wstring()+L"\"");
-    pipe=_wpopen((L"\""+command+L"\"").c_str(),L"wb");if(!pipe)return false;setvbuf(pipe,nullptr,_IOFBF,16u*1024u*1024u);return true;}
-bool startProResExport(AppState& app,const std::filesystem::path& path){closeProResExport(app);app.exportMoviePath=path;if(app.exportBeautyPass&&!openProResPipe(app,app.exportMoviePipe,path,false)||app.exportDepthPass&&!openProResPipe(app,app.exportDepthPipe,passOutputPath(path,L"_depth"),true,app.exportDepthFormat>=1)||app.exportViewmodelPass&&!openProResPipe(app,app.exportViewmodelPipe,passOutputPath(path,L"_viewmodel"),app.exportViewmodelAlpha)||app.exportNavigationPass&&!openProResPipe(app,app.exportNavigationPipe,passOutputPath(path,L"_navmesh"),app.exportNavigationAlpha)){closeProResExport(app);app.status="Could not start one or more FFmpeg ProRes streams";return false;}app.exportProRes=true;return true;}
+    const std::wstring range=app.exportDepthFullRange?L"pc":L"tv";
+    const std::wstring encoding=depth16
+        ?L" -profile:v "+std::wstring(app.exportDepthXq?L"5":L"4")+L" -qscale:v "+
+            std::wstring(app.exportDepthXq?L"1":L"4")+L" -pix_fmt yuv444p10le -color_range "+range
+        :L" -profile:v "+std::wstring(alpha?L"4":L"3")+L" -pix_fmt "+(alpha?L"yuva444p10le":L"yuv422p10le");
+    const auto command=encoderCommand+L" -hide_banner -loglevel error -y -f rawvideo -pixel_format "+
+        (depth16?L"yuv444p10le":L"rgba")+L" -video_size "+std::to_wstring(app.exportWidth)+L"x"+
+        std::to_wstring(app.exportHeight)+L" -framerate "+std::to_wstring(app.exportFps)+
+        L" -thread_queue_size 4"+(depth16?L" -color_range "+range:std::wstring{})+
+        L" -i pipe:0 -vf vflip -an -c:v prores_ks -threads 0"+encoding+L" \""+path.wstring()+L"\"";
+    auto stream=std::make_unique<cadence::capture::ProResExportStream>();
+    if(!stream->start(encoder,command,std::move(name),{app.exportDepthDither,app.exportDepthDitherStrength,app.exportDepthFullRange}))return false;
+    pipe=std::move(stream);
+    return true;
+}
+bool startProResExport(AppState& app,const std::filesystem::path& path){
+    closeProResExport(app);
+    app.exportCameraOnly=false;app.exportMoviePath=path;
+    if((app.exportBeautyPass&&!openProResPipe(app,app.exportMoviePipe,path,"Beauty",false))||
+       (app.exportDepthPass&&!openProResPipe(app,app.exportDepthPipe,passOutputPath(path,L"_depth"),"Depth",true,app.exportDepthFormat>=1))||
+       (app.exportViewmodelPass&&!openProResPipe(app,app.exportViewmodelPipe,passOutputPath(path,L"_viewmodel"),"Viewmodel",true))||
+       (app.exportPlayermodelPass&&!openProResPipe(app,app.exportPlayermodelPipe,passOutputPath(path,L"_playermodels"),"Playermodels",true))||
+       (app.exportNavigationPass&&!openProResPipe(app,app.exportNavigationPipe,passOutputPath(path,L"_navmesh"),"Navmesh",app.exportNavigationAlpha))){
+        closeProResExport(app);app.status="Could not start one or more FFmpeg ProRes streams";return false;
+    }
+    app.exportProRes=true;
+    return true;
+}
 
 const char* replayOpenBlockedReason(const AppState& app){
+    if(app.takePreparationFuture)return "A take is already loading";
     if(app.takeRecording||app.exportActive||app.liveRecorder.active())return "Stop recording or capture before opening a take";
     if(!cadence::workspace::runtime(app.workspaceMode))return "Switch to Gameplay or Animation Viewer before opening a take";
     if(app.pendingMapFuture||app.pendingClassFuture||app.pendingClassLoadStage>=0||app.pendingModelKind!=0||app.pendingAnimationCursor<app.pendingAnimationFiles.size()){
@@ -13157,6 +14291,13 @@ const char* legacyTakeLoadBlockedReason(const AppState& app,const take::Take& in
 #include "ReplayPreparation.inc"
 
 std::shared_ptr<PreparedTakeOpen> prepareRecordedTakeOpen(AppState& app,const std::filesystem::path& path){
+    app.takeLoadError.clear();
+    struct FailureDiagnostic { AppState& app;const std::filesystem::path& path;bool success{};
+        ~FailureDiagnostic(){if(!success){app.takeLoadError=path.string()+"\n"+app.status;logLoading(app,"ERROR: "+app.takeLoadError);}}
+    } diagnostic{app,path};
+    app.loadingStartTime=glfwGetTime();
+    {std::lock_guard lock(app.loadingLogMutex);app.loadingLogs.clear();}
+    logLoading(app,"Reading take: "+path.string(),0.f);
     if(const auto* blocked=replayOpenBlockedReason(app)){app.status=blocked;return {};}
     auto request=std::make_shared<PreparedTakeOpen>();request->path=path;
     auto& metadata=request->metadata;
@@ -13164,6 +14305,7 @@ std::shared_ptr<PreparedTakeOpen> prepareRecordedTakeOpen(AppState& app,const st
     std::string error;
     auto& loadedTake=request->take;
     if(!take::load(path,loadedTake,error)){app.status="Take load failed: "+error;return {};}
+    logLoading(app,"Checking required assets",.15f);
     if(const auto* blocked=legacyTakeLoadBlockedReason(app,loadedTake)){app.status=blocked;return {};}
     // Direct file opening has the same required-model preflight as Demo sets.
     // Do this in the incoming pack's scope before replacing the current take,
@@ -13178,15 +14320,21 @@ std::shared_ptr<PreparedTakeOpen> prepareRecordedTakeOpen(AppState& app,const st
     if(takeNeedsPreparation(loadedTake)){
         try{
             prepared.emplace();
-            if(!prepareReplay(app,loadedTake,metadata.pack,*prepared,error)){
+            logLoading(app,"Reconstructing replay rigs",.25f);
+            if(!prepareReplay(app,loadedTake,metadata.pack,*prepared,error,&app)){
                 app.status="Take actor restore failed: "+error;return {};
             }
         }catch(const std::exception& e){app.status="Take preparation failed: "+std::string(e.what());return {};}
     }
+    diagnostic.success=true;
+    logLoading(app,"Replay rigs prepared",.8f);
     return request;
 }
 
 bool publishRecordedTakeOpen(AppState& app,PreparedTakeOpen& request){
+    struct FailureDiagnostic {AppState& app;const std::filesystem::path& path;bool success{};
+        ~FailureDiagnostic(){if(!success){app.takeLoadError=path.string()+"\n"+app.status;logLoading(app,"ERROR: "+app.takeLoadError);}}
+    } diagnostic{app,request.path};
     if(const auto* blocked=replayOpenBlockedReason(app)){app.status=blocked;return false;}
     auto& loadedTake=request.take;auto& metadata=request.metadata;auto& prepared=request.replay;
     const auto& path=request.path;std::string error;
@@ -13199,6 +14347,7 @@ bool publishRecordedTakeOpen(AppState& app,PreparedTakeOpen& request){
         const bool oldResident=app.classGpuResident;
         std::string oldPack;{std::lock_guard lock(cadence::content::pathMutex);oldPack=cadence::content::preferredPack;}
         bool uploaded=false;
+        logLoading(app,"Uploading replay rigs to GPU",.85f);
         try{cadence::content::ResolutionScope resolution(metadata.pack);uploaded=uploadPreparedReplay(app,*prepared,error);}
         catch(const std::exception& e){error=e.what();}
         if(!uploaded){
@@ -13224,6 +14373,13 @@ bool publishRecordedTakeOpen(AppState& app,PreparedTakeOpen& request){
         app.selectedNode=nullptr;app.liveStandaloneBeforeTake=std::move(saved);
     }
     app.recordedTake=std::move(loadedTake);
+    app.takeTrimHistory.clear();
+    if(!app.liveThirdWeaponBeforeTake)app.liveThirdWeaponBeforeTake=app.experimentalThirdWeapon;
+    // Recorded slot use is authoritative; replay must not depend on a live
+    // class checkbox that may never have been enabled on the recipient PC.
+    if(std::any_of(app.recordedTake.samples.begin(),app.recordedTake.samples.end(),[](const auto& sample){return sample.weaponSlot==2;}))
+        app.experimentalThirdWeapon=true;
+    app.takeDirty=false;app.takeFilePath=path;app.cameraHistory.reset({app.recordedTake.dollyCamera,app.recordedTake.cameraPaths});
     cadence::content::preferPack(metadata.pack);
     app.demoLibrary.recording=std::move(metadata);
     // Move, rather than duplicate, the live CPU rigs before replay reconstructs
@@ -13248,13 +14404,13 @@ bool publishRecordedTakeOpen(AppState& app,PreparedTakeOpen& request){
     app.freeCameraActive=false;app.cameraEditMode=false;app.dollyCameraActive=false;
     app.takeRecording=false;app.takePlaying=false;app.takePreview=false;
     app.takePlaybackSlot=-1;app.selectedCampath=-1;app.takeTime=0;
-    app.exportStart=app.takeTrimStart=0;app.exportEnd=app.takeTrimEnd=app.recordedTake.duration();
+    app.exportStart=0;app.takeTrimStart=0;app.exportEnd=app.recordedTake.duration();app.takeTrimEnd=int(app.recordedTake.samples.size())-1;
     const bool legacy=!prepared;
     bool ready=legacy?app.recordedTake.compatible(app.scene.skeleton.bones.size()):prepared.has_value();
     if(prepared){
         const int first=prepared->firstSlot;
         app.classSlotRigs=std::move(prepared->rigs);
-        app.botActorScene=std::move(prepared->botActor);
+        app.botActorScene=std::move(prepared->botActor);app.botCollisionBaseHeights.clear();
         app.botSetRuntime={};
         app.document=std::move(prepared->firstDocument);app.selectedNode=nullptr;
         app.bots.clear();app.botActorPoses.clear();app.hiddenWorldActorPose.clear();
@@ -13291,26 +14447,126 @@ bool publishRecordedTakeOpen(AppState& app,PreparedTakeOpen& request){
         std::sort(dependencies.begin(),dependencies.end());dependencies.erase(std::unique(dependencies.begin(),dependencies.end()),dependencies.end());
     }
     app.status=app.takePreview?"Loaded take "+path.filename().string():"Take actor restore failed: "+error;
+    diagnostic.success=app.takePreview;
+    if(app.takePreview){app.takeLoadError.clear();logLoading(app,"Take load complete",1.f);}
     return app.takePreview;
 }
 
 bool openRecordedTake(AppState& app,const std::filesystem::path& path){
+    if(!guardTakeReplacement(app,[&app,path]{openRecordedTake(app,path);}))return false;
     auto request=prepareRecordedTakeOpen(app,path);
     const bool opened=request&&publishRecordedTakeOpen(app,*request);
     if(opened){app.pendingPreparedTakeOpen.reset();app.demoLibrary.pendingDemo.clear();app.demoLibrary.pendingMap.clear();}
     return opened;
 }
 
+bool queueRecordedTakeOpen(AppState& app,const std::filesystem::path& path,bool setMap=false){
+    if(!guardTakeReplacement(app,[&app,path,setMap]{queueRecordedTakeOpen(app,path,setMap);}))return false;
+    if(const auto* blocked=replayOpenBlockedReason(app)){app.takeLoadError=blocked;return false;}
+    auto worker=std::make_shared<AppState>();
+    worker->deferSceneUpload=true;worker->workspaceMode=app.workspaceMode;
+    worker->assetCatalog=app.assetCatalog;worker->defaultSalukiDirectory=app.defaultSalukiDirectory;
+    worker->t5WeaponRoot=app.t5WeaponRoot;worker->iw5WeaponRoot=app.iw5WeaponRoot;worker->gameReferenceSetups=app.gameReferenceSetups;
+    worker->scene=app.scene;worker->classSlotRigs=app.classSlotRigs;worker->activeClassSlot=app.activeClassSlot;
+    worker->liveStandaloneBeforeTake=app.liveStandaloneBeforeTake;worker->liveClassBeforeTake=app.liveClassBeforeTake;
+    worker->weaponProfile=app.weaponProfile;worker->weaponTiming=app.weaponTiming;worker->weaponProfilePath=app.weaponProfilePath;
+    worker->loadedRigModelPaths=app.loadedRigModelPaths;worker->loadedBaseModelPath=app.loadedBaseModelPath;worker->loadedAttachmentPaths=app.loadedAttachmentPaths;
+    worker->selectedWeaponAsset=app.selectedWeaponAsset;worker->classWorldModelAsset=app.classWorldModelAsset;worker->classWorldWeaponAsset=app.classWorldWeaponAsset;
+    worker->viewmodelCamera=app.viewmodelCamera;worker->viewmodelFov=app.viewmodelFov;worker->viewmodelFovScale=app.viewmodelFovScale;
+    worker->viewmodelAnimationPrefix=app.viewmodelAnimationPrefix;worker->equippedRigAssets=app.equippedRigAssets;worker->meleeKnifeBone=app.meleeKnifeBone;
+    worker->animationIndex=app.animationIndex;worker->viewmodelAdsBaseAnimation=app.viewmodelAdsBaseAnimation;worker->document=app.document;
+    app.takeLoadError.clear();app.loadingActive=true;app.loadingStartTime=glfwGetTime();app.loadingProgress=0;
+    app.loadingLabel="Loading take";app.loadingDetail=path.filename().string();
+    {std::lock_guard lock(app.loadingLogMutex);app.loadingLogs.clear();}
+    app.takePlaying=false;app.playing=false;setActorInputCapture(app,false);setCameraInputCapture(app,false);
+    app.takePreparationWorker=worker;app.takePreparationSetMap=setMap;
+    app.takePreparationFuture.emplace(std::async(std::launch::async,[worker,path]{return prepareRecordedTakeOpen(*worker,path);}));
+    return true;
+}
+
 #include "app/DemoLibraryUI.inc"
 
+void processPendingTakeOpen(AppState& app){
+    if(!app.takePreparationFuture)return;
+    const auto worker=app.takePreparationWorker;
+    app.loadingProgress=worker->loadingProgress.load();
+    {std::scoped_lock lock(app.loadingLogMutex,worker->loadingLogMutex);app.loadingLogs=worker->loadingLogs;}
+    if(app.takePreparationFuture->wait_for(std::chrono::seconds(0))!=std::future_status::ready)return;
+    std::shared_ptr<PreparedTakeOpen> prepared;
+    try{prepared=app.takePreparationFuture->get();}catch(const std::exception& e){app.takeLoadError=e.what();}catch(...){app.takeLoadError="Unknown take preparation failure";}
+    app.takePreparationFuture.reset();app.takePreparationWorker.reset();
+    if(!prepared){if(app.takeLoadError.empty())app.takeLoadError=worker->takeLoadError.empty()?worker->status:worker->takeLoadError;app.status=app.takeLoadError;}
+    else try{if(app.takePreparationSetMap)finishSetDemoOpen(app,std::move(prepared));else publishRecordedTakeOpen(app,*prepared);}
+         catch(const std::exception& e){app.takeLoadError=e.what();app.status=app.takeLoadError;}
+    if(!app.pendingMapFuture){app.loadingActive=false;app.loadingVisibleUntil=glfwGetTime()+3;}
+}
+
+bool saveUiTake(AppState& app,bool saveAs){
+    if(app.recordedTake.samples.empty())return true;
+    auto path=app.takeFilePath;
+    if(saveAs||path.empty()){const auto chosen=chooseTakeFile(true);if(!chosen)return false;path=*chosen;}
+    if(app.recordedTake.actor.empty()&&app.recordedTake.compatible(app.scene.skeleton.bones.size()))captureTakeActorManifest(app);
+    std::string error;
+    if(!take::save(app.recordedTake,path,error)){app.uiOperationError="Take save failed: "+error;app.status=app.uiOperationError;return false;}
+    try{cadence::content::writeMetadata(path,app.demoLibrary.recording);}
+    catch(const std::exception& e){app.uiOperationError=e.what();app.status=app.uiOperationError;return false;}
+    app.takeFilePath=path;app.takeDirty=false;app.uiOperationError.clear();
+    app.cameraHistory.observe({app.recordedTake.dollyCamera,app.recordedTake.cameraPaths});
+    app.status="Saved "+path.filename().string();return true;
+}
+void drawWorkflowDialogs(AppState& app){
+    if(!app.takeLoadError.empty())ImGui::OpenPopup("Take load failed");
+    if(ImGui::BeginPopupModal("Take load failed",nullptr,ImGuiWindowFlags_AlwaysAutoResize)){
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX()+600.f);
+        ImGui::TextUnformatted(app.takeLoadError.c_str());ImGui::PopTextWrapPos();
+        if(ImGui::Button("Copy error"))ImGui::SetClipboardText(app.takeLoadError.c_str());
+        ImGui::SameLine();if(ImGui::Button("Close")){app.takeLoadError.clear();ImGui::CloseCurrentPopup();}
+        ImGui::EndPopup();
+    }
+    if(app.cameraHistory.observe({app.recordedTake.dollyCamera,app.recordedTake.cameraPaths},ImGui::IsAnyItemActive()||ImGui::IsMouseDown(0)))app.takeDirty=true;
+    if(app.pendingTakeAction){
+        setCameraInputCapture(app,false);applyActorInputCapture(app,false);
+        ImGui::OpenPopup("Unsaved take");
+    }
+    if(ImGui::BeginPopupModal("Unsaved take",nullptr,ImGuiWindowFlags_AlwaysAutoResize)){
+        ImGui::TextUnformatted("Save this take before continuing?");
+        bool proceed=false;
+        if(ImGui::Button("Save"))proceed=saveUiTake(app,false);
+        ImGui::SameLine();if(ImGui::Button("Discard"))proceed=true;
+        ImGui::SameLine();if(ImGui::Button("Cancel")){app.pendingTakeAction={};ImGui::CloseCurrentPopup();}
+        if(!app.uiOperationError.empty())ImGui::TextWrapped("%s",app.uiOperationError.c_str());
+        if(proceed){auto action=std::move(app.pendingTakeAction);app.pendingTakeAction={};app.allowTakeReplace=true;ImGui::CloseCurrentPopup();
+            try{if(action)action();}catch(const std::exception& e){app.status=e.what();}
+            app.allowTakeReplace=false;
+        }
+        ImGui::EndPopup();
+    }
+    if(app.closeRequested){
+        if(!app.takeDirty&&!app.animationEditor.dirty&&!app.weaponProfileDirty&&!app.takeRecording&&!app.exportActive&&!app.liveRecorder.active()){
+            app.closeRequested=false;glfwSetWindowShouldClose(app.window,true);
+        }else {setCameraInputCapture(app,false);applyActorInputCapture(app,false);ImGui::OpenPopup("Close Cadence");}
+    }
+    if(ImGui::BeginPopupModal("Close Cadence",nullptr,ImGuiWindowFlags_AlwaysAutoResize)){
+        if(app.takeDirty||app.takeRecording)ImGui::TextUnformatted("Unsaved take");
+        if(app.animationEditor.dirty)ImGui::TextUnformatted("Unsaved animation set");
+        if(app.weaponProfileDirty)ImGui::TextUnformatted("Unsaved weapon settings");
+        if(app.exportActive||app.liveRecorder.active())ImGui::TextUnformatted("Capture is active");
+        if(ImGui::Button("Return to editing")){app.closeRequested=false;ImGui::CloseCurrentPopup();}
+        ImGui::SameLine();ImGui::BeginDisabled(app.exportActive||app.liveRecorder.active());
+        if(ImGui::Button("Exit without saving")){app.closeRequested=false;glfwSetWindowShouldClose(app.window,true);}
+        ImGui::EndDisabled();ImGui::EndPopup();
+    }
+}
+
 void drawTakeFileControls(AppState& app){
+    if(!app.recordedTake.samples.empty())ImGui::TextWrapped("%s%s",app.takeFilePath.empty()?"Untitled take":app.takeFilePath.filename().string().c_str(),app.takeDirty?" *":"");
     if(ImGui::Button("Demo sets"))app.demoLibrary.open=true;ImGui::SameLine();
     ImGui::BeginDisabled(app.exportActive||app.takeRecording||app.liveRecorder.active());
     ImGui::BeginDisabled(app.recordedTake.samples.empty());
-    if(ImGui::Button("Save take")){if(const auto path=chooseTakeFile(true)){if(app.recordedTake.actor.empty()&&app.recordedTake.compatible(app.scene.skeleton.bones.size()))captureTakeActorManifest(app);std::string error;if(take::save(app.recordedTake,*path,error)){app.status="Saved take "+path->filename().string();try{cadence::content::writeMetadata(*path,app.demoLibrary.recording);}catch(const std::exception& e){app.status+="; "+std::string(e.what());}}else app.status="Take save failed: "+error;}}
+    if(ImGui::Button("Save take"))saveUiTake(app,true);
     ImGui::EndDisabled();ImGui::SameLine();
-    if(ImGui::Button("Load take"))if(const auto path=chooseTakeFile(false))openRecordedTake(app,*path);
-    ImGui::SameLine();ImGui::BeginDisabled(app.recordedTake.samples.empty());if(ImGui::Button("Clear take")){returnToLiveGameplay(app);app.recordedTake.clear();app.takeRecording=false;app.takePlaying=false;app.takePreview=false;app.takeFirstPersonView=false;app.takePlaybackSlot=-1;app.selectedCampath=-1;app.takeTime=app.takeTrimStart=app.takeTrimEnd=0;}ImGui::EndDisabled();
+    if(ImGui::Button("Load take"))if(const auto path=chooseTakeFile(false))queueRecordedTakeOpen(app,*path);
+    uiSameLine(90);ImGui::BeginDisabled(app.recordedTake.samples.empty());if(ImGui::Button("Clear take"))clearUiTake(app);ImGui::EndDisabled();
     ImGui::EndDisabled();
 }
 void drawTakeRecorder(AppState& app){
@@ -13352,17 +14608,34 @@ void drawTakeRecorder(AppState& app){
     ImGui::BeginDisabled(app.takeRecording||!app.recordedTake.samples.empty());if(ImGui::Combo("Capture rate",&rate,rates,2))app.recordedTake.sampleRate=rate?60.0f:30.0f;ImGui::EndDisabled();
     ImGui::DragFloat("Timescale",&app.takePlaybackSpeed,0.001f,0.0f,4.0f,"%.4fx",ImGuiSliderFlags_AlwaysClamp);ImGui::SameLine();ImGui::Checkbox("Loop",&app.takeLoop);
     uiHelp("0 = freeze; Ctrl+click Timescale to enter any fractional value");
-    if(ImGui::Checkbox("VSync",&app.vsync))glfwSwapInterval(app.vsync?1:0);
+    if(ImGui::Checkbox("VSync",&app.vsync))updatePresentInterval(app);
 
     ImGui::BeginDisabled(!compatible||app.takeRecording);
     drawIWXMVMVisualTimeline(app,-1.0f,56.0f);
     ImGui::EndDisabled();
-    app.takeTrimStart=std::clamp(app.takeTrimStart,0.0f,duration);app.takeTrimEnd=std::clamp(app.takeTrimEnd,app.takeTrimStart,duration);ImGui::BeginDisabled(!compatible||app.takeRecording);ImGui::DragFloatRange2("Trim markers",&app.takeTrimStart,&app.takeTrimEnd,0.01f,0.0f,duration,"Start %.3f s","End %.3f s",ImGuiSliderFlags_AlwaysClamp);if(ImGui::Button("Apply trim")&&app.recordedTake.trim(app.takeTrimStart,app.takeTrimEnd)){app.takeTime=app.exportStart=app.takeTrimStart=0;app.exportEnd=app.takeTrimEnd=app.recordedTake.duration();app.status="Take trimmed non-destructively in memory — save to keep it";}ImGui::EndDisabled();
+    const auto resetTrimTimeline=[&](const char* status){
+        app.takePlaying=false;app.takeTime=app.takeAccumulator=app.exportStart=0;app.takeTrimStart=0;
+        app.exportEnd=app.recordedTake.duration();app.takeTrimEnd=int(app.recordedTake.samples.size())-1;
+        app.takeDirty=true;app.selectedCampathNode=-1;app.takeMemory.reset();
+        app.cameraHistory.reset({app.recordedTake.dollyCamera,app.recordedTake.cameraPaths});app.status=status;
+    };
+    const int lastTick=std::max(0,int(app.recordedTake.samples.size())-1);
+    app.takeTrimStart=std::clamp(app.takeTrimStart,0,lastTick);
+    app.takeTrimEnd=std::clamp(app.takeTrimEnd,app.takeTrimStart,lastTick);
+    ImGui::BeginDisabled(!compatible||app.takeRecording||app.exportActive||app.liveRecorder.active());
+    ImGui::DragIntRange2("Trim ticks",&app.takeTrimStart,&app.takeTrimEnd,1.f,0,lastTick,"Start %d","End %d",ImGuiSliderFlags_AlwaysClamp);
+    ImGui::BeginDisabled(app.takeTrimStart==0&&app.takeTrimEnd==lastTick);
+    if(ImGui::Button("Apply trim")&&app.takeTrimHistory.apply(app.recordedTake,app.takeTrimStart,app.takeTrimEnd))resetTrimTimeline("Unsaved trimmed take");
+    ImGui::EndDisabled();ImGui::SameLine();
+    ImGui::BeginDisabled(app.takeTrimHistory.empty());
+    if(ImGui::Button("Undo trim")&&app.takeTrimHistory.undo(app.recordedTake))resetTrimTimeline("Trim undone");
+    ImGui::EndDisabled();ImGui::EndDisabled();
     app.takeMemory.update(app.recordedTake);
     const double poseMiB=static_cast<double>(app.takeMemory.poseBytes)/(1024.0*1024.0);
     const double takeMiB=static_cast<double>(app.takeMemory.estimatedBytes(app.recordedTake))/(1024.0*1024.0);
     ImGui::TextDisabled("%zu samples / %.2f sec / player + %zu bots / %.1f MiB pose data",app.recordedTake.samples.size(),duration,app.recordedTake.botCount,poseMiB);
     ImGui::TextDisabled("Estimated take RAM: %.1f MiB",takeMiB);
+    if(!app.takeTrimHistory.empty())ImGui::TextDisabled("%zu removed ticks retained for undo",app.takeTrimHistory.removedTicks());
     if(ImGui::InputInt("RAM warning (MiB)",&app.takeMemoryWarningMiB,256,1024))app.takeMemoryWarningMiB=std::clamp(app.takeMemoryWarningMiB,256,65536);
     if(takeMiB>=app.takeMemoryWarningMiB)ImGui::TextColored({1.f,.6f,.2f,1.f},"Take exceeds the RAM warning threshold. Save soon; recording quality is unchanged.");
     drawTakeFileControls(app);
@@ -13370,11 +14643,12 @@ void drawTakeRecorder(AppState& app){
     }
 {
 
+    ImGui::BeginDisabled(app.exportActive);
     int resolution[2]={app.exportWidth,app.exportHeight};if(ImGui::InputInt2("Resolution",resolution)){app.exportWidth=std::clamp(resolution[0],16,16384);app.exportHeight=std::clamp(resolution[1],16,16384);}
     if(ImGui::InputInt("Output FPS",&app.exportFps))app.exportFps=std::clamp(app.exportFps,1,1000);
     }
 {
-ImGui::Checkbox("Beauty",&app.exportBeautyPass);ImGui::SameLine();ImGui::Checkbox("Depth",&app.exportDepthPass);ImGui::SameLine();ImGui::Checkbox("Viewmodel isolate",&app.exportViewmodelPass);ImGui::SameLine();ImGui::Checkbox("Navmesh",&app.exportNavigationPass);
+ImGui::Checkbox("Beauty",&app.exportBeautyPass);ImGui::SameLine();ImGui::Checkbox("Depth",&app.exportDepthPass);ImGui::SameLine();ImGui::Checkbox("Viewmodel isolate",&app.exportViewmodelPass);ImGui::Checkbox("Playermodel isolates",&app.exportPlayermodelPass);ImGui::SameLine();ImGui::Checkbox("Navmesh",&app.exportNavigationPass);
     ImGui::BeginDisabled(!app.exportDepthPass||app.exportActive);
     const char* depthBitDepths[]={"8-bit input (legacy)","High precision (PNG 16 / ProRes 10-bit)","Float TIFF / ProRes 10-bit"};
     ImGui::Combo("Depth precision",&app.exportDepthFormat,depthBitDepths,static_cast<int>(std::size(depthBitDepths)));
@@ -13389,30 +14663,39 @@ ImGui::Checkbox("Beauty",&app.exportBeautyPass);ImGui::SameLine();ImGui::Checkbo
     }
     ImGui::EndDisabled();
     ImGui::DragFloatRange2("Depth range",&app.exportDepthNearMeters,&app.exportDepthFarMeters,0.1f,0.0f,5000.0f,"Near %.2f m","Far %.2f m",ImGuiSliderFlags_AlwaysClamp);ImGui::Checkbox("Invert depth",&app.exportDepthInvert);ImGui::EndDisabled();
-    ImGui::BeginDisabled(!app.exportViewmodelPass);ImGui::Checkbox("Viewmodel ProRes 4444 alpha",&app.exportViewmodelAlpha);ImGui::BeginDisabled(app.exportViewmodelAlpha);ImGui::ColorEdit3("Greenscreen background",&app.exportViewmodelBackground.x,ImGuiColorEditFlags_Float);ImGui::EndDisabled();ImGui::EndDisabled();
+    ImGui::BeginDisabled(!app.exportDepthPass||app.exportActive);ImGui::Checkbox("Exclude first-person rig from depth",&app.exportWorldDepthOnly);ImGui::EndDisabled();
     ImGui::BeginDisabled(!app.exportNavigationPass);ImGui::Checkbox("Navmesh ProRes 4444 alpha",&app.exportNavigationAlpha);ImGui::BeginDisabled(app.exportNavigationAlpha);ImGui::ColorEdit3("Navmesh background",&app.exportNavigationBackground.x,ImGuiColorEditFlags_Float);ImGui::EndDisabled();ImGui::EndDisabled();
     ImGui::Checkbox("Capture ReShade effects (swapchain capture)",&app.exportCaptureReShade);
     if(ImGui::IsItemHovered())uiHelp("Blits each rendered frame to the default window buffer and invokes SwapBuffers so ReShade shader hooks process the exported beauty frames.");
+    ImGui::EndDisabled();
     app.exportStart=std::clamp(app.exportStart,0.0f,duration);app.exportEnd=std::clamp(app.exportEnd,app.exportStart,duration);
-    ImGui::DragFloatRange2("Take range",&app.exportStart,&app.exportEnd,0.01f,0.0f,duration,"Start %.3f s","End %.3f s",ImGuiSliderFlags_AlwaysClamp);
+    if(!app.recordedTake.samples.empty()){
+        int first=int(app.recordedTake.sampleIndex(app.exportStart)),last=int(app.recordedTake.sampleIndex(app.exportEnd));
+        ImGui::BeginDisabled(app.exportActive);
+        if(ImGui::DragIntRange2("Export ticks",&first,&last,1.f,0,int(app.recordedTake.samples.size())-1,"Start %d","End %d",ImGuiSliderFlags_AlwaysClamp)){
+            app.exportStart=app.recordedTake.samples[first].time;app.exportEnd=app.recordedTake.samples[last].time;
+        }
+        ImGui::EndDisabled();
+    }
     const auto plannedFrames=take::outputFrameCount(app.exportStart,app.exportEnd,static_cast<std::uint32_t>(app.exportFps),app.takePlaybackSpeed);
     const bool practicalCount=plannedFrames<=10000000ull;
     ImGui::TextDisabled("%llu frames / %.2f output seconds at %.4fx",static_cast<unsigned long long>(plannedFrames),static_cast<double>(plannedFrames)/app.exportFps,app.takePlaybackSpeed);
     ImGui::BeginDisabled(app.exportActive);ImGui::Checkbox("Export per-frame camera CSV",&app.exportCameraData);ImGui::EndDisabled();
-    const bool anyProResPass=app.exportBeautyPass||app.exportDepthPass||app.exportViewmodelPass||app.exportNavigationPass;ImGui::BeginDisabled(!compatible||app.takeRecording||app.exportActive||app.liveRecorder.active()||!practicalCount);
+    const bool anyProResPass=app.exportBeautyPass||app.exportDepthPass||app.exportViewmodelPass||app.exportPlayermodelPass||app.exportNavigationPass;ImGui::BeginDisabled(!compatible||app.takeRecording||app.exportActive||app.liveRecorder.active()||!practicalCount);
     if(ImGui::Button("Export camera data only")){if(const auto folder=chooseFolder()){
-        closeProResExport(app);app.exportFolder=*folder;app.exportCameraOnly=true;app.exportProRes=false;app.exportFrame=0;app.exportFrameCount=plannedFrames;app.exportActive=true;app.takePlaying=false;app.takePreview=true;app.takeTime=app.exportStart;
+        closeProResExport(app);app.exportFolder=*folder;app.exportCameraOnly=true;app.exportProRes=false;app.exportFrame=0;app.exportFrameCount=plannedFrames;app.exportActive=true;app.takePlaying=false;app.takePreview=true;app.takeTime=app.exportStart;app.exportStartedAt=glfwGetTime();
     }}
     if(ImGui::Button("Export PNG sequence")){if(const auto folder=chooseFolder()){
         const auto first=*folder/"frame_000000.png";
         if(std::filesystem::exists(first))app.status="Export refused: frame_000000.png already exists in that folder";
-        else {closeProResExport(app);app.exportCameraOnly=false;app.exportProRes=false;app.exportFolder=*folder;app.exportFrame=0;app.exportFrameCount=plannedFrames;app.exportActive=true;app.takePlaying=false;app.takePreview=true;app.takeTime=app.exportStart;app.status="Exporting deterministic PNG sequence";}
+        else {closeProResExport(app);app.exportCameraOnly=false;app.exportProRes=false;app.exportFolder=*folder;app.exportFrame=0;app.exportFrameCount=plannedFrames;app.exportActive=true;app.takePlaying=false;app.takePreview=true;app.takeTime=app.exportStart;app.exportStartedAt=glfwGetTime();app.status="Exporting deterministic PNG sequence";}
     }}
-    ImGui::SameLine();ImGui::BeginDisabled(!anyProResPass);if(ImGui::Button("Record selected ProRes streams")){if(const auto path=chooseProResFile())if(startProResExport(app,*path)){app.exportFrame=0;app.exportFrameCount=plannedFrames;app.exportActive=true;app.takePlaying=false;app.takePreview=true;app.takeTime=app.exportStart;const int streamCount=static_cast<int>(app.exportBeautyPass)+static_cast<int>(app.exportDepthPass)+static_cast<int>(app.exportViewmodelPass)+static_cast<int>(app.exportNavigationPass);app.status="Recording "+std::to_string(streamCount)+" buffered deterministic ProRes stream"+(streamCount==1?"":"s");}}ImGui::EndDisabled();
+    ImGui::SameLine();ImGui::BeginDisabled(!anyProResPass);if(ImGui::Button("Record selected ProRes streams")){if(const auto path=chooseProResFile())if(startProResExport(app,*path)){app.exportFrame=0;app.exportFrameCount=plannedFrames;app.exportActive=true;app.takePlaying=false;app.takePreview=true;app.takeTime=app.exportStart;app.exportStartedAt=glfwGetTime();app.status="Exporting ProRes";}}ImGui::EndDisabled();
     ImGui::EndDisabled();
     if(!practicalCount)ImGui::TextColored({1.0f,0.55f,0.25f,1.0f},"Range exceeds 10,000,000 frames; increase timescale or reduce the range.");
-    if(app.exportActive){ImGui::SameLine();if(ImGui::Button("Cancel export")){app.exportActive=false;const bool wasProRes=app.exportProRes;closeProResExport(app);app.exportProRes=false;app.status=wasProRes?"ProRes recording stopped; the partial MOV was finalized":"PNG export cancelled";}
-        const float progress=app.exportFrameCount?static_cast<float>(app.exportFrame)/static_cast<float>(app.exportFrameCount):0;ImGui::ProgressBar(progress,{-1,0});}
+    if(app.exportActive){ImGui::SameLine();if(ImGui::Button("Cancel export")){app.exportActive=false;const bool wasProRes=app.exportProRes;const auto error=closeProResExport(app);app.exportProRes=false;app.status=!error.empty()?error:wasProRes?"ProRes export cancelled":"Sequence export cancelled";}
+        const float progress=app.exportFrameCount?static_cast<float>(app.exportFrame)/static_cast<float>(app.exportFrameCount):0;ImGui::ProgressBar(progress,{-1,0});
+        if(app.exportFrame)ImGui::Text("%.1f frames/s",double(app.exportFrame)/std::max(.001,glfwGetTime()-app.exportStartedAt));}
 }
 }
 
@@ -13572,13 +14855,41 @@ void ensureScopeOverlay(AppState& app){
     app.status=error;app.scene.warnings.push_back(error);
 }
 
+std::vector<render::CollisionOverlayBox> liveCollisionOverlayBoxes(const AppState& app,bool recordedFrame=false){
+    // Physics volumes, not visual meshes or damage hitboxes. Takes do not
+    // record hull metadata; never infer historic bounds from current settings.
+    std::vector<render::CollisionOverlayBox> boxes;
+    if(app.renderDebugView!=10||app.takePreview||recordedFrame||app.workspaceMode==3)return boxes;
+    const auto add=[&](scene::Vec3 feet,float radius,float height,scene::Vec3 color){
+        if(std::isfinite(feet.x)&&std::isfinite(feet.y)&&std::isfinite(feet.z)&&
+           std::isfinite(radius)&&std::isfinite(height)&&radius>0&&height>0)
+            {const auto ext=actorCollisionHalfExtents(app,radius);boxes.push_back({feet,radius,height,color,ext.x,ext.y});}
+    };
+    if(app.actorMode&&!app.actorNoclip){
+        float radius=(app.movementAlgorithm==3||app.movementAlgorithm==4)?gameplay::iw::worldUnits(16.f):scene::course::kPlayerRadius;
+        float height=playerCurrentCollisionHeight(app,app.gameplayStance);
+        if(app.actorMantling||app.actorOnLadder){
+            radius=app.actorMantling&&app.movementAlgorithm==3?gameplay::source_v2::units(16.f):scene::course::kPlayerRadius;
+            height=actorCollisionHeight(app,scene::Stance::Stand);
+        }
+        add(app.actorPosition,radius,height,{.15f,.85f,1.f});
+    }
+    for(const auto& bot:app.bots)if(bot.alive||!bot.grounded){
+        const float height=bot.mantling&&app.activeBotSystemMode==1
+            ?gameplay::bot::collisionHeight(bot,scene::Stance::Stand):gameplay::bot::collisionHeight(bot);
+        add(bot.position,scene::course::kPlayerRadius,height,{1.f,.65f,.15f});
+    }
+    return boxes;
+}
+
 void drawViewport(AppState& app, float width, float height) {
     ImGui::BeginChild("viewport", ImVec2(width, height), ImGuiChildFlags_Borders);
     if(ImGui::CollapsingHeader("Viewport")){
 
-    ImGui::Checkbox("Bone names + dots",&app.showBoneNames);
+    if(ImGui::Checkbox("Bone names + dots",&app.showBoneNames)&&!app.showBoneNames){
+        app.inspectMeshBinding=false;app.selectedMeshBinding=static_cast<std::size_t>(-1);
+    }
     if(app.showBoneNames){ImGui::SameLine();ImGui::Checkbox("Inspect mesh binding",&app.inspectMeshBinding);}
-    else {app.inspectMeshBinding=false;app.selectedMeshBinding=app.selectedBoneBinding=static_cast<std::size_t>(-1);}
     }
 auto available=ImGui::GetContentRegionAvail();
     const bool showTakeTransport=app.takePreview&&!app.recordedTake.samples.empty();
@@ -13608,15 +14919,56 @@ auto available=ImGui::GetContentRegionAvail();
         const auto camera=app.scene.skeleton.boneByCanonicalName.find("tag_camera");
         if(camera!=app.scene.skeleton.boneByCanonicalName.end())
             cadence::replay::applyMountEdit(pose,camera->second,app.recordedTake.neutralGunPosition?cadence::replay::MountReference{{},{},false,true}:reference,app.weaponProfile,takeSample->camera.adsBlend,scene::inverseAffine(app.scene.skeleton.bones[camera->second].restGlobal));
+        else if(const auto root=app.scene.skeleton.boneByName.find("root_motion");root!=app.scene.skeleton.boneByName.end()&&app.scene.skeleton.bones[root->second].parent<0)
+            cadence::replay::applyMountEdit(pose,root->second,app.recordedTake.neutralGunPosition?cadence::replay::MountReference{{},{},false,true}:reference,app.weaponProfile,takeSample->camera.adsBlend,scene::inverseAffine(app.scene.skeleton.bones[root->second].restGlobal));
     }
     std::vector<std::vector<scene::Mat4>> recordedBotPoses;std::vector<int> renderedBotVariants;if(takeSample){recordedBotPoses.reserve(takeSample->bots.size());for(const auto& actor:takeSample->bots)recordedBotPoses.push_back(actor.pose);for(const auto& actor:takeSample->bots)renderedBotVariants.push_back(actor.modelVariant);}else{renderedBotVariants.reserve(app.bots.size());for(const auto& bot:app.bots)renderedBotVariants.push_back(bot.modelVariant);}const auto* renderedBotPoses=takeSample?&recordedBotPoses:&app.botActorPoses;
+    std::vector<float> actorDissolves(renderedBotPoses->size(),0.f);
+    if(takeSample){for(const auto& b:takeSample->corpses){recordedBotPoses.push_back(b.pose);renderedBotVariants.push_back(b.modelVariant);actorDissolves.push_back(1.f-b.opacity);}}
+    else if(!app.retainedBodies.bodies.empty()){
+        recordedBotPoses=app.botActorPoses;for(const auto& b:app.retainedBodies.bodies){recordedBotPoses.push_back(b.pose);renderedBotVariants.push_back(b.state.variant);actorDissolves.push_back(1.f-b.opacity);}renderedBotPoses=&recordedBotPoses;
+    }
+    app.renderer.setActorDissolves(std::move(actorDissolves));
+    std::vector<std::vector<scene::DetachedAttachment>> detached;
+    if(takeSample){
+        for(const auto& bot:takeSample->bots)detached.push_back(bot.detached);
+        for(const auto& body:takeSample->corpses)detached.push_back(body.detached);
+    }else if(app.weaponDropWorld){
+        detached.resize(renderedBotPoses->size());
+        for(std::size_t i=0;i<app.botRagdolls.size()&&i<app.botActorPoses.size();++i)
+            if(const auto& weapon=app.botRagdolls[i].weapon)detached[i]=weapon->pose();
+        for(std::size_t i=0;i<app.retainedBodies.bodies.size();++i)
+            if(const auto& weapon=app.retainedBodies.bodies[i].state.weapon)detached[app.botActorPoses.size()+i]=weapon->pose();
+    }
+    app.renderer.setDetachedAttachments(std::move(detached));
     std::vector<render::ActorOverlayInput> overlayActors;
     auto clipFlags=[](const std::string& name){auto n=name;std::transform(n.begin(),n.end(),n.begin(),[](unsigned char c){return char(std::tolower(c));});return std::pair{n.find("jump")!=std::string::npos&&n.find("land")==std::string::npos,n.find("slide")!=std::string::npos};};
-    if(takeSample){for(const auto& bot:takeSample->bots){auto flags=clipFlags(bot.primaryClip);overlayActors.push_back({std::uint64_t(bot.id)+1,bot.health,flags.first,flags.second});}}
-    else {for(const auto& bot:app.bots){bool slide=false;if(app.botActorScene&&bot.animation<app.botActorScene->animations.size())slide=clipFlags(app.botActorScene->animations[bot.animation].sourceName).second;overlayActors.push_back({std::uint64_t(bot.id)+1,bot.health,!bot.grounded,slide});}}
+    if(takeSample){for(const auto& bot:takeSample->bots){auto flags=clipFlags(bot.primaryClip);overlayActors.push_back({std::uint64_t(bot.id)+1,bot.health,flags.first,flags.second,!bot.alive});}}
+    else {for(const auto& bot:app.bots){bool slide=false;if(app.botActorScene&&bot.animation<app.botActorScene->animations.size())slide=clipFlags(app.botActorScene->animations[bot.animation].sourceName).second;overlayActors.push_back({std::uint64_t(bot.id)+1,bot.health,!bot.grounded,slide,!bot.alive});}}
+    overlayActors.resize(renderedBotPoses->size(),{0,0,false,false,true});
     render::ActorOverlayInput overlayPlayer{0,app.actorHealth,!app.actorGrounded,app.actorSliding};
     if(takeSample){auto flags=clipFlags(takeSample->worldActor.primaryClip);overlayPlayer.health=takeSample->worldActor.health;overlayPlayer.airborne=flags.first;overlayPlayer.sliding=flags.second;}
     app.renderer.setActorOverlays(app.actorOverlays,takeSample?takeSample->time:app.gameplayClock,std::move(overlayActors),overlayPlayer,takeSample!=nullptr);
+    std::vector<render::heaven_smile::Burst> deathBursts;std::vector<bool> deathHidden;
+    if(app.killer7Deaths){
+        const float height=app.botHeadHeight*app.botModelScale;
+        if(!takeSample){for(const auto& bot:app.bots){deathHidden.push_back(!bot.alive);if(!bot.alive)deathBursts.push_back({bot.deathEffectPosition,float(app.gameplayClock-bot.deathEffectStart),height,bot.id});}}
+        else for(const auto& bot:takeSample->bots){deathHidden.push_back(!bot.alive);if(bot.alive)continue;
+            // At most the effect lifetime is inspected. Reconstructing from
+            // recorded life state makes seek/reverse playback deterministic.
+            const take::RecordedActorState* firstDead=nullptr;float deathTime{};bool confirmedDeath=false;
+            auto it=std::upper_bound(app.recordedTake.samples.begin(),app.recordedTake.samples.end(),takeSample->time,[](float t,const auto& s){return t<s.time;});
+            while(it!=app.recordedTake.samples.begin()){--it;if(it->time<takeSample->time-1.8f)break;
+                const auto found=std::find_if(it->bots.begin(),it->bots.end(),[&](const auto& b){return b.id==bot.id;});
+                if(found==it->bots.end())break;if(found->alive){confirmedDeath=firstDead!=nullptr;break;}firstDead=&*found;deathTime=it->time;
+            }
+            if(confirmedDeath&&firstDead&&!firstDead->pose.empty()&&takeSample->time-deathTime<1.7f){
+                const auto& root=firstDead->pose.front();deathBursts.push_back({{root.v[12],root.v[13],root.v[14]+height*.5f},takeSample->time-deathTime,height,bot.id});
+            }
+        }
+    }
+    if(app.heavenSmileKeepDeathAnimations)deathHidden.clear();
+    app.renderer.setHeavenSmileBursts(std::move(deathBursts),std::move(deathHidden),app.heavenSmileColor,app.heavenSmileBloodStreams);
     if(takeSample){app.renderer.clearImpactCubes();if(app.actorOverlays.impactCubes){const auto& shots=app.recordedTake.shots;auto it=std::lower_bound(shots.begin(),shots.end(),takeSample->time-app.actorOverlays.cubeDuration,[](const take::ShotEvent& shot,float t){return shot.time<t;});for(;it!=shots.end()&&it->time<=takeSample->time;++it)if(it->hitFound)app.renderer.addImpactCube(it->hitPos,it->time);}}
 
     const auto target=takeSample?takeSample->camera.target:app.cameraTarget;const float yaw=takeSample?takeSample->camera.yaw:app.cameraYaw;
@@ -13656,10 +15008,12 @@ auto available=ImGui::GetContentRegionAvail();
         view=scene::lookAtDirection(renderedCameraPosition,renderedCameraForward,renderedCameraUp);
         fovDegrees=gameplay::view::zoomFov(settings.fov,settings.adsFov,sniper?app.sniperZoomState.value:aim,sniper?app.cameraControls.zoomIntensity:1.f);
     }else app.actorShoulderCameraValid=false;
-    const bool viewmodelProjection=cadence::useViewmodelCamera(takeSample!=nullptr,app.takeFirstPersonView,app.viewmodelCamera,app.actorMode,app.actorThirdPerson,app.actorFreecamRetainViewmodel)&&(hasValidCameraBone||(!takeSample&&app.actorMode&&app.actorViewCameraValid));
+    const auto replayCamera=takeSample?cadence::replay::poseCamera(app.scene.skeleton,pose):std::optional<scene::Mat4>{};
+    const bool viewmodelProjection=cadence::useViewmodelCamera(takeSample!=nullptr,app.takeFirstPersonView,app.viewmodelCamera,app.actorMode,app.actorThirdPerson,app.actorFreecamRetainViewmodel)&&(hasValidCameraBone||replayCamera.has_value()||(!takeSample&&app.actorMode&&app.actorViewCameraValid));
     app.renderer.setFirstPersonProjection(viewmodelProjection&&!app.navigationClickPlacement);
+    app.renderer.setMetalShader(app.metalShader);
     if(viewmodelProjection){
-        auto camera=app.actorMode&&app.actorViewCameraValid&&!takeSample?app.actorViewCamera:(hasValidCameraBone?pose[cameraBone->second]:scene::Mat4::identity());
+        auto camera=app.actorMode&&app.actorViewCameraValid&&!takeSample?app.actorViewCamera:(replayCamera?*replayCamera:hasValidCameraBone?pose[cameraBone->second]:scene::Mat4::identity());
         scene::Vec3 origin{camera.v[12],camera.v[13],camera.v[14]};
         scene::Vec3 forward=scene::normalize(scene::Vec3{camera.v[0],camera.v[1],camera.v[2]}),up=scene::normalize(scene::Vec3{camera.v[8],camera.v[9],camera.v[10]}),lateral=scene::normalize(scene::cross(up,forward));
         const bool authoredActionCamera=hasValidCameraBone&&!app.gameplayAds&&!app.viewmodelAdsEngaged&&!app.viewmodelAdsExiting&&!app.viewmodelAdsPoseHold&&!app.actorMantling&&app.actionActive&&app.activeAction!=scene::ActionRole::Aim;
@@ -13676,6 +15030,14 @@ auto available=ImGui::GetContentRegionAvail();
     }
     const auto applyEditorCamera=[&](const scene::Vec3& position,const scene::Vec3& rotation,float fov){const float pitchRadians=rotation.x*scene::kPi/180.0f,yawRadians=rotation.y*scene::kPi/180.0f,rollRadians=rotation.z*scene::kPi/180.0f;const scene::Vec3 forward{std::cos(yawRadians)*std::cos(pitchRadians),std::sin(yawRadians)*std::cos(pitchRadians),-std::sin(pitchRadians)};auto lateral=scene::normalize(scene::cross(scene::Vec3{0,0,1},forward));auto up=scene::normalize(scene::cross(forward,lateral));const auto rolledUp=scene::normalize(up*std::cos(rollRadians)+lateral*std::sin(rollRadians));view=scene::lookAt(position,position+forward,rolledUp);renderedCameraPosition=position;renderedCameraForward=forward;renderedCameraUp=rolledUp;fovDegrees=std::clamp(fov,1.0f,179.0f);};
     if(!app.takeFirstPersonView&&app.dollyCameraActive&&!app.recordedTake.dollyCamera.empty()){const auto camera=take::interpolateDollyCamera(app.recordedTake.dollyCamera,app.takeTime*app.recordedTake.sampleRate);applyEditorCamera(camera.position,camera.rotationDegrees,camera.fov);}else if(!app.takeFirstPersonView&&app.cameraEditMode&&app.freeCameraActive)applyEditorCamera(app.freeCameraPosition,app.freeCameraRotationDegrees,app.freeCameraFov);if(!takeSample&&app.navigationClickPlacement){const float pitchRadians=app.navigationCameraRotation.x*scene::kPi/180.0f,yawRadians=app.navigationCameraRotation.y*scene::kPi/180.0f;const scene::Vec3 forward{std::cos(yawRadians)*std::cos(pitchRadians),std::sin(yawRadians)*std::cos(pitchRadians),-std::sin(pitchRadians)};app.navigationCameraPosition=app.navigationCameraPivot-forward*app.navigationCameraDistance;applyEditorCamera(app.navigationCameraPosition,app.navigationCameraRotation,app.navigationCameraFov);}
+    if(app.screenShake.enabled){
+        const auto unshaken=view;const auto shake=gameplay::shake::sample(app.screenShake,takeSample?app.takeTime:app.gameplayClock);
+        const auto right=scene::normalize(scene::cross(renderedCameraUp,renderedCameraForward));
+        renderedCameraPosition=renderedCameraPosition+renderedCameraForward*shake.position.x+right*shake.position.y+renderedCameraUp*shake.position.z;
+        gameplay::view::additiveCamera(renderedCameraForward,renderedCameraUp,shake.rotation);
+        view=scene::lookAtDirection(renderedCameraPosition,renderedCameraForward,renderedCameraUp);
+        if(viewmodelProjection&&!app.screenShake.viewmodel){const auto compensate=scene::inverseAffine(view)*unshaken;for(auto& bone:pose)bone=compensate*bone;}
+    }
     app.lastRenderedCameraPosition=renderedCameraPosition;app.lastRenderedCameraRotationDegrees={-std::asin(std::clamp(renderedCameraForward.z,-1.0f,1.0f))*180.0f/scene::kPi,std::atan2(renderedCameraForward.y,renderedCameraForward.x)*180.0f/scene::kPi,app.cameraEditMode?(app.dollyCameraActive?take::interpolateDollyCamera(app.recordedTake.dollyCamera,app.takeTime*app.recordedTake.sampleRate).rotationDegrees.z:app.freeCameraRotationDegrees.z):(shoulderCamera?app.cameraControls.shoulder.rotation.z:0.0f)};app.lastRenderedCameraFov=fovDegrees;app.lastRenderedCameraValid=true;
     float nearPlane=app.actorMode?std::max(2.5f,app.cameraNearClipCm):std::max(2.5f,app.cameraDistance*0.005f),farPlane=std::max({nearPlane+1.0f,app.cameraFarClipMeters*gameplay::iw::kMetersToUnits,app.cameraDistance*20.0f});
     if(app.takePreview||app.cameraEditMode||app.exportActive){
@@ -13684,12 +15046,13 @@ auto available=ImGui::GetContentRegionAvail();
     }else if(app.navigationClickPlacement){nearPlane=gameplay::iw::worldUnits(2.0f);farPlane=std::max(gameplay::iw::worldUnits(12000.0f),app.navigationCameraDistance*12.0f);if(app.loadedMap&&app.loadedMap->scene.bounds.valid)farPlane=std::max(farPlane,scene::length(app.loadedMap->scene.bounds.maximum-app.loadedMap->scene.bounds.minimum)*3.0f);}
     const auto hiddenBeforeRender=app.scene.hiddenBones;
     if(takeSample){app.scene.hiddenBones.clear();for(const auto bone:takeSample->hiddenBones)if(bone<app.scene.skeleton.bones.size())app.scene.hiddenBones.insert(bone);}
+    else setMeleeKnifeVisible(app,app.actionActive&&app.activeAction==scene::ActionRole::Melee&&!isKnifeWeapon(app));
     bool recordedScopeHidden{},recordedViewmodelHidden{};
     const bool knownVisibility=takeSample&&(takeSample->visibility&take::VisibilityKnown);
     if(takeSample){
         if(knownVisibility){recordedScopeHidden=(takeSample->visibility&take::ScopeOverlay)!=0;recordedViewmodelHidden=(takeSample->visibility&take::HideViewmodel)!=0;}
         else {
-            recordedScopeHidden=takeSample->camera.adsBlend>=.999f&&app.weaponTiming.hideWeaponOnAds&&weapon::isSniper(app.weaponProfile.archetype);
+            recordedScopeHidden=takeSample->camera.adsBlend>=.999f&&(app.weaponTiming.hideWeaponOnAds||app.weaponTiming.instantScope)&&(weapon::isSniper(app.weaponProfile.archetype)||app.weaponTiming.instantScope);
             if(const auto gun=app.scene.skeleton.boneByCanonicalName.find("j_gun");gun!=app.scene.skeleton.boneByCanonicalName.end()&&app.scene.pointBlankWeaponStem.empty())recordedScopeHidden|=app.scene.hiddenBones.contains(gun->second);
             recordedViewmodelHidden=recordedScopeHidden;
         }
@@ -13697,7 +15060,7 @@ auto available=ImGui::GetContentRegionAvail();
     const auto playerVisibility=livePlayerVisibility(app);
     const bool liveAdsWeaponHidden=!takeSample&&!app.actorThirdPerson&&!app.cameraEditMode&&(playerVisibility&take::HideViewmodel);
 
-    const bool sniperScopeActive=takeSample?recordedScopeHidden:(liveAdsWeaponHidden&&weapon::isSniper(app.weaponProfile.archetype));
+    const bool sniperScopeActive=takeSample?recordedScopeHidden:(liveAdsWeaponHidden&&(weapon::isSniper(app.weaponProfile.archetype)||app.weaponTiming.instantScope));
     // Scope optics are a weapon property, not the amplitude of the cosmetic
     // zoom curve. This is shared by live rendering and offline replay capture.
     const bool scopeVisible=sniperScopeActive&&(!takeSample||app.takeFirstPersonView)&&(!app.cameraEditMode||app.takeFirstPersonView);
@@ -13716,6 +15079,7 @@ auto available=ImGui::GetContentRegionAvail();
     app.renderer.setCampathAppearance(app.campathSplineThickness,app.campathSplineColor,app.campathNodeColor,app.campathFrustumColor,app.campathDashedLine,app.campathDashLength);
     app.renderer.setCameraPosition(renderedCameraPosition);
     app.renderer.setCollisionOverlay(app.loadedMap?&*app.loadedMap:nullptr,app.collisionOverlayRangeMeters,app.collisionOverlayThroughWalls);
+    app.renderer.setDynamicCollisionOverlay(liveCollisionOverlayBoxes(app,takeSample!=nullptr));
 
     app.equipmentHiddenBots.clear();
     if(takeSample){for(const auto& bot:takeSample->bots)app.equipmentHiddenBots.push_back(recordedWeaponHidden(bot));}
@@ -13729,6 +15093,7 @@ auto available=ImGui::GetContentRegionAvail();
     app.renderer.setWeaponLightingMultipliers(app.weaponSunMultiplier,app.weaponAmbientMultiplier);
     app.renderer.setCubemapSurfaceMultipliers(app.viewmodelCubemapMultiplier,app.worldCubemapMultiplier);
     const bool hidePlayerWeapon=takeSample?((knownVisibility?(takeSample->visibility&take::HideWeapon)!=0:recordedWeaponHidden(takeSample->worldActor))):((playerVisibility&take::HideWeapon)!=0);
+    app.equipmentHiddenBots.resize(renderedBotPoses->size(),1);
     app.renderer.setEquipmentVisibility(app.equipmentHiddenBots,hidePlayerWeapon);
     app.renderer.setEnvironmentCamera(renderedCameraForward,renderedCameraUp,fovDegrees,static_cast<float>(renderWidth)/renderHeight);const float sunAzimuthRadians=app.sunAzimuth*scene::kPi/180.0f,sunElevationRadians=app.sunElevation*scene::kPi/180.0f;app.renderer.setSun(app.sunLighting,app.sunShadows,{std::cos(sunAzimuthRadians)*std::cos(sunElevationRadians),std::sin(sunAzimuthRadians)*std::cos(sunElevationRadians),-std::sin(sunElevationRadians)},app.sunIntensity,app.sunAmbient,app.sunColor,app.ambientColor,app.shadowResolution,app.shadowDistanceMeters*gameplay::iw::kMetersToUnits,app.shadowFadeStartMeters*gameplay::iw::kMetersToUnits,renderedCameraPosition,app.farShadowEnabled,app.farShadowResolution,app.farShadowStartMeters*gameplay::iw::kMetersToUnits,app.farShadowDistanceMeters*gameplay::iw::kMetersToUnits,app.farShadowBlendMeters*gameplay::iw::kMetersToUnits);const bool showFirstPersonRig=cadence::showFirstPersonRig(takeSample!=nullptr,app.takeFirstPersonView,liveAdsWeaponHidden||recordedViewmodelHidden,app.actorMode,app.actorThirdPerson,renderedWorldActorPose!=nullptr,app.actorFreecamRetainViewmodel,app.navigationClickPlacement);const auto* navigationOverlay=app.navigationVisualization?&activeBotNavigation(app):nullptr;const auto* spawnOverlay=app.showBotSpawns?(!app.botSpawnPoints.empty()?&app.botSpawnPoints:&app.mapAuthoredSpawnPoints):nullptr;
     const auto cycle=render::daynight::evaluate(app.dayNight,app.takePreview?app.takeTime:app.dayNightSeconds);
@@ -13754,6 +15119,8 @@ auto available=ImGui::GetContentRegionAvail();
     const auto* animatedCamPtr=animatedCamSample?&*animatedCamSample:nullptr;
     app.hitmarkerTime=std::max(0.0f,app.hitmarkerTime-ImGui::GetIO().DeltaTime/std::max(0.01f,app.hitmarkerDurationScale));
     const auto renderWithNavigation=[&](const gameplay::bot::NavigationGraph* navigation){
+        const auto weaponTransform=weaponRigTransform(app,pose);
+        app.renderer.setWeaponRigTransform(app.scene,pose,weaponTransform);
         app.renderer.render(app.scene,pose,viewProjection,renderWidth,renderHeight,app.showGrid,app.showSkeleton,app.wireframe,app.botActorScene?&*app.botActorScene:nullptr,app.botActorScene?renderedBotPoses:nullptr,app.botActorScene?&renderedBotVariants:nullptr,renderedWorldActorPose?&*app.hiddenWorldActor:nullptr,renderedWorldActorPose,showFirstPersonRig,app.loadedMap?&app.loadedMap->scene:nullptr,navigation,spawnOverlay,app.selectedNavigationNode,app.selectedNavigationBlock,app.navigationClickPlacement,campathOverlay,campathSelectedNode,animatedCamPtr);
         scene::Vec3 flashPos=renderedCameraPosition+renderedCameraForward*20.0f;
         const bool useWorldMuzzle=(takeSample?!app.takeFirstPersonView:(app.actorThirdPerson||app.freeCameraActive||!showFirstPersonRig))&&renderedWorldActorPose&&app.hiddenWorldActor;
@@ -13803,8 +15170,27 @@ auto available=ImGui::GetContentRegionAvail();
             const auto resolved=scene::resolveMuzzlePosition(app.scene,pose);
             flashResolved=resolved.has_value();if(resolved)flashPos=*resolved;
         }
+        if(!useWorldMuzzle)flashPos=scene::transformPoint(weaponTransform,flashPos);
         app.lastMuzzleFlashPosition = flashPos;
         app.lastMuzzleFlashValid = flashResolved;
+        const auto shotPresentationPoint=[&](const take::ShotEvent& shot,scene::Vec3 point){
+                auto trailOrigin=point;
+                const auto* emissionSample=app.recordedTake.sampleAt(shot.time);
+                if(takeSample&&app.takeFirstPersonView&&emissionSample&&emissionSample->weaponSlot==takeSample->weaponSlot){
+                    auto emissionCamera=shot.origin,emissionForward=shot.direction;
+                    scene::Vec3 emissionUp{0,0,1};
+                    if(const auto recovered=cadence::replay::poseCamera(app.scene.skeleton,emissionSample->pose)){
+                        const auto& m=*recovered;
+                        emissionCamera={m.v[12],m.v[13],m.v[14]};
+                        emissionForward=scene::normalize(scene::Vec3{m.v[0],m.v[1],m.v[2]});
+                        emissionUp=scene::normalize(scene::Vec3{m.v[8],m.v[9],m.v[10]});
+                    }
+                    const float emissionFov=cadence::replay::presentationFov(app.recordedTake,*emissionSample,app.viewmodelFov,app.viewmodelFovScale);
+                    const auto emissionView=scene::lookAtDirection(emissionCamera,emissionForward,emissionUp);
+                    trailOrigin=render::viewmodel_projection::worldOrigin(trailOrigin,emissionCamera,emissionView,emissionFov,app.weaponProfile.viewmodelFovMultiplier,app.weaponProfile.flipViewmodel);
+                }
+            return trailOrigin;
+        };
 
         float simDelta = ImGui::GetIO().DeltaTime;
         if(app.exportActive){
@@ -13836,7 +15222,7 @@ auto available=ImGui::GetContentRegionAvail();
             if(app.scene.dualWield&&!useWorldMuzzle&&app.debugMuzzleFlash){
                 for(int side=0;side<2;++side)if(app.dualMuzzleFlashTime[side]>0)if(const auto muzzle=cadence::dual::muzzle(app.scene,pose,side)){
                     const float t=std::clamp(app.dualMuzzleFlashTime[side]/std::max(.001f,app.muzzleFlashDuration),0.f,1.f);
-                    app.renderer.renderMuzzleFlash3D(*muzzle,app.muzzleFlashSize*40.f*std::pow(t,app.muzzleFlashCurvePower),app.playerMuzzleFlashRotation,{app.muzzleFlashColor.x,app.muzzleFlashColor.y,app.muzzleFlashColor.z,app.muzzleFlashColor.w*t},viewProjection,renderedCameraPosition,showFirstPersonRig,renderedCameraForward);
+                    app.renderer.renderMuzzleFlash3D(scene::transformPoint(weaponTransform,*muzzle),app.muzzleFlashSize*40.f*std::pow(t,app.muzzleFlashCurvePower),app.playerMuzzleFlashRotation,{app.muzzleFlashColor.x,app.muzzleFlashColor.y,app.muzzleFlashColor.z,app.muzzleFlashColor.w*t},viewProjection,renderedCameraPosition,showFirstPersonRig,renderedCameraForward);
                 }
             }else if(flashResolved&&app.playerMuzzleFlashTime>0.0f&&app.debugMuzzleFlash){
                 const float normTime=std::clamp(app.playerMuzzleFlashTime/std::max(0.001f,app.muzzleFlashDuration),0.0f,1.0f);
@@ -13876,15 +15262,17 @@ auto available=ImGui::GetContentRegionAvail();
                     // Duration zero is the legacy invalid-muzzle marker; the
                     // recorded smoke enable/style is intentionally not used.
                     if(it->muzzleFlashDuration<=0)continue;
-                    app.renderer.renderReplaySmoke(it->muzzlePos,it->direction,app.takeTime-it->time,static_cast<std::uint32_t>(it-shots.begin()),settings,app.smokeTrailColor,viewProjection,renderedCameraPosition,app.smokeCurveResolution);
+                    const auto origin=shotPresentationPoint(*it,it->muzzlePos);
+                    const auto forward=scene::normalize(shotPresentationPoint(*it,it->muzzlePos+it->direction)-origin);
+                    app.renderer.renderReplaySmoke(origin,forward,app.takeTime-it->time,static_cast<std::uint32_t>(it-shots.begin()),settings,app.smokeTrailColor,viewProjection,renderedCameraPosition,app.smokeCurveResolution);
                 }
             } else {
                 if(app.scene.dualWield&&!useWorldMuzzle){
-                    for(int side=0;side<2;++side){app.dualSmokeTime[side]=std::max(0.f,app.dualSmokeTime[side]-simDelta);const auto muzzle=cadence::dual::muzzle(app.scene,pose,side);app.renderer.updateAndRenderSmokeCurve(simDelta,muzzle.value_or(flashPos),renderedCameraForward,muzzle&&app.dualSmokeTime[side]>0,viewProjection,renderedCameraPosition,app.smokeTrailLifetime,app.smokeTrailStartWidth,app.smokeTrailEndWidth,app.smokeTrailTaperingExp,app.smokeTrailBlastSpeed,app.smokeTrailRiseSpeed,app.smokeTrailDispersion,app.smokeTrailColor,{},app.smokeCurveResolution,side);}
+                    for(int side=0;side<2;++side){app.dualSmokeTime[side]=std::max(0.f,app.dualSmokeTime[side]-simDelta);const auto muzzle=cadence::dual::muzzle(app.scene,pose,side);app.renderer.updateAndRenderSmokeCurve(simDelta,muzzle?scene::transformPoint(weaponTransform,*muzzle):flashPos,renderedCameraForward,muzzle&&app.dualSmokeTime[side]>0,viewProjection,renderedCameraPosition,app.smokeTrailLifetime,app.smokeTrailStartWidth,app.smokeTrailEndWidth,app.smokeTrailTaperingExp,app.smokeTrailBlastSpeed,app.smokeTrailRiseSpeed,app.smokeTrailDispersion,app.smokeTrailColor,{},app.smokeCurveResolution,side,showFirstPersonRig);}
                 }else{
                 app.smokeEmissionCooldown = std::max(0.0f, app.smokeEmissionCooldown - simDelta);
                 const bool isEmitting = flashResolved && app.smokeEmissionCooldown > 0.0f;
-                app.renderer.updateAndRenderSmokeCurve(simDelta, flashPos, renderedCameraForward, isEmitting, viewProjection, renderedCameraPosition, app.smokeTrailLifetime, app.smokeTrailStartWidth, app.smokeTrailEndWidth, app.smokeTrailTaperingExp, app.smokeTrailBlastSpeed, app.smokeTrailRiseSpeed, app.smokeTrailDispersion, app.smokeTrailColor, {}, app.smokeCurveResolution);
+                app.renderer.updateAndRenderSmokeCurve(simDelta, flashPos, renderedCameraForward, isEmitting, viewProjection, renderedCameraPosition, app.smokeTrailLifetime, app.smokeTrailStartWidth, app.smokeTrailEndWidth, app.smokeTrailTaperingExp, app.smokeTrailBlastSpeed, app.smokeTrailRiseSpeed, app.smokeTrailDispersion, app.smokeTrailColor, {}, app.smokeCurveResolution,0,showFirstPersonRig&&!useWorldMuzzle);
                 }
             }
         }
@@ -13893,12 +15281,15 @@ auto available=ImGui::GetContentRegionAvail();
             for(const auto& shot : app.recordedTake.shots){
                 const float age = app.takeTime - shot.time;
                 if(age < 0.0f) continue;
+                // Project from the firing camera, not the moving replay camera.
+                // Reconstructing every frame must not drag an old trail sideways.
+                const auto trailOrigin=shotPresentationPoint(shot,shot.muzzlePos);
                 if(shot.sniperWeapon){
                     if(app.sniperTrailEnabled && age < app.sniperTrailLifetime){
                         render::StageRenderer::BulletTrail trail;
                         trail.type = render::StageRenderer::BulletTrail::Type::Sniper;
-                        trail.start = shot.muzzlePos;
-                        trail.viewmodelOrigin = app.takeFirstPersonView;
+                        trail.start = trailOrigin;
+                        trail.viewmodelOrigin = false;
                         trail.end = shot.hitPos;
                         trail.dir = shot.direction;
                         trail.distance = scene::length(shot.hitPos - shot.muzzlePos);
@@ -13922,8 +15313,8 @@ auto available=ImGui::GetContentRegionAvail();
                     if(app.projectileTrailEnabled && tailDist < totalDist){
                         render::StageRenderer::BulletTrail trail;
                         trail.type = render::StageRenderer::BulletTrail::Type::Projectile;
-                        trail.start = shot.muzzlePos;
-                        trail.viewmodelOrigin = app.takeFirstPersonView;
+                        trail.start = trailOrigin;
+                        trail.viewmodelOrigin = false;
                         trail.end = shot.hitPos;
                         trail.dir = totalDist > 0.001f ? (shot.hitPos - shot.muzzlePos) / totalDist : shot.direction;
                         trail.distance = totalDist;
@@ -13950,7 +15341,13 @@ auto available=ImGui::GetContentRegionAvail();
         }
         app.renderer.updateAndRenderImpacts(simDelta, viewProjection, renderedCameraPosition);
     };
-    const auto renderFrame=[&]{diagnostic::Scope tracePhase(diagnostic::Phase::Scene);const auto started=std::chrono::steady_clock::now();renderWithNavigation(navigationOverlay);const auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();app.performanceRenderMs=app.performanceRenderMs*.9+elapsed*.1;};renderFrame();
+    const bool exportLayers=app.exportActive&&!app.exportCameraOnly;
+    updatePresentInterval(app);
+    app.renderer.setExportLayers(exportLayers&&(app.exportViewmodelPass||app.exportPlayermodelPass),exportLayers&&app.exportDepthPass&&app.exportWorldDepthOnly);
+    const auto renderFrame=[&]{diagnostic::Scope tracePhase(diagnostic::Phase::Scene);const auto started=std::chrono::steady_clock::now();renderWithNavigation(navigationOverlay);
+        if(app.nativeReShade.enabled&&app.renderDebugView==0&&app.renderer.nativePostEligible())app.nativeReShadeRuntime.process(programDirectory(),app.nativeReShade.preset,unsigned(app.renderer.colorTexture()),renderWidth,renderHeight,app.renderer.nativeDepthTexture(),app.renderer.nativeDepthNear(),app.renderer.nativeDepthFar(),app.renderer.nativeDepthForeground(),app.renderer.nativeDepthSeparate());
+        else if(!app.nativeReShade.enabled&&app.nativeReShadeRuntime.ready())app.nativeReShadeRuntime.shutdown();
+        const auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();app.performanceRenderMs=app.performanceRenderMs*.9+elapsed*.1;};renderFrame();
     const auto captureNavigationMatte=[&](std::vector<std::uint8_t>& output,std::string& error){std::vector<std::uint8_t> withoutNavigation,withNavigation;renderWithNavigation(nullptr);if(!app.renderer.readColorRgba(withoutNavigation,error))return false;renderWithNavigation(&activeBotNavigation(app));if(!app.renderer.readColorRgba(withNavigation,error))return false;if(withoutNavigation.size()!=withNavigation.size()){error="Navigation pass frame sizes did not match";return false;}output.resize(withNavigation.size());const std::uint8_t background[4]={static_cast<std::uint8_t>(std::clamp(app.exportNavigationBackground.x,0.0f,1.0f)*255),static_cast<std::uint8_t>(std::clamp(app.exportNavigationBackground.y,0.0f,1.0f)*255),static_cast<std::uint8_t>(std::clamp(app.exportNavigationBackground.z,0.0f,1.0f)*255),static_cast<std::uint8_t>(app.exportNavigationAlpha?0:255)};for(std::size_t pixel=0;pixel+3<output.size();pixel+=4){const int difference=std::abs(static_cast<int>(withNavigation[pixel])-withoutNavigation[pixel])+std::abs(static_cast<int>(withNavigation[pixel+1])-withoutNavigation[pixel+1])+std::abs(static_cast<int>(withNavigation[pixel+2])-withoutNavigation[pixel+2]);if(difference>5){output[pixel]=withNavigation[pixel];output[pixel+1]=withNavigation[pixel+1];output[pixel+2]=withNavigation[pixel+2];output[pixel+3]=255;}else for(int channel=0;channel<4;++channel)output[pixel+channel]=background[channel];}renderFrame();return true;};
     const auto captureSwapchainReShade=[&](std::vector<std::uint8_t>& outPixels,std::string& err)->bool{
         return app.renderer.captureReShadeSwapchain(app.window,outPixels,err);
@@ -13961,43 +15358,67 @@ auto available=ImGui::GetContentRegionAvail();
         else if(app.liveRecorder.due()){std::vector<std::uint8_t> pixels;std::string error;if(app.renderer.readColorRgba(pixels,error))app.liveRecorder.submit(std::move(pixels),captureCamera);else{app.liveRecorder.stop();app.status=error;}}
     }else if(app.liveWasActive){app.liveWasActive=false;const auto error=app.liveRecorder.error();app.status=error.empty()?"Viewport recording saved: "+app.liveMoviePath.string():error;}
     if(app.exportActive){
-        bool frameWritten{app.exportCameraOnly};std::string error;if(app.exportProRes){frameWritten=true;std::vector<std::uint8_t> beauty,depth,viewmodel;
-        if(app.exportBeautyPass){
-            bool readOk=false;
-            if(app.exportCaptureReShade)readOk=captureSwapchainReShade(beauty,error);
-            else readOk=app.renderer.readColorRgba(beauty,error);
-            if(!app.exportMoviePipe||!readOk)frameWritten=false;
-            else if(std::fwrite(beauty.data(),1,beauty.size(),app.exportMoviePipe)!=beauty.size()){frameWritten=false;error="Beauty FFmpeg stream stopped accepting frames";}
-        }
-        if(frameWritten&&app.exportDepthPass){
-            if(app.exportDepthFormat>=1){
-                std::vector<float> rawFloat;
-                if(!app.exportDepthPipe||!app.renderer.readDepthRawFloat(rawFloat,nearPlane,farPlane,app.exportDepthNearMeters*gameplay::iw::kMetersToUnits,app.exportDepthFarMeters*gameplay::iw::kMetersToUnits,app.exportDepthInvert,error))frameWritten=false;
-                else {
-                    std::vector<std::uint16_t> yuv;
-                    cadence::depth_export::pack(rawFloat,yuv,app.exportDepthDither,app.exportDepthDitherStrength,app.exportDepthFullRange);
-                    if(std::fwrite(yuv.data(),sizeof(std::uint16_t),yuv.size(),app.exportDepthPipe)!=yuv.size()){frameWritten=false;error="Depth FFmpeg stream stopped accepting frames";}
+        bool frameWritten{app.exportCameraOnly};std::string error;
+        std::vector<std::uint8_t> beauty,coverage,isolate,depth;
+        const auto readBeauty=[&]{
+            if(!beauty.empty())return true;
+            return app.exportCaptureReShade&&!app.nativeReShade.enabled?captureSwapchainReShade(beauty,error):app.renderer.readColorRgba(beauty,error);
+        };
+        const auto makeIsolate=[&](std::size_t channel){
+            if(!readBeauty()||(coverage.empty()&&!app.renderer.readIsolateMask(coverage,error)))return false;
+            if(coverage.size()!=beauty.size()){error="Isolate and beauty frame sizes did not match";return false;}
+            isolate.resize(beauty.size());
+            for(std::size_t i=0;i<beauty.size();i+=4){
+                const auto alpha=coverage[i+channel];
+                isolate[i]=alpha?beauty[i]:0;isolate[i+1]=alpha?beauty[i+1]:0;isolate[i+2]=alpha?beauty[i+2]:0;isolate[i+3]=alpha;
+            }
+            return true;
+        };
+        if(app.exportProRes){
+            using Stream=cadence::capture::ProResExportStream;
+            const bool needsMask=app.exportViewmodelPipe||app.exportPlayermodelPipe;
+            const bool needsBeauty=app.exportMoviePipe||needsMask;
+            Stream::Frame depthFrame;
+            Stream::Bytes navigation;
+            frameWritten=!needsBeauty||readBeauty();
+            if(frameWritten&&needsMask){
+                frameWritten=app.renderer.readIsolateMask(coverage,error);
+                if(frameWritten&&coverage.size()!=beauty.size()){
+                    frameWritten=false;error="Isolate and beauty frame sizes did not match";
                 }
-            } else {
-                if(!app.exportDepthPipe||!app.renderer.readDepthRgba(depth,nearPlane,farPlane,app.exportDepthNearMeters*gameplay::iw::kMetersToUnits,app.exportDepthFarMeters*gameplay::iw::kMetersToUnits,app.exportDepthInvert,error))frameWritten=false;
-                else if(std::fwrite(depth.data(),1,depth.size(),app.exportDepthPipe)!=depth.size()){frameWritten=false;error="Depth FFmpeg stream stopped accepting frames";}
+            }
+            if(frameWritten&&app.exportDepthPipe){
+                const float rangeNear=app.exportDepthNearMeters*gameplay::iw::kMetersToUnits;
+                const float rangeFar=app.exportDepthFarMeters*gameplay::iw::kMetersToUnits;
+                if(app.exportDepthFormat>=1){
+                    depthFrame.depthRange=render::foreground_depth::ExportRange{nearPlane,farPlane,rangeNear,rangeFar,false,false,app.exportDepthInvert};
+                    frameWritten=app.renderer.captureDepthSamples(depthFrame.depth,*depthFrame.depthRange,error);
+                }
+                else{
+                    frameWritten=app.renderer.readDepthRgba(depth,nearPlane,farPlane,rangeNear,rangeFar,app.exportDepthInvert,error);
+                    depthFrame.pixels=std::make_shared<Stream::Bytes>(std::move(depth));
+                }
+            }
+            if(frameWritten&&app.exportNavigationPipe)frameWritten=captureNavigationMatte(navigation,error);
+            if(frameWritten){
+                const auto color=needsBeauty?std::make_shared<Stream::Bytes>(std::move(beauty)):nullptr;
+                const auto mask=needsMask?std::make_shared<Stream::Bytes>(std::move(coverage)):nullptr;
+                const auto submit=[&](const auto& stream,Stream::Frame frame){
+                    if(frameWritten&&stream)frameWritten=stream->submit(std::move(frame),error);
+                };
+                submit(app.exportMoviePipe,{color});
+                submit(app.exportDepthPipe,std::move(depthFrame));
+                submit(app.exportViewmodelPipe,{color,mask,{},0});
+                submit(app.exportPlayermodelPipe,{color,mask,{},1});
+                if(app.exportNavigationPipe)submit(app.exportNavigationPipe,{std::make_shared<Stream::Bytes>(std::move(navigation))});
             }
         }
-        if(frameWritten&&app.exportViewmodelPass){const scene::Vec4 background{app.exportViewmodelBackground.x,app.exportViewmodelBackground.y,app.exportViewmodelBackground.z,app.exportViewmodelAlpha?0.0f:1.0f};app.renderer.setViewmodelCapture(true,background);renderFrame();if(!app.exportViewmodelPipe||!app.renderer.readColorRgba(viewmodel,error))frameWritten=false;else if(std::fwrite(viewmodel.data(),1,viewmodel.size(),app.exportViewmodelPipe)!=viewmodel.size()){frameWritten=false;error="Viewmodel FFmpeg stream stopped accepting frames";}app.renderer.setViewmodelCapture(false,{0,0,0,1});renderFrame();}}
-        if(app.exportProRes&&frameWritten&&app.exportNavigationPass){std::vector<std::uint8_t> navigation;if(!app.exportNavigationPipe||!captureNavigationMatte(navigation,error))frameWritten=false;else if(std::fwrite(navigation.data(),1,navigation.size(),app.exportNavigationPipe)!=navigation.size()){frameWritten=false;error="Navmesh FFmpeg stream stopped accepting frames";}}
         if(!app.exportProRes&&!app.exportCameraOnly){
             char filename[64]{};std::snprintf(filename,sizeof(filename),"frame_%06llu.png",static_cast<unsigned long long>(app.exportFrame));
             const auto outputPath=app.exportFolder/filename;
             if(std::filesystem::exists(outputPath))error="Export stopped without overwriting existing "+outputPath.filename().string();
             else {
-                if(app.exportCaptureReShade){
-                    std::vector<std::uint8_t> reshadePixels;
-                    if(captureSwapchainReShade(reshadePixels,error)){
-                        frameWritten=app.renderer.savePixelsPng(outputPath,renderWidth,renderHeight,reshadePixels,error);
-                    } else frameWritten=false;
-                } else {
-                    frameWritten=app.renderer.saveColorPng(outputPath,error);
-                }
+                frameWritten=readBeauty()&&app.renderer.savePixelsPng(outputPath,renderWidth,renderHeight,beauty,error);
                 if(frameWritten&&app.exportDepthPass){
                     const char* ext=app.exportDepthFormat==2?".tif":".png";
                     char depthFilename[64]{};
@@ -14005,6 +15426,13 @@ auto available=ImGui::GetContentRegionAvail();
                     const auto depthPath=app.exportFolder/depthFilename;
                     frameWritten=app.renderer.saveDepthImage(depthPath,app.exportDepthFormat,nearPlane,farPlane,app.exportDepthNearMeters*gameplay::iw::kMetersToUnits,app.exportDepthFarMeters*gameplay::iw::kMetersToUnits,app.exportDepthInvert,error);
                 }
+                const auto saveIsolate=[&](const wchar_t* suffix,std::size_t channel){
+                    const auto path=passOutputPath(outputPath,suffix);
+                    if(std::filesystem::exists(path)){error="Export stopped without overwriting existing "+path.filename().string();return false;}
+                    return makeIsolate(channel)&&app.renderer.savePixelsPng(path,renderWidth,renderHeight,isolate,error);
+                };
+                if(frameWritten&&app.exportViewmodelPass)frameWritten=saveIsolate(L"_viewmodel",0);
+                if(frameWritten&&app.exportPlayermodelPass)frameWritten=saveIsolate(L"_playermodels",1);
                 if(!frameWritten){std::error_code cleanupError;std::filesystem::remove(outputPath,cleanupError);}
             }
         }
@@ -14013,13 +15441,25 @@ auto available=ImGui::GetContentRegionAvail();
             if(!app.cameraCsvOpen||!app.cameraCsv.write(app.exportFrame,double(app.exportFrame)/app.exportFps,captureCamera)){frameWritten=false;error="Camera CSV could not be written (existing files are not overwritten)";}
         }
         if(!frameWritten){app.exportActive=false;closeProResExport(app);const bool wasProRes=app.exportProRes;app.exportProRes=false;app.status=(wasProRes?"ProRes recording failed: ":"Export failed: ")+error;}
-        else {++app.exportFrame;if(app.exportFrame>=app.exportFrameCount){app.exportActive=false;const bool wasProRes=app.exportProRes;closeProResExport(app);app.exportProRes=false;app.takeTime=std::min(app.exportEnd,app.recordedTake.duration());app.status=wasProRes?"ProRes recording complete: "+app.exportMoviePath.filename().string():"Export sequence complete: "+std::to_string(app.exportFrame)+" frames";}
+        else {++app.exportFrame;if(app.exportFrame>=app.exportFrameCount){
+                app.exportActive=false;const bool wasProRes=app.exportProRes;const auto finishError=closeProResExport(app);app.exportProRes=false;
+                app.takeTime=std::min(app.exportEnd,app.recordedTake.duration());
+                char rate[48]{};
+                std::snprintf(rate,sizeof(rate)," (%.1f frames/s)",double(app.exportFrame)/std::max(.001,glfwGetTime()-app.exportStartedAt));
+                app.status=!finishError.empty()?"Export failed: "+finishError:
+                    (wasProRes?"ProRes export complete":"Export sequence complete")+std::string(rate);
+            }
             else app.takeTime=std::min(app.exportEnd,take::outputTakeTime(app.exportStart,app.exportFrame,static_cast<std::uint32_t>(app.exportFps),app.takePlaybackSpeed));}
     }
     if(temporaryScopeHide<app.scene.skeleton.bones.size()&&!scopeBoneWasHidden)app.scene.hiddenBones.erase(temporaryScopeHide);
     if(takeSample)app.scene.hiddenBones=hiddenBeforeRender;
+    app.lastViewportImageSize=available;
     ImGui::Image(static_cast<ImTextureID>(app.renderer.colorTexture()),available,ImVec2(0,1),ImVec2(1,0));
     const auto viewportImageMin=ImGui::GetItemRectMin(),viewportImageMax=ImGui::GetItemRectMax();
+    if(app.scoreEditorEnabled&&app.scorePreview.overPov&&!app.exportActive){
+        app.scorePreview.advance(app.scoreSettings,ImGui::GetTime());
+        drawScoreImage(app,viewportImageMin,available,app.scorePreview.state(app.scoreSettings),app.scorePreview.time);
+    }else if(app.scoresOnKills&&!takeSample)drawScoreImage(app,viewportImageMin,available,app.scoreState,app.gameplayClock);
     app.viewportHovered=ImGui::IsItemHovered();
     if (app.navigationClickPlacement && app.viewportHovered) {
       auto &navIo = ImGui::GetIO();
@@ -14129,11 +15569,11 @@ auto available=ImGui::GetContentRegionAvail();
                 static_cast<std::size_t>(app.navigationClickLastNode) < index) {
               const auto previous =
                   static_cast<std::size_t>(app.navigationClickLastNode);
-              if (!app.loadedMap || app.loadedMap->navigationSegmentClear(
+              if (!app.loadedMap || collisionNavigationClear(app,*app.loadedMap,
                                         app.botNavigation.nodes[previous].position,
                                         node.position,
                                         scene::course::kPlayerRadius,
-                                        gameplay::iw::worldUnits(72.0f),
+                                        minimumBotCollisionHeight(app),
                                         scene::course::kStepHeight))
                 app.botNavigation.links.push_back(
                     {previous, index, 1.0f, true});
@@ -14175,6 +15615,7 @@ if(app.cameraEditMode){auto* dollyHud=ImGui::GetWindowDrawList();const float hud
     };
     auto* feedbackDraw=ImGui::GetWindowDrawList();
 #include "app/TraversalVisualizer.inc"
+#include "app/PlayerCollisionPreview.inc"
     if(app.showBotAnimationClips&&!takeSample&&app.botActorScene){
         const auto& skeleton=app.botActorScene->skeleton;
         auto head=skeleton.boneByCanonicalName.find("j_head");
@@ -14203,7 +15644,9 @@ if(app.cameraEditMode){auto* dollyHud=ImGui::GetWindowDrawList();const float hud
         feedbackDraw->PopClipRect();
     }
     app.csgoCrosshairRecoilSpread = std::max(0.0f, app.csgoCrosshairRecoilSpread * std::exp(-ImGui::GetIO().DeltaTime * 9.0f));
-    if (app.csgoClassicCrosshair && !sniperScopeActive && (!app.cameraEditMode || app.takeFirstPersonView)) {
+    const bool crosshairWeaponHidden=app.weaponProfile.hideCrosshair.value_or(weapon::isSniper(app.weaponProfile.archetype)||app.weaponProfile.meleeWeapon);
+    const bool crosshairAdsHidden=app.crosshairHideWhileAds&&(takeSample?takeSample->camera.adsBlend>.001f:(app.gameplayAds||app.adsCameraBlend>.001f));
+    if (app.csgoClassicCrosshair && !crosshairWeaponHidden && !crosshairAdsHidden && !sniperScopeActive && (!app.cameraEditMode || app.takeFirstPersonView)) {
         const ImVec2 center{(viewportImageMin.x + viewportImageMax.x) * 0.5f, (viewportImageMin.y + viewportImageMax.y) * 0.5f};
 
         float dynamicSpread = 0.0f;
@@ -14288,6 +15731,10 @@ if(app.cameraEditMode){auto* dollyHud=ImGui::GetWindowDrawList();const float hud
         }
         app.selectedMeshBinding=bestMesh;app.selectedBoneBinding=bestBone;
     }
+    if(!app.takePreview&&app.locationNoticeUntil>glfwGetTime()&&!app.locationNotice.empty()){
+        const auto size=ImGui::CalcTextSize(app.locationNotice.c_str());
+        ImGui::GetWindowDrawList()->AddText({(viewportImageMin.x+viewportImageMax.x-size.x)*.5f,viewportImageMax.y-size.y-14.f},IM_COL32(255,255,255,255),app.locationNotice.c_str());
+    }
     if(app.experimentalBotAreaPing&&app.botAreaPing.remaining>0&&!app.takePreview){
         const auto p=app.botAreaPing.point;const auto& m=viewProjection;
         const float w=m.v[3]*p.x+m.v[7]*p.y+m.v[11]*p.z+m.v[15];
@@ -14309,7 +15756,12 @@ if(app.cameraEditMode){auto* dollyHud=ImGui::GetWindowDrawList();const float hud
             const float y=viewProjection.v[1]*point.x+viewProjection.v[5]*point.y+viewProjection.v[9]*point.z+viewProjection.v[13];
             const float w=viewProjection.v[3]*point.x+viewProjection.v[7]*point.y+viewProjection.v[11]*point.z+viewProjection.v[15];if(w<=0.0001f)continue;
             const float nx=x/w,ny=y/w;if(nx<-1||nx>1||ny<-1||ny>1)continue;const ImVec2 screen{viewportImageMin.x+(nx*0.5f+0.5f)*(viewportImageMax.x-viewportImageMin.x),viewportImageMin.y+(1.0f-(ny*0.5f+0.5f))*(viewportImageMax.y-viewportImageMin.y)};
-            const bool selected=i==app.selectedBoneBinding;drawList->AddCircleFilled(screen,selected?5.0f:2.5f,selected?IM_COL32(80,220,255,255):IM_COL32(255,174,58,255));drawList->AddText({screen.x+4,screen.y-7},selected?IM_COL32(120,235,255,255):IM_COL32(255,225,185,255),app.scene.skeleton.bones[i].name.c_str());}
+            const bool selected=i==app.selectedBoneBinding;
+            drawList->AddCircleFilled(screen,selected?5.0f:2.5f,selected?IM_COL32(80,220,255,255):IM_COL32(255,174,58,255));
+            // Attachment preview highlights a socket; only the viewport label
+            // checkbox can put bone names over gameplay or freecam.
+            if(app.showBoneNames)drawList->AddText({screen.x+4,screen.y-7},selected?IM_COL32(120,235,255,255):IM_COL32(255,225,185,255),app.scene.skeleton.bones[i].name.c_str());
+        }
         if(app.showBoneNames&&app.selectedMeshBinding<app.scene.meshes.size()&&app.selectedBoneBinding<app.scene.skeleton.bones.size()){
             const auto& selectedBone=app.scene.skeleton.bones[app.selectedBoneBinding];const std::string parentName=selectedBone.parent>=0&&static_cast<std::size_t>(selectedBone.parent)<app.scene.skeleton.bones.size()?app.scene.skeleton.bones[static_cast<std::size_t>(selectedBone.parent)].name:"<skeleton root>";
             const auto& selectedMesh=app.scene.meshes[app.selectedMeshBinding];scene::Vec2 uvMin{},uvMax{};if(!selectedMesh.vertices.empty()){uvMin=uvMax=selectedMesh.vertices.front().uv;for(const auto& vertex:selectedMesh.vertices){uvMin.x=std::min(uvMin.x,vertex.uv.x);uvMin.y=std::min(uvMin.y,vertex.uv.y);uvMax.x=std::max(uvMax.x,vertex.uv.x);uvMax.y=std::max(uvMax.y,vertex.uv.y);}}
@@ -14712,6 +16164,28 @@ void drawSettings(AppState& app){
                 else {
                     if(ImGui::SmallButton("All##settings_games"))for(auto& choice:app.catalogGameChoices)choice.second=true;ImGui::SameLine();if(ImGui::SmallButton("None##settings_games"))for(auto& choice:app.catalogGameChoices)choice.second=false;ImGui::SameLine();if(ImGui::SmallButton("Refresh folders"))prepareCatalogGameChoices(app,false);
                     ImGui::BeginChild("settings_game_selection",{0,std::min(190.0f,34.0f+app.catalogGameChoices.size()*24.0f)},ImGuiChildFlags_Borders);for(auto& [game,selected]:app.catalogGameChoices)ImGui::Checkbox(game.c_str(),&selected);ImGui::EndChild();
+                    if(ImGui::TreeNode("Preload game assets")){
+                        if(!app.gamePreload)app.gamePreload=std::make_unique<cadence::GamePreload>();
+                        ImGui::TextWrapped("Keep models, animations and prepared textures in RAM for this session. New rig combinations and GPU uploads may still take time. No extra objects are rendered.");
+                        if(ImGui::SliderFloat("Cache RAM limit (GiB)",&app.gamePreloadBudgetGiB,0.25f,64.f,"%.2f",ImGuiSliderFlags_AlwaysClamp))app.gamePreload->budget(static_cast<std::size_t>(app.gamePreloadBudgetGiB*1024.*1024.*1024.));
+                        ImGui::Checkbox("Pause preloading during gameplay / replay",&app.gamePreloadPauseDuringPlay);
+                        ImGui::Text("Cached RAM: %.1f MiB; extra resident VRAM: 0",app.gamePreload->bytes()/1048576.);
+                        ImGui::TextWrapped("Estimates exclude active rigs, allocator overhead and decoder scratch. Loading keeps at least 1 GiB of system RAM free. Lowering the limit stops new work; uncheck games to release existing caches.");
+                        for(const auto& [game,indexed]:app.catalogGameChoices){
+                            const auto path=salukiExportRoot(app.defaultSalukiDirectory)/game;
+                            const auto s=app.gamePreload->status(path);bool enabled=s.requested;ImGui::PushID(game.c_str());
+                            if(ImGui::Checkbox(game.c_str(),&enabled))app.gamePreload->select(path,enabled);
+                            ImGui::SameLine();ImGui::BeginDisabled(s.requested||s.running);if(ImGui::SmallButton("Estimate RAM"))app.gamePreload->estimate(path);ImGui::EndDisabled();
+                            if(s.requested||s.bytes||s.estimateRequested||s.stage=="Estimate ready"){
+                                ImGui::TextWrapped("%s",s.stage.c_str());
+                                if(s.total&&s.stage!="Discovering files"&&s.stage!="Estimate ready"){char progress[100];std::snprintf(progress,sizeof(progress),"%zu / %zu (%.1f%%)",s.done,s.total,100.*s.done/s.total);ImGui::ProgressBar(static_cast<float>(s.done)/s.total,{-1,0},progress);}
+                                ImGui::Text("Cached %.1f MiB | %zu uncached",s.bytes/1048576.,s.failed);
+                                ImGui::TextWrapped("Estimated CPU cache: %.0f - %.0f MiB (rough, updates during discovery)",(s.sourceBytes+s.textureBytes)/1048576.,(s.sourceBytes*4.+s.textureBytes*16.)/1048576.);
+                                if(s.running&&app.gamePreloadPauseDuringPlay&&(app.actorInputCaptured||app.takePlaying||app.exportActive||app.takeRecording))ImGui::TextDisabled("Paused for playback; release gameplay controls to resume.");
+                                if(ImGui::TreeNode("Loading log")){ImGui::BeginChild("preload_log",{0,150},ImGuiChildFlags_Borders);for(const auto& line:s.log)ImGui::TextWrapped("%s",line.c_str());ImGui::EndChild();ImGui::TreePop();}
+                            }ImGui::PopID();
+                        }ImGui::TreePop();
+                    }
                     ImGui::Checkbox("Rescan files instead of using cache",&app.catalogForceRescan);ImGui::BeginDisabled(app.catalogScanFuture.has_value());if(ImGui::Button("Apply game selection"))startSelectedCatalogScan(app,app.catalogForceRescan);ImGui::EndDisabled();if(app.catalogScanFuture)ImGui::SameLine(),ImGui::TextDisabled("Indexing in background...");
                 }
             }
@@ -14726,6 +16200,54 @@ void popSecondaryTabStyle(){ImGui::PopStyleColor(3);}
 
 #include "BenchmarkWorkspace.inc"
 
+bool runtimePauseBlocked(const AppState& app){return app.exportActive||app.liveRecorder.active()||app.takeRecording||app.playerRecorder.recording;}
+void setRuntimePaused(AppState& app,bool paused){
+    if(paused&&runtimePauseBlocked(app))return;
+    if(app.runtimePaused==paused)return;
+    app.runtimePaused=paused;app.runtimeResumePending=!paused;
+    // Resume never steals the mouse. F1/click must explicitly capture again.
+    setCameraInputCapture(app,false);setActorInputCapture(app,false);
+    app.viewportHovered=false;app.freeCameraScrollDelta=0;app.actorWheelDelta=0;
+}
+
+void advanceLiveAnimationPlayback(AppState& app,float delta){
+        advanceYyV4LiveBlend(app,delta);
+        if(app.interruptPoseDuration>0)app.interruptPoseElapsed=std::min(app.interruptPoseDuration,app.interruptPoseElapsed+delta);
+        for(auto& layer:app.runtimeLayers)if(layer.animation<app.scene.animations.size()){const auto& clip=app.scene.animations[layer.animation];const float authored=clip.durationFrames/std::max(1.0f,clip.framerate),target=layer.duration>0?layer.duration:authored;layer.elapsed+=delta;advanceAnimationFrame(app,layer.frame,clip,target>0?delta*authored/target:delta,false);const bool heldAim=layer.action==scene::ActionRole::Aim&&app.gameplayAds&&!app.viewmodelAdsExiting,finishingFire=layer.action==scene::ActionRole::Fire&&!layer.fadeImmediately&&layer.elapsed<target;if(!heldAim&&!finishingFire){layer.fadeElapsed+=delta;const float initialWeight=layer.startWeight>=0?layer.startWeight:(layer.action==scene::ActionRole::Fire?0.35f:1.0f);layer.weight=initialWeight*std::clamp(1.0f-layer.fadeElapsed/std::max(0.001f,layer.fadeDuration),0.0f,1.0f);}}
+        app.runtimeLayers.erase(std::remove_if(app.runtimeLayers.begin(),app.runtimeLayers.end(),[](const auto& layer){return layer.weight<=0.0f;}),app.runtimeLayers.end());
+        const bool deathLocked=app.actionActive&&!app.actionOverlay&&app.activeAction==scene::ActionRole::Death;
+        const bool authoredPrimaryAction=app.actionActive&&!app.actionOverlay;
+        const auto& primaryClip=app.scene.animations[app.animationIndex];const float primaryAuthored=primaryClip.durationFrames/std::max(1.0f,primaryClip.framerate);float primaryOverride=authoredPrimaryAction?app.actionDurationOverride:0;const auto primarySource=lowerText(primaryClip.sourceName);if(weapon::isAdsUpClip(primarySource))primaryOverride=app.weaponTiming.adsIn;else if(weapon::isAdsDownClip(primarySource))primaryOverride=app.weaponTiming.adsOut;else if(primarySource.find("_sprint_in")!=std::string::npos)primaryOverride=app.weaponTiming.sprintInTime;else if(primarySource.find("_sprint_loop")!=std::string::npos)primaryOverride=(app.weaponTiming.sprintLoopTime>0?app.weaponTiming.sprintLoopTime:primaryAuthored)/std::clamp(app.weaponTiming.sprintPlaybackScale,.1f,2.f);else if(primarySource.find("_sprint_out")!=std::string::npos)primaryOverride=app.weaponTiming.sprintOutTime;
+        const float primaryDelta=primaryOverride>0?delta*primaryAuthored/primaryOverride:delta;
+        if(advanceYyV5(app,delta)){}
+        else if(app.yyReverse){const float reverseRate=app.yyCancelDuration>0?app.yyPutawayFrameLimit/app.yyCancelDuration:primaryClip.framerate;app.animationFrame=std::max(0.0f,app.animationFrame-delta*reverseRate);}
+        else if(app.actorMode&&app.gameplayLogic&&!isViewmodelRig(app)&&primaryClip.motion==scene::MotionRole::Jump&&!authoredPrimaryAction)
+            app.animationFrame=gameplay::presentation::airborneAnimationFrame(app.actorAirborneAnimation,primaryClip.framerate,static_cast<float>(primaryClip.durationFrames),primaryClip.looping);
+        else advanceAnimationFrame(app,app.animationFrame,primaryClip,primaryDelta,!deathLocked&&!authoredPrimaryAction&&primarySource.find("_ads_")==std::string::npos&&primarySource.find("_sprint_in")==std::string::npos&&primarySource.find("_sprint_out")==std::string::npos);
+        if(app.viewmodelSprintEntering&&app.animationFrame>=primaryClip.durationFrames){app.viewmodelSprintEntering=false;if(const auto loop=findViewmodelClip(app,"sprint_loop")){selectAnimation(app,*loop,false);app.activeTransitionDuration=std::min(std::max(0.001f,app.actionBlendTime),std::max(0.001f,authoredClipDuration(app,*loop)));app.transitionElapsed=0;app.transitioning=app.previousAnimationIndex!=app.animationIndex;}else {resolveGameplayAnimation(app);}}
+        else if(app.viewmodelSprintExiting&&app.animationFrame>=primaryClip.durationFrames){app.viewmodelSprintExiting=false;resolveGameplayAnimation(app);}
+        if(app.actionActive&&app.actionOverlay&&app.actionAnimationIndex<app.scene.animations.size())
+        {   if(!app.gameplayLogic)app.actionElapsed+=delta;
+            const bool loopHeldAction=app.activeAction==scene::ActionRole::Deploy||app.activeAction==scene::ActionRole::GrenadePrep;
+            const auto& layerClip=app.scene.animations[app.actionAnimationIndex];const float layerAuthored=layerClip.durationFrames/std::max(1.0f,layerClip.framerate);const float layerDelta=app.actionDurationOverride>0?delta*layerAuthored/app.actionDurationOverride:delta;advanceAnimationFrame(app,app.actionFrame,layerClip,layerDelta,loopHeldAction);
+            if(!app.gameplayLogic&&app.viewmodelAdsExiting&&app.actionFrame>=app.scene.animations[app.actionAnimationIndex].durationFrames){app.viewmodelAdsExiting=false;app.viewmodelAdsEngaged=false;app.actionActive=false;app.actionOverlay=false;app.activeAction=scene::ActionRole::None;app.actionFrame=app.actionElapsed=0;}
+        }
+        if(app.viewmodelAdsBaseAnimation<app.scene.animations.size()){
+            const auto& adsClip=app.scene.animations[app.viewmodelAdsBaseAnimation];
+            const float target=std::max(0.001f,app.viewmodelAdsExiting?app.weaponTiming.adsOut:app.weaponTiming.adsIn);app.viewmodelAdsTransitionElapsed=std::min(target,app.viewmodelAdsTransitionElapsed+delta);app.viewmodelAdsBaseFrame=static_cast<float>(adsClip.durationFrames)*std::clamp(app.viewmodelAdsTransitionElapsed/target,0.0f,1.0f);if(app.actionActive&&app.activeAction==scene::ActionRole::Aim&&app.actionAnimationIndex==app.viewmodelAdsBaseAnimation)app.actionFrame=app.viewmodelAdsBaseFrame;
+            if(app.viewmodelAdsExiting&&!app.gameplayAds&&app.viewmodelAdsBaseFrame>=adsClip.durationFrames){app.viewmodelAdsBaseFrame=static_cast<float>(adsClip.durationFrames);app.viewmodelAdsExiting=false;app.viewmodelAdsEngaged=false;app.viewmodelAdsPoseHold=false;}
+        }
+        if(app.transitioning){
+            const auto& previousClip=app.scene.animations[app.previousAnimationIndex];
+            if(app.actorMode&&app.gameplayLogic&&!isViewmodelRig(app)&&previousClip.motion==scene::MotionRole::Jump)
+                app.previousAnimationFrame=gameplay::presentation::heldAnimationFrame(app.previousAnimationFrame+delta*previousClip.framerate,static_cast<float>(previousClip.durationFrames),previousClip.looping);
+            else if(!(app.viewmodelAdsExiting&&lowerText(previousClip.sourceName).find("_ads_fire")!=std::string::npos))advanceAnimationFrame(app,app.previousAnimationFrame,previousClip,delta);
+            if((app.yyReturning||app.yyTowardPutaway)&&app.previousAnimationIndex==app.yyPutawayAnimation)app.previousAnimationFrame=std::min(app.previousAnimationFrame,app.yyPutawayFrameLimit);
+            if(app.yyTowardPutaway){app.transitionElapsed=std::max(0.0f,app.transitionElapsed-delta);if(app.transitionElapsed<=0.0f)app.transitioning=false;}
+            else {app.transitionElapsed+=delta;if(app.transitionElapsed>=app.activeTransitionDuration)app.transitioning=false;}
+        }
+}
+
 void drawUi(AppState& app) {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
@@ -14733,17 +16255,39 @@ void drawUi(AppState& app) {
     ImGui::Begin("Cadence", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
 
+    ImGui::BeginDisabled(app.runtimePaused);
     if(ImGui::RadioButton("Gameplay",app.workspaceMode==0))app.workspaceMode=0;ImGui::SameLine();
     if(ImGui::RadioButton("Animation Viewer",app.workspaceMode==1))app.workspaceMode=1;
     const bool workspaceLocked=!cadence::workspace::canEnterAnimationSets(app.takeRecording,app.liveRecorder.active(),app.exportActive);
     ImGui::SameLine();ImGui::BeginDisabled(workspaceLocked);
     if(ImGui::RadioButton("Animation sets",app.workspaceMode==3)){app.workspaceMode=3;app.cameraInputCaptured=false;app.actorCapturePending=false;app.actorCaptureRequested=false;applyActorInputCapture(app,false);}
     ImGui::SameLine();if(ImGui::RadioButton("Benchmark",app.workspaceMode==2)){app.workspaceMode=2;app.cameraInputCaptured=false;app.actorCapturePending=false;app.actorCaptureRequested=false;applyActorInputCapture(app,false);}
+    if(app.scoreEditorEnabled){ImGui::SameLine();if(ImGui::RadioButton("Score modifier",app.workspaceMode==4)){app.workspaceMode=4;app.cameraInputCaptured=false;app.actorCapturePending=false;app.actorCaptureRequested=false;applyActorInputCapture(app,false);}}
     ImGui::EndDisabled();
-    ImGui::SameLine();ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(),ImGui::GetWindowWidth()-85.0f));
+    ImGui::EndDisabled();
+    ImGui::SameLine();if(ImGui::GetContentRegionAvail().x<340.f)ImGui::NewLine();
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX()+std::max(0.f,ImGui::GetContentRegionAvail().x-340.f));
+    ImGui::Text("%.0f FPS",ImGui::GetIO().Framerate);ImGui::SameLine();
+    if(ImGui::Checkbox("VSync##toolbar",&app.vsync))updatePresentInterval(app);ImGui::SameLine();
+    const bool wasPaused=app.runtimePaused;
+    ImGui::BeginDisabled(!app.runtimePaused&&runtimePauseBlocked(app));
+    if(ImGui::Button(app.runtimePaused?"Resume##runtime":"Pause##runtime"))setRuntimePaused(app,!app.runtimePaused);
+    ImGui::EndDisabled();ImGui::SameLine();ImGui::BeginDisabled(app.runtimePaused||wasPaused);
     if(ImGui::Button("Settings##main_btn")){app.settingsOpen=!app.settingsOpen;if(app.settingsOpen)ImGui::SetNextWindowFocus();}
+    ImGui::EndDisabled();
     ImGui::Separator();
-    if(app.workspaceMode==2){benchui::draw(app);ImGui::End();return;}
+    if(app.runtimePaused||wasPaused){
+        // Do not enter any workspace: all of them contain renderers, pose
+        // sampling or simulation. Reuse the existing texture without uploads.
+        const auto space=ImGui::GetContentRegionAvail();
+        if(cadence::workspace::runtime(app.workspaceMode)&&app.renderer.colorTexture()&&app.lastViewportImageSize.x>0&&app.lastViewportImageSize.y>0&&space.x>0&&space.y>0){
+            const float scale=std::min(space.x/app.lastViewportImageSize.x,space.y/app.lastViewportImageSize.y);
+            ImGui::Image(static_cast<ImTextureID>(app.renderer.colorTexture()),{app.lastViewportImageSize.x*scale,app.lastViewportImageSize.y*scale},{0,1},{1,0});
+        }
+        ImGui::End();return;
+    }
+    if(app.workspaceMode==2){benchui::draw(app);ImGui::End();drawSettings(app);drawSalukiSetup(app);return;}
+    if(app.workspaceMode==4){drawScoreWorkspace(app);ImGui::End();drawSettings(app);return;}
     if(app.workspaceMode==3){drawAnimationSetWorkspace(app);ImGui::End();drawSettings(app);drawSalukiSetup(app);return;}
     if(app.workspaceMode==1){
     if (ImGui::Button("Open .cast")) {
@@ -14781,14 +16325,12 @@ void drawUi(AppState& app) {
     if(ImGui::IsItemHovered())uiHelp("Width / height. 1.778 = 16:9; 1.333 = 4:3. Preview only.");
     ImGui::SameLine();ImGui::SetNextItemWidth(90);float viewportPercent=100.f*app.viewportResolutionScale;if(ImGui::DragFloat("Render %",&viewportPercent,1.f,25.f,150.f,"%.0f%%",ImGuiSliderFlags_AlwaysClamp))app.viewportResolutionScale=viewportPercent/100.f;
     if(ImGui::IsItemHovered())uiHelp("Gameplay/replay preview resolution. Capture export resolution is unchanged.");
-    ImGui::SameLine();ImGui::SetNextItemWidth(155);constexpr const char* toolbarPasses[]={"Lit","Albedo","Specular on black","Raw normal texture","Shaded normal direction","Alpha / camo mask","Decoded tangent normal","Depth","Viewmodel greenscreen","Clay view","Albedo + collision"};ImGui::Combo("##viewportPass",&app.renderDebugView,toolbarPasses,static_cast<int>(std::size(toolbarPasses)));
+    ImGui::SameLine();ImGui::SetNextItemWidth(155);constexpr const char* toolbarPasses[]={"Beauty","Albedo","Specular on black","Raw normal texture","Shaded normal direction","Alpha / camo mask","Decoded tangent normal","Depth","Viewmodel greenscreen","Clay view","Albedo + collision"};ImGui::Combo("##viewportPass",&app.renderDebugView,toolbarPasses,static_cast<int>(std::size(toolbarPasses)));
     ImGui::SameLine();
-    const float fpsControlsWidth=165.f;
+    const float fpsControlsWidth=0.f;
     const float fovControlsWidth=fpsControlsWidth+137.f+ImGui::CalcTextSize("FOV").x+ImGui::CalcTextSize("FOV scale").x+3.f*ImGui::GetStyle().ItemInnerSpacing.x+ImGui::GetStyle().ItemSpacing.x;
     if(ImGui::GetContentRegionAvail().x<fovControlsWidth)ImGui::NewLine();
     ImGui::SetCursorPosX(ImGui::GetCursorPosX()+std::max(0.f,ImGui::GetContentRegionAvail().x-fovControlsWidth));
-    ImGui::Text("%.0f FPS",ImGui::GetIO().Framerate);ImGui::SameLine();
-    if(ImGui::Checkbox("VSync##toolbar",&app.vsync))glfwSwapInterval(app.vsync?1:0);ImGui::SameLine();
     ImGui::SetNextItemWidth(72.f);ImGui::DragFloat("FOV##toolbar",&app.viewmodelFov,.1f,1.f,160.f,"%.1f");ImGui::SameLine();
     ImGui::SetNextItemWidth(65.f);ImGui::DragFloat("FOV scale##toolbar",&app.viewmodelFovScale,.005f,.1f,3.f,"%.2fx");
     const float frameDelta=ImGui::GetIO().DeltaTime;
@@ -14806,6 +16348,9 @@ void drawUi(AppState& app) {
     const bool liveRuntime=!app.takePreview||app.takeRecording;
     if(liveRuntime)app.gameplayClock+=gameDelta;
     const auto gameplayTimingStart=std::chrono::steady_clock::now();if(liveRuntime)updateActorController(app,gameDelta);
+    if(liveRuntime&&app.actorMode&&(app.weaponProfile.overrideWeaponTurning?app.weaponProfile.weaponTurningEnabled:app.experimentalWeaponTurning))
+        app.weaponTurn.update(-app.cameraPitch*180.f/scene::kPi,app.actorYaw*180.f/scene::kPi,app.adsCameraBlend,gameDelta);
+    else app.weaponTurn={};
     if(liveRuntime){
         app.actorAirborneAnimation.update(app.actorMode&&!app.actorGrounded&&!app.actorMantling&&!app.actorNoclip,gameDelta);
         updateGameplay(app,gameDelta);
@@ -14829,41 +16374,7 @@ void drawUi(AppState& app) {
         app.slideFallbackWasActive=app.actorSliding;app.slideFallbackElapsed+=gameDelta;
     }
     if(liveRuntime&&app.playing&&!app.scene.animations.empty()) {
-        const float delta=gameDelta;
-        advanceYyV4LiveBlend(app,delta);
-        if(app.interruptPoseDuration>0)app.interruptPoseElapsed=std::min(app.interruptPoseDuration,app.interruptPoseElapsed+delta);
-        for(auto& layer:app.runtimeLayers)if(layer.animation<app.scene.animations.size()){const auto& clip=app.scene.animations[layer.animation];const float authored=clip.durationFrames/std::max(1.0f,clip.framerate),target=layer.duration>0?layer.duration:authored;layer.elapsed+=delta;advanceAnimationFrame(app,layer.frame,clip,target>0?delta*authored/target:delta,false);const bool heldAim=layer.action==scene::ActionRole::Aim&&app.gameplayAds&&!app.viewmodelAdsExiting,finishingFire=layer.action==scene::ActionRole::Fire&&!layer.fadeImmediately&&layer.elapsed<target;if(!heldAim&&!finishingFire){layer.fadeElapsed+=delta;const float initialWeight=layer.startWeight>=0?layer.startWeight:(layer.action==scene::ActionRole::Fire?0.35f:1.0f);layer.weight=initialWeight*std::clamp(1.0f-layer.fadeElapsed/std::max(0.001f,layer.fadeDuration),0.0f,1.0f);}}
-        app.runtimeLayers.erase(std::remove_if(app.runtimeLayers.begin(),app.runtimeLayers.end(),[](const auto& layer){return layer.weight<=0.0f;}),app.runtimeLayers.end());
-        const bool deathLocked=app.actionActive&&!app.actionOverlay&&app.activeAction==scene::ActionRole::Death;
-        const bool authoredPrimaryAction=app.actionActive&&!app.actionOverlay;
-        const auto& primaryClip=app.scene.animations[app.animationIndex];const float primaryAuthored=primaryClip.durationFrames/std::max(1.0f,primaryClip.framerate);float primaryOverride=authoredPrimaryAction?app.actionDurationOverride:0;const auto primarySource=lowerText(primaryClip.sourceName);if(weapon::isAdsUpClip(primarySource))primaryOverride=app.weaponTiming.adsIn;else if(weapon::isAdsDownClip(primarySource))primaryOverride=app.weaponTiming.adsOut;else if(primarySource.find("_sprint_in")!=std::string::npos)primaryOverride=app.weaponTiming.sprintInTime;else if(primarySource.find("_sprint_loop")!=std::string::npos)primaryOverride=(app.weaponTiming.sprintLoopTime>0?app.weaponTiming.sprintLoopTime:primaryAuthored)/std::clamp(app.weaponTiming.sprintPlaybackScale,.1f,2.f);else if(primarySource.find("_sprint_out")!=std::string::npos)primaryOverride=app.weaponTiming.sprintOutTime;
-        const float primaryDelta=primaryOverride>0?delta*primaryAuthored/primaryOverride:delta;
-        if(app.yyReverse){const float reverseRate=app.yyCancelDuration>0?app.yyPutawayFrameLimit/app.yyCancelDuration:primaryClip.framerate;app.animationFrame=std::max(0.0f,app.animationFrame-delta*reverseRate);}
-        else if(app.actorMode&&app.gameplayLogic&&!isViewmodelRig(app)&&primaryClip.motion==scene::MotionRole::Jump&&!authoredPrimaryAction)
-            app.animationFrame=gameplay::presentation::airborneAnimationFrame(app.actorAirborneAnimation,primaryClip.framerate,static_cast<float>(primaryClip.durationFrames),primaryClip.looping);
-        else advanceAnimationFrame(app,app.animationFrame,primaryClip,primaryDelta,!deathLocked&&!authoredPrimaryAction&&primarySource.find("_ads_")==std::string::npos&&primarySource.find("_sprint_in")==std::string::npos&&primarySource.find("_sprint_out")==std::string::npos);
-        if(app.viewmodelSprintEntering&&app.animationFrame>=primaryClip.durationFrames){app.viewmodelSprintEntering=false;if(const auto loop=findViewmodelClip(app,"sprint_loop")){selectAnimation(app,*loop,false);app.activeTransitionDuration=std::min(std::max(0.001f,app.actionBlendTime),std::max(0.001f,authoredClipDuration(app,*loop)));app.transitionElapsed=0;app.transitioning=app.previousAnimationIndex!=app.animationIndex;}else {resolveGameplayAnimation(app);}}
-        else if(app.viewmodelSprintExiting&&app.animationFrame>=primaryClip.durationFrames){app.viewmodelSprintExiting=false;resolveGameplayAnimation(app);}
-        if(app.actionActive&&app.actionOverlay&&app.actionAnimationIndex<app.scene.animations.size())
-        {   if(!app.gameplayLogic)app.actionElapsed+=delta;
-            const bool loopHeldAction=app.activeAction==scene::ActionRole::Deploy||app.activeAction==scene::ActionRole::GrenadePrep;
-            const auto& layerClip=app.scene.animations[app.actionAnimationIndex];const float layerAuthored=layerClip.durationFrames/std::max(1.0f,layerClip.framerate);const float layerDelta=app.actionDurationOverride>0?delta*layerAuthored/app.actionDurationOverride:delta;advanceAnimationFrame(app,app.actionFrame,layerClip,layerDelta,loopHeldAction);
-            if(!app.gameplayLogic&&app.viewmodelAdsExiting&&app.actionFrame>=app.scene.animations[app.actionAnimationIndex].durationFrames){app.viewmodelAdsExiting=false;app.viewmodelAdsEngaged=false;app.actionActive=false;app.actionOverlay=false;app.activeAction=scene::ActionRole::None;app.actionFrame=app.actionElapsed=0;}
-        }
-        if(app.viewmodelAdsBaseAnimation<app.scene.animations.size()){
-            const auto& adsClip=app.scene.animations[app.viewmodelAdsBaseAnimation];
-            const float target=std::max(0.001f,app.viewmodelAdsExiting?app.weaponTiming.adsOut:app.weaponTiming.adsIn);app.viewmodelAdsTransitionElapsed=std::min(target,app.viewmodelAdsTransitionElapsed+delta);app.viewmodelAdsBaseFrame=static_cast<float>(adsClip.durationFrames)*std::clamp(app.viewmodelAdsTransitionElapsed/target,0.0f,1.0f);if(app.actionActive&&app.activeAction==scene::ActionRole::Aim&&app.actionAnimationIndex==app.viewmodelAdsBaseAnimation)app.actionFrame=app.viewmodelAdsBaseFrame;
-            if(app.viewmodelAdsExiting&&!app.gameplayAds&&app.viewmodelAdsBaseFrame>=adsClip.durationFrames){app.viewmodelAdsBaseFrame=static_cast<float>(adsClip.durationFrames);app.viewmodelAdsExiting=false;app.viewmodelAdsEngaged=false;app.viewmodelAdsPoseHold=false;}
-        }
-        if(app.transitioning){
-            const auto& previousClip=app.scene.animations[app.previousAnimationIndex];
-            if(app.actorMode&&app.gameplayLogic&&!isViewmodelRig(app)&&previousClip.motion==scene::MotionRole::Jump)
-                app.previousAnimationFrame=gameplay::presentation::heldAnimationFrame(app.previousAnimationFrame+delta*previousClip.framerate,static_cast<float>(previousClip.durationFrames),previousClip.looping);
-            else if(!(app.viewmodelAdsExiting&&lowerText(previousClip.sourceName).find("_ads_fire")!=std::string::npos))advanceAnimationFrame(app,app.previousAnimationFrame,previousClip,delta);
-            if((app.yyReturning||app.yyTowardPutaway)&&app.previousAnimationIndex==app.yyPutawayAnimation)app.previousAnimationFrame=std::min(app.previousAnimationFrame,app.yyPutawayFrameLimit);
-            if(app.yyTowardPutaway){app.transitionElapsed=std::max(0.0f,app.transitionElapsed-delta);if(app.transitionElapsed<=0.0f)app.transitioning=false;}
-            else {app.transitionElapsed+=delta;if(app.transitionElapsed>=app.activeTransitionDuration)app.transitioning=false;}
-        }
+        advanceLiveAnimationPlayback(app,gameDelta);
     }
     {const auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-gameplayTimingStart).count();app.performanceGameplayMs=app.performanceGameplayMs*.9+elapsed*.1;}const auto botTimingStart=std::chrono::steady_clock::now();if(liveRuntime&&app.playing)updateBotActors(app,gameDelta);{const auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-botTimingStart).count();app.performanceBotMs=app.performanceBotMs*.9+elapsed*.1;}
     if(app.takeRecording){
@@ -14930,10 +16441,10 @@ void drawUi(AppState& app) {
                 if(debugSection==0){
                     {
 
-constexpr const char* debugViews[]={"Lit","Albedo","Specular on black","Raw normal texture","Shaded normal direction","Alpha / camo mask","Decoded tangent normal","Depth","Viewmodel greenscreen","Clay view","Albedo + collision"};
+constexpr const char* debugViews[]={"Beauty","Albedo","Specular on black","Raw normal texture","Shaded normal direction","Alpha / camo mask","Decoded tangent normal","Depth","Viewmodel greenscreen","Clay view","Albedo + collision"};
                     ImGui::Combo("Viewport pass",&app.renderDebugView,debugViews,static_cast<int>(std::size(debugViews)));
                     app.renderer.setDebugView(app.renderDebugView);
-                    if(app.renderDebugView==10){ImGui::SliderFloat("Collision range (m)",&app.collisionOverlayRangeMeters,1,200,"%.0f");ImGui::Checkbox("Collision through walls",&app.collisionOverlayThroughWalls);ImGui::TextDisabled("Green: walkable | Orange: blocking | Purple: nonblocking trigger");if(!app.loadedMap)ImGui::TextDisabled("Load a map to inspect its collision.");}
+                    if(app.renderDebugView==10){ImGui::SliderFloat("Collision range (m)",&app.collisionOverlayRangeMeters,1,200,"%.0f");ImGui::Checkbox("Collision through walls",&app.collisionOverlayThroughWalls);ImGui::TextDisabled("Green: walkable | Orange: blocking | Purple: nonblocking trigger");ImGui::TextDisabled("Cyan: player | Gold: bots");if(app.takePreview)ImGui::TextDisabled("Live collision hulls are not recorded in takes.");if(!app.loadedMap)ImGui::TextDisabled("Load a map to inspect its collision.");}
                     ImGui::BeginDisabled(app.renderDebugView!=7);
                     ImGui::SliderFloat("Depth near",&app.debugDepthNearMeters,0,100,"%.2f m");
                     ImGui::SliderFloat("Depth far",&app.debugDepthFarMeters,.1f,5000,"%.2f m",ImGuiSliderFlags_Logarithmic);
@@ -15050,7 +16561,7 @@ if(ImGui::CollapsingHeader("Player Kinematics & Coordinates")){
                     const float horizontal=std::sqrt(app.actorVelocity.x*app.actorVelocity.x+app.actorVelocity.y*app.actorVelocity.y),total=std::sqrt(horizontal*horizontal+app.actorVelocity.z*app.actorVelocity.z);
                     ImGui::Text("Velocity X %.3f · Y %.3f · Z %.3f",app.actorVelocity.x,app.actorVelocity.y,app.actorVelocity.z);
                     ImGui::Text("Speed: Horizontal %.3f u/s · Total %.3f u/s",horizontal,total);
-                    ImGui::TextDisabled(app.movementAlgorithm==1?"Legacy Source velocity is uncapped.":app.movementAlgorithm==2?"Quake velocity is uncapped.":app.movementAlgorithm==3?"Source v2 / CSS fixed-step rules active.":"IW/T6 speed rules active.");
+                    ImGui::TextDisabled(app.movementAlgorithm==1?"Legacy Source velocity is uncapped.":app.movementAlgorithm==2?"Quake velocity is uncapped.":app.movementAlgorithm==3?"Source v2 / CSS fixed-step rules active.":app.movementAlgorithm==4?(app.sourceUnlimitedBunnyhop?"Source v3 / CSS; jump-speed reduction disabled.":"Source v3 / CSS; jump-speed reduction active."):app.movementAlgorithm==5?"COD v2 / reference rules active.":"IW/T6 speed rules active.");
 
                     }
 if(ImGui::CollapsingHeader("Player Input & Trajectory Recorder")){
@@ -15175,6 +16686,70 @@ if(ImGui::CollapsingHeader("Player Input & Trajectory Recorder")){
                     }
 
                     
+                }
+                if(ImGui::CollapsingHeader("Controller & Gamepad")){
+                    if(app.gamepad.connected){
+                        ImGui::TextColored({0.2f, 1.0f, 0.4f, 1.0f}, "[Connected] %s", cadence::gamepad::getControllerTypeName(app.gamepad.type));
+                        ImGui::TextDisabled("Device: %s (ID %d)", app.gamepad.name.c_str(), app.gamepad.joystickId);
+                    } else {
+                        ImGui::TextColored({0.8f, 0.3f, 0.3f, 1.0f}, "[No Controller Detected]");
+                        ImGui::TextDisabled("Plug in an Xbox, DualShock 3/4, or DualSense controller over USB or Bluetooth.");
+                    }
+                    ImGui::Separator();
+
+                    ImGui::Text("Look & Sensitivity");
+                    int presetIndex = app.gamepadConfig.sensitivityPresetIndex;
+                    const char* presetNames[] = {"Standard (1.0x)", "High (1.5x)", "Very High (2.0x)", "Insane (3.0x)"};
+                    if(ImGui::Combo("Preset##GamepadPreset", &presetIndex, presetNames, IM_ARRAYSIZE(presetNames))){
+                        app.gamepadConfig.setSensitivityPreset(presetIndex);
+                    }
+                    ImGui::SameLine();
+                    if(ImGui::Button("Cycle##GamepadPresetCycle")){
+                        app.gamepadConfig.cycleSensitivityPreset();
+                    }
+                    if(ImGui::IsItemHovered()){
+                        ImGui::SetTooltip("Shortcut: D-Pad Up + Y on controller");
+                    }
+                    ImGui::SliderFloat("Horizontal Sensitivity", &app.gamepadConfig.horizontalSensitivity, 0.5f, 10.0f, "%.1f");
+                    ImGui::SliderFloat("Vertical Sensitivity", &app.gamepadConfig.verticalSensitivity, 0.5f, 10.0f, "%.1f");
+                    ImGui::SliderFloat("ADS Sensitivity Multiplier", &app.gamepadConfig.adsSensitivityMultiplier, 0.1f, 2.0f, "%.2fx");
+                    ImGui::Checkbox("Invert Vertical Look", &app.gamepadConfig.invertPitch);
+                    ImGui::Checkbox("Click L3 to Toggle Sprint", &app.gamepadConfig.sprintToggle);
+
+                    ImGui::Separator();
+                    ImGui::Text("Deadzones & Triggers");
+                    ImGui::SliderFloat("Inner Stick Deadzone", &app.gamepadConfig.innerDeadzone, 0.02f, 0.40f, "%.2f");
+                    ImGui::SliderFloat("Outer Stick Deadzone", &app.gamepadConfig.outerDeadzone, 0.70f, 1.00f, "%.2f");
+                    ImGui::SliderFloat("Trigger Threshold", &app.gamepadConfig.triggerThreshold, 0.05f, 0.60f, "%.2f");
+
+                    if(app.gamepad.connected){
+                        ImGui::Separator();
+                        ImGui::Text("Live Sticks & Triggers:");
+                        ImGui::Text("Left Stick  (Move): X: %+.2f, Y: %+.2f (Mag: %.2f)", app.gamepad.leftStickX, app.gamepad.leftStickY, app.gamepad.leftStickMagnitude);
+                        ImGui::Text("Right Stick (Look): X: %+.2f, Y: %+.2f (Mag: %.2f)", app.gamepad.rightStickX, app.gamepad.rightStickY, app.gamepad.rightStickMagnitude);
+                        ImGui::Text("Triggers: LT/L2: %.2f | RT/R2: %.2f", app.gamepad.leftTrigger, app.gamepad.rightTrigger);
+
+                        ImGui::Text("Live Buttons: ");
+                        ImGui::SameLine();
+                        auto renderGpBadge = [](const char* name, bool down){
+                            if(down) ImGui::TextColored({0.2f, 1.0f, 0.4f, 1.0f}, "[%s]", name);
+                            else ImGui::TextDisabled("[%s]", name);
+                            ImGui::SameLine();
+                        };
+                        renderGpBadge(cadence::gamepad::getButtonLabel(app.gamepad.type, cadence::gamepad::Button::A), app.gamepad.a);
+                        renderGpBadge(cadence::gamepad::getButtonLabel(app.gamepad.type, cadence::gamepad::Button::B), app.gamepad.b);
+                        renderGpBadge(cadence::gamepad::getButtonLabel(app.gamepad.type, cadence::gamepad::Button::X), app.gamepad.x);
+                        renderGpBadge(cadence::gamepad::getButtonLabel(app.gamepad.type, cadence::gamepad::Button::Y), app.gamepad.y);
+                        renderGpBadge(cadence::gamepad::getButtonLabel(app.gamepad.type, cadence::gamepad::Button::LeftBumper), app.gamepad.leftBumper);
+                        renderGpBadge(cadence::gamepad::getButtonLabel(app.gamepad.type, cadence::gamepad::Button::RightBumper), app.gamepad.rightBumper);
+                        renderGpBadge(cadence::gamepad::getButtonLabel(app.gamepad.type, cadence::gamepad::Button::LeftThumb), app.gamepad.leftThumb);
+                        renderGpBadge(cadence::gamepad::getButtonLabel(app.gamepad.type, cadence::gamepad::Button::RightThumb), app.gamepad.rightThumb);
+                        renderGpBadge("LT", app.gamepad.leftTrigger > app.gamepadConfig.triggerThreshold);
+                        renderGpBadge("RT", app.gamepad.rightTrigger > app.gamepadConfig.triggerThreshold);
+                        ImGui::NewLine();
+                        ImGui::TextDisabled("Mappings (Tactical): RT/R2: Fire · LT/L2: Aim · Y/Triangle: Prev Weapon / YY · LB/L1: Weapon Rotate (3-gun) / Tactical");
+                        ImGui::TextDisabled("A/Cross: Jump/Vault · B/Circle: Melee (Knife) · X/Square: Reload · R3: Crouch/Slide (Tap) / Prone (Hold) · L3: Sprint");
+                    }
                 }
 }
                 if(debugSection==2){
@@ -15375,20 +16950,21 @@ if(ImGui::CollapsingHeader("GPU & VRAM Diagnostics")){
                     }
                     const double estVramMb = static_cast<double>(rStats.estimatedVramBytes) / (1024.0 * 1024.0);
                     ImGui::TextWrapped("Texture Cache: %d textures (~%.1f MB VRAM allocated)", rStats.loadedTextureCount, estVramMb);
-                    ImGui::TextWrapped("Map Texture Resolution: %dx%d (Target: %dx%d)",
-                        rStats.mapTextureResolution, rStats.mapTextureResolution,
-                        app.mapTextureResolution, app.mapTextureResolution);
+                    const auto loadedTextureSize=rStats.mapTextureResolution==0?std::string("Original"):std::to_string(rStats.mapTextureResolution);
+                    const auto targetTextureSize=app.mapTextureResolution==0?std::string("Original"):std::to_string(app.mapTextureResolution);
+                    ImGui::TextWrapped("Map texture limit: %s (Target: %s)",loadedTextureSize.c_str(),targetTextureSize.c_str());
+                    if(app.mapTextureResolution==0){GLint maximum{};glGetIntegerv(GL_MAX_TEXTURE_SIZE,&maximum);ImGui::Text("GPU maximum texture dimension: %d",maximum);}
                     ImGui::TextWrapped("Texture Compression: %s",
                         rStats.hardwareCompressionEnabled ? "Hardware BC1/BC3 Enabled (4:1 - 8:1 ratio, MWR-grade)" : "Disabled (Uncompressed 32-bit RGBA8)");
 
                     ImGui::Spacing();
                     ImGui::TextWrapped("Map Texture Configuration:");
-                    int curResIndex = (app.mapTextureResolution <= 512) ? 0 : ((app.mapTextureResolution <= 1024) ? 1 : 2);
-                    const char* resOptions[] = { "512x512 (Fast)", "1024x1024 (Balanced)", "2048x2048 (Full Fidelity - MWR Default)" };
+                    int curResIndex = app.mapTextureResolution==0?3:((app.mapTextureResolution <= 512) ? 0 : ((app.mapTextureResolution <= 1024) ? 1 : 2));
+                    const char* resOptions[] = { "512", "1024", "2048", "Original texture size" };
                     bool reuploadNeeded = false;
                     ImGui::SetNextItemWidth(std::max(80.f,ImGui::GetContentRegionAvail().x-100.f));
                     if (ImGui::Combo("Texture limit", &curResIndex, resOptions, IM_ARRAYSIZE(resOptions))) {
-                        const int resolutions[] = { 512, 1024, 2048 };
+                        const int resolutions[] = { 512, 1024, 2048, 0 };
                         app.mapTextureResolution = resolutions[curResIndex];
                         reuploadNeeded = true;
                     }
@@ -15440,6 +17016,27 @@ if(ImGui::CollapsingHeader("Skybox Tile Calibration")){
                 }
 }
                 if(debugSection==6){
+                    ImGui::Checkbox("Blend reload into YY putaway",&app.experimentalYyReloadBlend);
+                    bool shadowCache=app.renderer.staticShadowCache();
+                    if(ImGui::Checkbox("Cache static map shadows",&shadowCache))app.renderer.setStaticShadowCache(shadowCache);
+                    if(ImGui::CollapsingHeader("Practice tools")){
+                        ImGui::Checkbox("Save / load location keys",&app.experimentalLocationKeys);
+                        ImGui::TextDisabled("[ Save location    ] Load location");
+                        const char* ranges[]={"Off","100","200","300","400","500"};int range=app.experimentalEbRange/100;
+                        if(ImGui::Combo("EB radius (CoD units)",&range,ranges,6))app.experimentalEbRange=range*100;
+                        ImGui::Checkbox("EB headshot",&app.experimentalEbHeadshot);
+                        ImGui::TextDisabled("EB applies to sniper shots only.");
+                        ImGui::SliderFloat("Bot roam radius",&app.experimentalRoamRadius,0.f,5000.f,"%.0f cm");
+                        const bool canSpawn=app.actorMode&&!app.takePreview&&!app.takeRecording&&app.botActorScene&&!app.bots.empty()&&app.bots.size()<18;
+                        ImGui::BeginDisabled(!canSpawn);
+                        if(ImGui::Button("Spawn one roaming bot at player")){
+                            auto bot=app.bots.front();std::uint32_t id=0;for(const auto& b:app.bots)id=std::max(id,b.id);
+                            bot.experimentalRoam=false;gameplay::bot::respawnActor(bot,app.actorPosition);bot.id=id+1;bot.experimentalRoam=true;bot.experimentalRoamTime=0;
+                            app.bots.push_back(std::move(bot));app.botActorPoses.resize(app.bots.size());app.enemyBotCount=int(app.bots.size());app.botFoundationMovement=true;
+                        }
+                        ImGui::EndDisabled();
+                        if(!canSpawn)ImGui::TextDisabled("Requires loaded bots and live play; unavailable during recording or replay.");
+                    }
                     drawVisualRandomizer(app);
 #include "app/TraversalControls.inc"
                     if(ImGui::CollapsingHeader("Bot area ping")){
@@ -15482,6 +17079,67 @@ if(ImGui::CollapsingHeader("Grip-preserving sprint fallback")){
                         if(ImGui::IsItemHovered())uiHelp("Player shots on imported maps. 0 disables. Counts crossed faces; a closed wall usually uses two. No material or damage falloff. Session-only.");
                     }
 drawDayNightControls(app);
+                    if(ImGui::Checkbox("Weapon turning (IW4)",&app.experimentalWeaponTurning))app.weaponTurn={};
+                    if(app.experimentalWeaponTurning){
+                        ImGui::SliderFloat("Hip turning",&app.weaponTurningHipMultiplier,0.f,3.f,"%.2fx");
+                        ImGui::SliderFloat("ADS turning",&app.weaponTurningAdsMultiplier,0.f,3.f,"%.2fx");
+                    }
+                    if(ImGui::CollapsingHeader("Killer7")){
+                        ImGui::Checkbox("Heaven Smile death effect",&app.killer7Deaths);
+                        ImGui::Checkbox("Keep death animations",&app.heavenSmileKeepDeathAnimations);
+                        ImGui::Checkbox("Blood streams",&app.heavenSmileBloodStreams);
+                        ImGui::ColorEdit3("Blood color",&app.heavenSmileColor.x);
+                    }
+                    if(ImGui::CollapsingHeader("Metal shaders")){
+                        auto& m=app.metalShader;
+                        const char* choices[]={"Current","Skybox metal","BO1 M1911"};
+                        ImGui::Combo("Metal shader",&m.mode,choices,3);
+                        if(m.mode>0){
+                            ImGui::SliderFloat("Coverage",&m.coverage,0,1);
+                            ImGui::SliderFloat("Reflection strength",&m.reflection,0,5);
+                            ImGui::SliderFloat("Highlight strength",&m.direct,0,5);
+                            ImGui::SliderFloat("Normal strength",&m.normal,0,2);
+                            ImGui::ColorEdit3("Metal tint",&m.tint.x);
+                            if(m.mode==1){ImGui::SliderFloat("Roughness",&m.roughness,0,1);ImGui::SliderFloat("Reflectance",&m.reflectance,0,1);ImGui::SliderFloat("Diffuse amount",&m.diffuse,0,1);}
+                            else ImGui::SliderFloat("BO1 roughness multiplier",&m.bo1RoughnessScale,0,2);
+                            if(ImGui::Button("Reset metal settings")){const int mode=m.mode;m={};m.mode=mode;}
+                        }
+                    }
+                    if(ImGui::CollapsingHeader("Scores")){
+                        ImGui::Checkbox("Enable Score modifier",&app.scoreEditorEnabled);
+                        ImGui::Checkbox("Show scores on bot kills",&app.scoresOnKills);
+                        ImGui::Checkbox("Preview scores over POV",&app.scorePreview.overPov);
+                        drawScorePresetPicker(app);
+                    }
+                    if(ImGui::CollapsingHeader("Death ragdolls")){
+                        auto& r=app.deathRagdoll;
+                        ImGui::Checkbox("Ragdoll after death animation",&r.enabled);
+                        const auto value=[](const char* label,float& v,float lo,float hi,const char* format){const float old=v;ImGui::SliderFloat(label,&v,lo,hi,format);if(!std::isfinite(v))v=old;};
+                        value("Transition time",r.blendSeconds,0.f,1.f,"%.2f s");
+                        value("Gravity multiplier",r.gravity,-3.f,3.f,"%.2fx");
+                        value("Motion damping",r.damping,0.f,10.f,"%.2f");
+                        value("Ground friction",r.friction,0.f,1.f,"%.2f");
+                        value("Animation momentum",r.momentum,-2.f,2.f,"%.2fx");
+                        value("Movement momentum",r.movementMomentum,0.f,3.f,"%.2fx");
+                        value("Shot impulse",r.shotImpulse,0.f,900.f,"%.0f cm/s");
+                        value("Contact radius",r.radius,0.f,10.f,"%.1f cm");
+                        value("Simulation duration",r.settleSeconds,0.f,20.f,"%.1f s");
+                        ImGui::TextDisabled("Ctrl-click to enter custom values. Duration <= 0: unlimited.");
+                        const char* triggers[]={"Off","On ragdoll","On death"};
+                        ImGui::Combo("Detach weapon",&app.weaponDrop.trigger,triggers,3);
+                        if(app.weaponDrop.trigger){
+                            value("Weapon bounce",app.weaponDrop.bounce,0.f,1.f,"%.2f");
+                            value("Weapon friction",app.weaponDrop.friction,0.f,2.f,"%.2f");
+                            value("Weapon spin",app.weaponDrop.spin,0.f,4.f,"%.2fx");
+                            value("Weapon momentum",app.weaponDrop.carry,0.f,2.f,"%.2fx");
+                        }
+                        ImGui::Checkbox("Keep bodies after respawn",&app.retainedBodies.keep);
+                        ImGui::SliderInt("Maximum retained bodies",&app.retainedBodies.maximum,0,128,"%d",ImGuiSliderFlags_AlwaysClamp);
+                        value("Body dissolve time",app.retainedBodies.fadeSeconds,0.f,10.f,"%.2f s");
+                        if(ImGui::Button("Clear retained bodies"))for(auto& body:app.retainedBodies.bodies)body.fade=0;
+                        ImGui::TextDisabled("New bot deaths only. Recorded in new takes. Session-only.");
+                        if(app.killer7Deaths&&!app.heavenSmileKeepDeathAnimations)ImGui::TextDisabled("Heaven Smile is hiding dead bodies.");
+                    }
                     if(ImGui::CollapsingHeader("Testing & Automation")){
 
                     ImGui::Checkbox("Auto Bot Setup shortcut in Gameplay > Bots",&app.experimentalAutoBotSetup);
@@ -15512,7 +17170,13 @@ drawDayNightControls(app);
             const char* pages[]={"Class","Weapon setup","Player","Movement","Bots","Map","Bot spawns"};
             switch(uiCategory("play_pages",pages,7)){
             case 0:drawCreateAClass(app);break;
-            case 1:drawWeaponProfileEditor(app);break;
+            case 1:{
+                const auto before=app.takePreview?replayAttachmentSnapshot(app):std::vector<take::AttachedModel>{};
+                const auto beforeTags=app.takePreview?app.scene.hiddenBones:std::unordered_set<std::size_t>{};
+                drawWeaponProfileEditor(app);
+                if(app.takePreview){commitReplayAttachmentEdits(app,before);commitReplayTagEdits(app,beforeTags);}
+                break;
+            }
             case 2:drawActorControls(app);break;
             case 3:drawActorControls(app,1);break;
             case 4:drawBotActors(app);break;
@@ -15523,7 +17187,7 @@ drawDayNightControls(app);
             if(ImGui::BeginTabItem("Animations")){drawAnimationCatalog(app);ImGui::EndTabItem();}
             if(ImGui::BeginTabItem("Library")){drawAssetLibrary(app);ImGui::EndTabItem();}
             if(ImGui::BeginTabItem("Inspect")){if(app.document)drawNodeDetails(*app.document,app.selectedNode);else ImGui::TextDisabled("Load a Cast file to inspect its raw nodes and properties.");if(ImGui::CollapsingHeader("Mesh binding")){
-ImGui::Checkbox("Enable mesh/bone binding inspection",&app.inspectMeshBinding);const char* preview=app.selectedBoneBinding<app.scene.skeleton.bones.size()?app.scene.skeleton.bones[app.selectedBoneBinding].name.c_str():"Select model / bone";const auto boneBelongsToPart=[&](std::size_t bone,const scene::RigPart& part){for(auto current=bone;current<app.scene.skeleton.bones.size();){if(std::find(part.rootBones.begin(),part.rootBones.end(),current)!=part.rootBones.end())return true;const auto parent=app.scene.skeleton.bones[current].parent;if(parent<0)break;current=static_cast<std::size_t>(parent);}return false;};if(ImGui::BeginCombo("Bound bone",preview)){for(const auto& part:app.scene.rigParts)if(ImGui::TreeNode(part.name.c_str())){for(std::size_t bone=0;bone<app.scene.skeleton.bones.size();++bone)if(boneBelongsToPart(bone,part))if(ImGui::Selectable(app.scene.skeleton.bones[bone].name.c_str(),app.selectedBoneBinding==bone)){app.selectedBoneBinding=bone;app.showBoneNames=true;}ImGui::TreePop();}if(ImGui::TreeNode("Base model / ungrouped")){for(std::size_t bone=0;bone<app.scene.skeleton.bones.size();++bone)if(std::none_of(app.scene.rigParts.begin(),app.scene.rigParts.end(),[&](const auto& part){return boneBelongsToPart(bone,part);}))if(ImGui::Selectable(app.scene.skeleton.bones[bone].name.c_str(),app.selectedBoneBinding==bone)){app.selectedBoneBinding=bone;app.showBoneNames=true;}ImGui::TreePop();}ImGui::EndCombo();}}
+ImGui::Checkbox("Enable mesh/bone binding inspection",&app.inspectMeshBinding);const char* preview=app.selectedBoneBinding<app.scene.skeleton.bones.size()?app.scene.skeleton.bones[app.selectedBoneBinding].name.c_str():"Select model / bone";const auto boneBelongsToPart=[&](std::size_t bone,const scene::RigPart& part){for(auto current=bone;current<app.scene.skeleton.bones.size();){if(std::find(part.rootBones.begin(),part.rootBones.end(),current)!=part.rootBones.end())return true;const auto parent=app.scene.skeleton.bones[current].parent;if(parent<0)break;current=static_cast<std::size_t>(parent);}return false;};if(ImGui::BeginCombo("Bound bone",preview)){for(const auto& part:app.scene.rigParts)if(ImGui::TreeNode(part.name.c_str())){for(std::size_t bone=0;bone<app.scene.skeleton.bones.size();++bone)if(boneBelongsToPart(bone,part))if(ImGui::Selectable(app.scene.skeleton.bones[bone].name.c_str(),app.selectedBoneBinding==bone)){app.selectedBoneBinding=bone;}ImGui::TreePop();}if(ImGui::TreeNode("Base model / ungrouped")){for(std::size_t bone=0;bone<app.scene.skeleton.bones.size();++bone)if(std::none_of(app.scene.rigParts.begin(),app.scene.rigParts.end(),[&](const auto& part){return boneBelongsToPart(bone,part);}))if(ImGui::Selectable(app.scene.skeleton.bones[bone].name.c_str(),app.selectedBoneBinding==bone)){app.selectedBoneBinding=bone;}ImGui::TreePop();}ImGui::EndCombo();}}
 ImGui::EndTabItem();}
         }
         if(app.workspaceMode!=0)ImGui::EndTabBar();
@@ -15543,8 +17207,148 @@ ImGui::EndChild();
 
 #include "app/ColdWarProfileRegression.inc"
 #include "app/PortableRegression.inc"
+#include "app/Iw4SwapRegression.inc"
+#include "app/Source2BatchAudit.inc"
+#include "app/MapLoadingRegression.inc"
 
 int main(int argc, char** argv) {
+    if(argc>4&&std::string_view(argv[1])=="--cs2-batch-audit")return source2BatchAudit(argv[2],argv[3],argv[4]);
+    if(argc>2&&std::string_view(argv[1])=="--test-map-loading")return mapLoadingRegression(argv[2]);
+    if(argc>1&&std::string_view(argv[1])=="--test-iw4-swap")return iw4SwapRegression();
+    if(argc>3&&std::string_view(argv[1])=="--test-swap-assets")return swapAssetRegression(argv[2],argv[3],argc>4?std::string_view(argv[4]):std::string_view{});
+    if(argc>2&&std::string_view(argv[1])=="--test-melee-loaded"){
+        const auto root=std::filesystem::u8path(argv[2]);
+        auto state=std::make_unique<AppState>();auto& a=*state;int failures=0;
+        const auto check=[&](bool ok,const char* message){std::cout<<(ok?"PASS ":"FAIL ")<<message<<'\n';if(!ok)++failures;};
+        const auto hands=root/"bo2/models/viewhands/seal6/c_usa_mp_seal6_longsleeve_viewhands/c_usa_mp_seal6_longsleeve_viewhands_LOD0.cast";
+        a.document=cast::Document::load(hands);
+        if(!a.document->valid()){std::cerr<<"Missing test hands\n";return 2;}
+        a.scene=scene::buildScene(*a.document);a.loadedBaseModelPath=hands;
+        a.defaultSalukiDirectory=root.string();a.assetFirstPerson=true;a.gameplayLogic=true;a.actorMode=true;
+        ensureDefaultKnifeMeleeAnimations(a);
+        check(defaultMeleeClips(a).size()==2,"real knife clips imported");
+        for(const auto* game:{"bo2","mw3","pointblank","cs16","csnz","eldewrito","blacksquad"}){
+            assets::Asset weapon;weapon.game=game;weapon.name="t6_wpn_pistol_fnp45_view";weapon.role=assets::Role::ViewWeapon;
+            a.assetCatalog.entries={weapon};a.selectedWeaponAsset=0;a.viewmodelAnimationPrefix="viewmodel_fnp45_";
+            reloadAnimationSources(a,&a.assetCatalog.entries[0]);
+            check(defaultMeleeClips(a).size()==2,"shared clips survive weapon-filtered remap");
+            const auto before=a.playerKnifeAttack;
+            a.gameplayAction=scene::ActionRole::Melee;triggerGameplayAction(a);
+            check(a.actionActive&&a.activeAction==scene::ActionRole::Melee,"loaded gun triggers melee action");
+            check(a.playerKnifeAttack==before+1,"gun melee emits damage event");
+            if(a.actionActive){
+                const auto index=a.actionOverlay?a.actionAnimationIndex:a.animationIndex;
+                const auto first=a.scene.sampleLocalPose(index,0),middle=a.scene.sampleLocalPose(index,a.scene.animations[index].durationFrames*.5f);
+                bool moved=false;
+                for(std::size_t i=0;i<first.size()&&i<middle.size();++i){
+                    const auto& x=first[i];const auto& y=middle[i];
+                    moved|=scene::length(x.position-y.position)>.001f||std::abs(x.rotation.x-y.rotation.x)+std::abs(x.rotation.y-y.rotation.y)+std::abs(x.rotation.z-y.rotation.z)+std::abs(x.rotation.w-y.rotation.w)>.001f;
+                }
+                check(moved,"real melee poses change over the clip");
+            }
+            stopGameplayAction(a);
+        }
+        std::cout<<"Loaded melee failures: "<<failures<<'\n';return failures?1:0;
+    }
+    if(argc>1&&std::string_view(argv[1])=="--test-melee-resolver"){
+        auto state=std::make_unique<AppState>();auto& a=*state;int failures=0;
+        const auto check=[&](bool ok,const char* message){if(!ok){++failures;std::cerr<<message<<'\n';}};
+        a.viewmodelAnimationPrefix="viewmodel_fnp45_";
+        const auto add=[&](const char* name){scene::Animation clip;clip.sourceName=name;clip.domain=scene::AnimationDomain::ViewModel;clip.tracks.resize(1);clip.tracks[0].frames={0};clip.tracks[0].scalarValues={0};a.scene.animations.push_back(clip);};
+        add("viewmodel_fnp45_tactical_melee.cast");add("viewmodel_m4m203_knife_melee_1.cast");add("viewmodel_m4m203_knife_melee_2.cast");
+        a.weaponProfile.animations["melee"]="viewmodel_fnp45_tactical_melee.cast";
+        a.weaponProfile.animationVariants["melee"]={"viewmodel_fnp45_tactical_melee.cast"};
+        check(findViewmodelClip(a,"melee")==1,"tactical explicit mapping bypassed guard");
+        check(findViewmodelClips(a,"melee")==std::vector<std::size_t>({1,2}),"tactical variant bypassed regular fallback");
+        check(nextViewmodelVariant(a,"melee")==1&&nextViewmodelVariant(a,"melee")==2,"regular knife variants did not alternate");
+        a.viewmodelAttachmentTokens={"tactical"};check(findViewmodelClip(a,"melee")==0,"equipped tactical knife rejected");
+        a.viewmodelAttachmentTokens.clear();a.weaponProfile.animations.clear();a.weaponProfile.animationVariants.clear();
+        a.viewmodelAnimationPrefix="viewmodel_an94_";check(findViewmodelClip(a,"melee")==1,"rifle missing regular fallback");
+        add("viewmodel_an94_melee.cast");check(findViewmodelClip(a,"melee")==3,"native melee lost priority");
+        a.scene.animations.clear();add("viewmodel_knife_melee_slice.cast");add("viewmodel_knife_melee_stab.cast");
+        check(findViewmodelClips(a,"melee")==std::vector<std::size_t>({0,1}),"MW3 fallback unavailable");
+        a.scene.animations.clear();check(!findViewmodelClip(a,"melee"),"missing fallback returned invalid index");
+        for(const auto* name:{"viewmodel_fn57_tactical_melee.cast","viewmodel_kard_tactical_melee.cast","viewmodel_judge_tactical_melee.cast","viewmodel_beretta2023r_tactical_melee_empty.cast","viewmodel_mp412_tac_melee.cast","viewmodel_p99_melee_tactical.cast"}){
+            a.scene.animations.clear();add(name);add("viewmodel_m4m203_knife_melee_1.cast");
+            a.weaponProfile.animations["melee"]=name;a.weaponProfile.animationVariants["melee"]={name};
+            check(findViewmodelClips(a,"melee")==std::vector<std::size_t>({1}),"pistol tactical naming escaped shared guard");
+        }
+        a.assetFirstPerson=true;a.gameplayLogic=true;a.weaponProfile.animations.clear();a.weaponProfile.animationVariants.clear();
+        for(const auto* game:{"cs16","eldewrito"}){
+            a.scene.animations.clear();add("native_fire.cast");
+            assets::Asset weapon;weapon.game=game;weapon.role=assets::Role::ViewWeapon;a.assetCatalog.entries={weapon};a.selectedWeaponAsset=0;
+            a.weaponProfile.animations["fire"]="native_fire.cast";
+            a.gameplayAds=true;a.viewmodelAdsEngaged=false;a.viewmodelAdsExiting=false;
+            check(!needsViewmodelAimTransition(a,true),"missing ADS clip consumed firing input");
+            a.gameplayAction=scene::ActionRole::Fire;triggerGameplayAction(a);
+            check(a.actionActive&&a.activeAction==scene::ActionRole::Fire&&a.actionAnimationIndex==0,"held ADS failed to use regular fire");
+            a.weaponProfile.animations["ads_fire"]="native_fire.cast";
+            check(!needsViewmodelAimTransition(a,true),"ADS-fire alias incorrectly treated as ADS-up");
+            a.weaponProfile.animations.erase("ads_fire");
+        }
+        a.weaponProfile.meleeWeapon=true;a.weaponProfile.animations.clear();a.weaponProfile.animations["fire"]="native_fire.cast";
+        a.scene.animations.clear();add("native_fire.cast");add("viewmodel_m4m203_knife_melee_1.cast");
+        a.scene.skeleton.bones.resize(1);a.meleeKnifeBone=0;a.scene.hiddenBones.insert(0);
+        check(defaultMeleeClips(a).empty(),"equipped knife received auxiliary fallback");
+        a.gameplayAction=scene::ActionRole::Melee;triggerGameplayAction(a);
+        check(a.actionActive&&(a.actionOverlay?a.actionAnimationIndex:a.animationIndex)==0,"equipped knife failed native attack fallback");
+        check(a.scene.hiddenBones.contains(0),"equipped knife revealed auxiliary melee model");
+        a.weaponProfile.meleeWeapon=false;a.weaponProfile.animations.clear();a.scene.animations.clear();
+        add("pullout.cast");add("ads_up.cast");add("ads_down.cast");
+        for(auto& clip:a.scene.animations){clip.durationFrames=30;clip.framerate=30;}
+        a.weaponProfile.animations["ads_up"]="ads_up.cast";a.weaponProfile.animations["ads_down"]="ads_down.cast";
+        for(const auto role:{scene::ActionRole::Equip,scene::ActionRole::FirstRaise}){
+            a.activeAction=role;a.actionActive=true;a.actionOverlay=false;a.animationIndex=0;a.animationFrame=8;
+            a.actionElapsed=.25f;a.actionDurationOverride=1.f;a.viewmodelAdsEngaged=a.viewmodelAdsExiting=false;a.viewmodelAdsBaseAnimation=SIZE_MAX;
+            check(startViewmodelAimClip(a,1),"ADS did not start during pullout");
+            check(a.activeAction==role&&!a.actionOverlay&&a.animationIndex==0&&a.animationFrame==8&&a.actionElapsed==.25f&&a.actionDurationOverride==1.f,"ADS replaced or restarted pullout");
+            a.viewmodelAdsBaseFrame=15;
+            check(startViewmodelAimClip(a,2),"ADS release failed during pullout");
+            check(a.activeAction==role&&a.animationIndex==0&&a.animationFrame==8,"ADS release canceled pullout");
+            check(a.adsStartedDuringPullout&&a.interruptPoseDuration>0,"pullout ADS release has no continuity blend");
+        }
+        add("idle.cast");a.weaponProfile.animations["idle"]="idle.cast";
+        for(const auto role:{scene::ActionRole::Equip,scene::ActionRole::FirstRaise,scene::ActionRole::Melee}){
+            a.activeAction=role;a.actionActive=true;a.actionOverlay=false;a.animationIndex=0;a.animationFrame=23;
+            a.gameplayAds=a.viewmodelAdsEngaged=true;a.viewmodelAdsExiting=false;
+            a.viewmodelAdsBaseAnimation=1;a.viewmodelAdsBaseFrame=15;a.viewmodelAdsTransitionElapsed=.1f;
+            stopGameplayAction(a);
+            check(a.animationIndex==3&&a.actionOverlay&&a.activeAction==scene::ActionRole::Aim,"completed action contaminated ADS carrier");
+            check(a.viewmodelAdsBaseFrame==15&&a.viewmodelAdsTransitionElapsed==.1f,"action finish jumped ADS phase");
+            check(a.interruptPoseDuration>0,"ADS carrier handoff lacks pose continuity");
+            a.actionActive=false;resolveGameplayAnimation(a);
+            check(a.animationIndex==3,"idle resolver applied ADS twice");
+        }
+        add("fire.cast");a.weaponProfile.animations["fire"]="fire.cast";
+        a.actionActive=true;a.activeAction=scene::ActionRole::Melee;a.animationIndex=0;a.actionOverlay=false;
+        a.gameplayAction=scene::ActionRole::Fire;triggerGameplayAction(a);
+        check(a.animationIndex==3&&a.actionOverlay&&a.activeAction==scene::ActionRole::Fire,"fire interruption retained melee carrier");
+        check(a.scene.hiddenBones.contains(a.meleeKnifeBone),"fire interruption left knife visible");
+        a.scene.animations[1].sourceName="SK_AK47_1P__ZoomIn__Startup_13663.cast";
+        a.scene.animations[2].sourceName="SK_AK47_1P__ZoomOut__Startup_13664.cast";
+        a.weaponProfile.animations["ads_up"]=a.scene.animations[1].sourceName;
+        a.weaponProfile.animations["ads_down"]=a.scene.animations[2].sourceName;
+        for(int cycle=0;cycle<3;++cycle){
+            a.actionActive=false;a.activeAction=scene::ActionRole::None;a.viewmodelAdsEngaged=a.viewmodelAdsExiting=false;
+            a.viewmodelAdsBaseAnimation=2;a.viewmodelAdsBaseFrame=30;
+            check(startViewmodelAimClip(a,1)&&a.viewmodelAdsBaseFrame==0&&a.viewmodelAdsTransitionElapsed==0,"Black Squad ADS from idle skipped the transition");
+            a.viewmodelAdsBaseFrame=15;
+            check(startViewmodelAimClip(a,2)&&std::abs(a.viewmodelAdsBaseFrame-15)<.001f,"Black Squad ADS down reversal lost phase");
+            check(startViewmodelAimClip(a,1)&&std::abs(a.viewmodelAdsBaseFrame-15)<.001f,"Black Squad ADS up reversal lost phase");
+        }
+        const auto preset=std::filesystem::path("diagnostics/v462/ladder-roundtrip.cadencegame");
+        a.ladderSpeedMultiplier=7.25f;check(saveGameplayPreset(a,preset),"ladder preset save failed");
+        a.ladderSpeedMultiplier=1;check(loadGameplayPreset(a,preset)&&a.ladderSpeedMultiplier==7.25f,"ladder preset roundtrip failed");
+        std::ifstream presetIn(preset);std::string contents((std::istreambuf_iterator<char>(presetIn)),{});
+        contents.replace(contents.find("CADENCEGAME 15"),14,"CADENCEGAME 14");
+        std::istringstream oldPreset(contents);check(parseGameplayPreset(a,oldPreset)&&a.ladderSpeedMultiplier==4.f,"legacy preset ladder default failed");
+        a.viewmodelAdsEngaged=a.viewmodelAdsExiting=false;a.viewmodelAdsBaseAnimation=SIZE_MAX;
+        a.experimentalYyReloadBlend=true;a.animationIndex=0;a.animationFrame=8;a.actionActive=true;a.actionOverlay=false;
+        a.activeAction=scene::ActionRole::Reload;a.actionDurationOverride=1;a.gameplayAction=scene::ActionRole::Unequip;
+        a.weaponProfile.animations["putaway"]="pullout.cast";triggerGameplayAction(a);
+        check(a.yyLiveAnimation==0&&a.yyLiveFrame==8&&!a.yyLiveLoop,"YY reload tail did not retain outgoing reload frame");
+        std::cout<<"Melee/ADS resolver failures: "<<failures<<'\n';return failures?1:0;
+    }
     if(argc>2&&std::string_view(argv[1])=="--portable-check")return portableRegression(std::filesystem::u8path(argv[2]));
     if(argc>3&&std::string_view(argv[1])=="--coldwar-profile-test")return coldWarProfileRegression(argv[2],argv[3]);
     const bool verboseLog=argc>1&&std::string_view(argv[1])=="--verbose-log";
@@ -15632,7 +17436,8 @@ const auto path=argc>2?std::filesystem::u8path(argv[2]):std::filesystem::temp_di
     if (!glfwInit()) return 1;
     const bool benchmarkCheck = argc > 3 && std::string_view(argv[1]) == "--benchmark-check";
     const bool portableSetupCheck=argc>2&&std::string_view(argv[1])=="--portable-setup-check";
-    const bool smokeTest = portableSetupCheck || benchmarkCheck || (argc > 1 && std::string_view(argv[1]) == "--smoke-test");
+    const bool pauseSmokeTest=argc>1&&std::string_view(argv[1])=="--pause-smoke-test";
+    const bool smokeTest = pauseSmokeTest || portableSetupCheck || benchmarkCheck || (argc > 1 && std::string_view(argv[1]) == "--smoke-test");
     const bool pngSmokeTest = argc > 2 && std::string_view(argv[1]) == "--render-smoke-png";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -15666,7 +17471,7 @@ const auto path=argc>2?std::filesystem::u8path(argv[2]):std::filesystem::temp_di
     try{app.demoLibrary.roots=cadence::content::activatePacks(cadence::portable::executableDirectory());invalidateCatalogSelections(app);}catch(const std::exception& e){app.status="Pack load failed: "+std::string(e.what());}
     if(!smokeTest&&!pngSmokeTest&&!benchmarkCheck)loadWeatherPreset(app,cadenceAssetsDirectory()/"weather_presets"/"default.castweather");
     if(!smokeTest&&!pngSmokeTest&&!benchmarkCheck&&uiappearance::load(cadenceAssetsDirectory()/"active_appearance.cfg",app.colorScheme,app.fontIndex,app.interfaceScale)&&!app.interfaceFonts.empty()){app.fontIndex=std::clamp(app.fontIndex,0,static_cast<int>(app.interfaceFonts.size())-1);ImGui::GetIO().FontDefault=app.interfaceFonts[app.fontIndex].second;}loadBotOverrides(app);loadUserMotionDefaults(app);if(!smokeTest&&!pngSmokeTest&&!benchmarkCheck)loadCrosshairPreset(app,cadenceAssetsDirectory()/"crosshairs"/"default.crosshair");if(!smokeTest&&!pngSmokeTest&&!benchmarkCheck)loadDayNightPreset(app,cadenceAssetsDirectory()/"day_night_presets"/"default.castdaynight");
-    if(!smokeTest&&!pngSmokeTest){if(const auto saved=loadDefaultSalukiDirectory()){app.defaultSalukiDirectory=*saved;prepareCatalogGameChoices(app);app.status="Choose which Saluki game folders to index";}else app.salukiSetupPending=app.demoLibrary.roots.empty();}
+    if(!smokeTest&&!pngSmokeTest){if(const auto saved=loadDefaultSalukiDirectory()){app.defaultSalukiDirectory=*saved;prepareCatalogGameChoices(app);if(!loadCatalogGameSelection().empty())startSelectedCatalogScan(app);else {app.catalogPromptPending=!app.catalogGameChoices.empty();app.status="Choose which Saluki game folders to index";}}else app.salukiSetupPending=app.demoLibrary.roots.empty();}
     std::string portableIniPath;
     if(portableSetupCheck)app.salukiSetupPending=!loadDefaultSalukiDirectory().has_value();
     if(cadence::portable::enabled()){
@@ -15687,6 +17492,9 @@ const auto path=argc>2?std::filesystem::u8path(argv[2]):std::filesystem::temp_di
     if(pngSmokeTest){scene::CastScene empty;app.renderer.render(empty,{},scene::Mat4::identity(),32,32,false,false,false);std::string error;
         if(!app.renderer.saveColorPng(std::filesystem::u8path(argv[2]),error)){std::cerr<<error<<'\n';result=1;}glfwSetWindowShouldClose(window,true);}
     gAppState = &app;
+    glfwSetWindowCloseCallback(window,[](GLFWwindow* window){
+        if(gAppState&&gAppState->window==window){gAppState->closeRequested=true;glfwSetWindowShouldClose(window,false);}
+    });
     glfwSetDropCallback(window, dropCallback);
     glfwSetWindowFocusCallback(window,windowFocusCallback);
     glfwSetScrollCallback(window,gameplayScrollCallback);
@@ -15697,18 +17505,25 @@ const auto path=argc>2?std::filesystem::u8path(argv[2]):std::filesystem::temp_di
     ImVec2 lastUsableDisplaySize{float(std::max(1,initialWindowWidth)),float(std::max(1,initialWindowHeight))};
     diagnostic::Frames traceFrames;std::string traceStatus;std::size_t traceBotCount=static_cast<std::size_t>(-1);
     const bool traceGpuMemory=verboseLog&&glfwExtensionSupported("GL_NVX_gpu_memory_info");double traceNextGpuMemory{};
+    double pauseSmokeClock{},pauseSmokeWater{};
     while (!glfwWindowShouldClose(window)) {
+        if(pauseSmokeTest&&renderedFrames==1){pauseSmokeClock=app.gameplayClock;pauseSmokeWater=app.waterSeconds;setRuntimePaused(app,true);}
+        if(pauseSmokeTest&&renderedFrames==4){if(app.gameplayClock!=pauseSmokeClock||app.waterSeconds!=pauseSmokeWater){std::cerr<<"Paused clocks advanced\n";result=1;}setRuntimePaused(app,false);}
+        // UI-only frames while suspended; no busy loop even with VSync off.
+        if(app.runtimePaused)glfwWaitEventsTimeout(1.0/15.0);
         const auto traceStart=std::chrono::steady_clock::now();diagnostic::phase(diagnostic::Phase::Events);
 #ifdef _WIN32
-        MSG hotkeyMessage{};while(PeekMessageW(&hotkeyMessage,nullptr,WM_HOTKEY,WM_HOTKEY,PM_REMOVE))if(hotkeyMessage.wParam==globalGameplayHotkeyId&&cadence::workspace::runtime(app.workspaceMode))toggleGlobalGameplayCapture(app);
+        MSG hotkeyMessage{};while(PeekMessageW(&hotkeyMessage,nullptr,WM_HOTKEY,WM_HOTKEY,PM_REMOVE))if(!app.runtimePaused&&hotkeyMessage.wParam==globalGameplayHotkeyId&&cadence::workspace::runtime(app.workspaceMode))toggleGlobalGameplayCapture(app);
 #endif
         // Thread hotkeys must be removed before GLFW drains the Windows queue.
         glfwPollEvents();
+        if(app.gamePreload)app.gamePreload->pause(app.gamePreloadPauseDuringPlay&&(app.actorInputCaptured||app.takePlaying||app.exportActive||app.takeRecording));
         const bool windowFocused=glfwGetWindowAttrib(window,GLFW_FOCUSED)==GLFW_TRUE;
         const bool windowMinimized=glfwGetWindowAttrib(window,GLFW_ICONIFIED)==GLFW_TRUE;
         const bool captureInProgress=app.exportActive||app.liveRecorder.active()||app.takeRecording;
-        if(!smokeTest&&!pngSmokeTest&&cadence::replay::pauseForInactiveWindow(windowFocused,windowMinimized,captureInProgress)){diagnostic::phase(diagnostic::Phase::Unfocused);if(cadence::workspace::runtime(app.workspaceMode))processCatalogScan(app);glfwWaitEventsTimeout(0.016);continue;}
-        if(cadence::workspace::runtime(app.workspaceMode))processDeferredActorCapture(app);
+        if(!app.closeRequested&&!smokeTest&&!pngSmokeTest&&cadence::replay::pauseForInactiveWindow(windowFocused,windowMinimized,captureInProgress)){diagnostic::phase(diagnostic::Phase::Unfocused);if(!app.runtimePaused&&cadence::workspace::runtime(app.workspaceMode))processCatalogScan(app);glfwWaitEventsTimeout(app.runtimePaused?.1:.016);continue;}
+        if(!app.runtimePaused&&cadence::workspace::runtime(app.workspaceMode))processDeferredActorCapture(app);
+        processScoreFonts(app);
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         // Minimized GLFW windows report zero size. Keep the last UI layout so
@@ -15719,7 +17534,9 @@ const auto path=argc>2?std::filesystem::u8path(argv[2]):std::filesystem::temp_di
         // move that virtual position beyond the viewport even though Windows
         // draws no cursor, which otherwise hovers and edits inspector widgets.
         {auto& io=ImGui::GetIO();if(app.actorInputCaptured){io.ConfigFlags|=ImGuiConfigFlags_NoMouse;io.MousePos={-std::numeric_limits<float>::max(),-std::numeric_limits<float>::max()};for(bool& down:io.MouseDown)down=false;io.MouseWheel=0;io.MouseWheelH=0;}else io.ConfigFlags&=~ImGuiConfigFlags_NoMouse;}
+        if(app.runtimeResumePending){ImGui::GetIO().DeltaTime=0.000001f;app.runtimeResumePending=false;}
         ImGui::NewFrame();
+        if(!app.runtimePaused){
         if(cadence::workspace::runtime(app.workspaceMode)&&!app.takePreview&&app.dayNight.enabled&&(app.dayNight.running||app.dayNight.starAutoRotate)&&app.playing)app.dayNightSeconds+=std::max(0.f,ImGui::GetIO().DeltaTime*app.playbackSpeed);
         if(cadence::workspace::runtime(app.workspaceMode)&&!app.takePreview&&app.water.enabled&&app.water.animate&&app.playing)app.waterSeconds+=std::max(0.f,ImGui::GetIO().DeltaTime*app.playbackSpeed);
         if(cadence::workspace::runtime(app.workspaceMode)&&!app.takePreview&&(app.rain.enabled||app.wet.ground||app.wet.enabled)&&app.rain.animate&&app.playing)app.rainSeconds+=std::max(0.f,ImGui::GetIO().DeltaTime*app.playbackSpeed);
@@ -15732,31 +17549,54 @@ const auto path=argc>2?std::filesystem::u8path(argv[2]):std::filesystem::temp_di
         const bool f1Key = actorKey(app, GLFW_KEY_F1) || ImGui::IsKeyPressed(ImGuiKey_F1, false) || winF1;
         const bool graveKey = actorKey(app, GLFW_KEY_GRAVE_ACCENT) || ImGui::IsKeyPressed(ImGuiKey_GraveAccent, false);
         const bool captureHotkey = f1Key || (graveKey && !ImGui::GetIO().WantTextInput);
-        if(captureHotkey && !app.previousF1Key&&cadence::workspace::runtime(app.workspaceMode)){
+        if(captureHotkey && !app.previousF1Key&&!app.takePreparationFuture&&cadence::workspace::runtime(app.workspaceMode)){
             toggleGlobalGameplayCapture(app);
         }
         app.previousF1Key = f1Key || graveKey;
-        if(cadence::workspace::runtime(app.workspaceMode)&&!ImGui::GetIO().WantTextInput){if(ImGui::IsKeyPressed(ImGuiKey_F5,false))toggleTakeRecording(app);if(ImGui::IsKeyPressed(ImGuiKey_F6,false)){if(app.takeRecording)discardTakeRecording(app);else toggleTakePlayback(app);}if(ImGui::IsKeyPressed(ImGuiKey_F7,false)){returnToLiveGameplay(app);}}
-        if(cadence::workspace::runtime(app.workspaceMode))handleTakeCameraInput(app,ImGui::GetIO().DeltaTime);
+        if(!app.takePreparationFuture&&cadence::workspace::runtime(app.workspaceMode)&&uiCommandsAllowed()){if(ImGui::IsKeyPressed(ImGuiKey_F5,false))toggleTakeRecording(app);if(ImGui::IsKeyPressed(ImGuiKey_F6,false)&&!app.takeRecording)toggleTakePlayback(app);if(ImGui::IsKeyPressed(ImGuiKey_F7,false)&&!app.takeRecording)returnToLiveGameplay(app);}
+        if(!app.takePreparationFuture&&cadence::workspace::runtime(app.workspaceMode))handleTakeCameraInput(app,ImGui::GetIO().DeltaTime);
         diagnostic::phase(diagnostic::Phase::Catalog);if(app.workspaceMode!=2)processCatalogScan(app);
         if(cadence::workspace::runtime(app.workspaceMode)){
         const bool classLoaderOwnsScene=app.pendingClassLoadStage>=0;
         diagnostic::phase(diagnostic::Phase::ClassLoad);processPendingClassLoad(app);
-        diagnostic::phase(diagnostic::Phase::MapLoad);processPendingMapLoad(app);processDemoLibrary(app);
+        processPendingTakeOpen(app);
+        processDemoLibrary(app);
         if(!classLoaderOwnsScene){diagnostic::phase(diagnostic::Phase::ModelLoad);processPendingModelLoad(app);diagnostic::phase(diagnostic::Phase::AnimationLoad);processPendingAnimationLoad(app);}
         }
-        diagnostic::phase(diagnostic::Phase::Ui);const auto uiBuildStart=std::chrono::steady_clock::now();drawUi(app);const auto traceUiEnd=std::chrono::steady_clock::now();app.performanceUiTotalMs=app.performanceUiTotalMs*.9+std::chrono::duration<double,std::milli>(traceUiEnd-uiBuildStart).count()*.1;
+        }
+        // Map requests and their dialogs must finish even while viewport playback
+        // is paused; pausing simulation must not strand a requested replacement.
+        diagnostic::phase(diagnostic::Phase::MapLoad);processPendingMapLoad(app);
+        diagnostic::phase(diagnostic::Phase::Ui);const auto uiBuildStart=std::chrono::steady_clock::now();ImGui::BeginDisabled(app.takePreparationFuture.has_value());drawUi(app);ImGui::EndDisabled();drawWorkflowDialogs(app);const auto traceUiEnd=std::chrono::steady_clock::now();app.performanceUiTotalMs=app.performanceUiTotalMs*.9+std::chrono::duration<double,std::milli>(traceUiEnd-uiBuildStart).count()*.1;
         diagnostic::phase(diagnostic::Phase::UiFinalize);
-        if(cadence::workspace::runtime(app.workspaceMode)){drawCatalogGamePrompt(app);drawC2mPromptModal(app);}
+        if(!app.runtimePaused&&cadence::workspace::runtime(app.workspaceMode))drawCatalogGamePrompt(app);
+        drawC2mPromptModal(app);
         ImGui::Render();
+        const double presentTime=glfwGetTime();
+        const bool presentPreview=!app.exportActive||app.exportCaptureReShade||
+            presentTime-app.lastExportPresent>=1.0/30.0;
         int width{}, height{};
         glfwGetFramebufferSize(window, &width, &height);
-        glViewport(0, 0, width, height);
-        glClearColor(0.055f, 0.065f, 0.08f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-        diagnostic::phase(diagnostic::Phase::UiDraw);const auto uiDrawStart=std::chrono::steady_clock::now();ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());const auto traceDrawEnd=std::chrono::steady_clock::now();app.performanceUiDrawMs=app.performanceUiDrawMs*.9+std::chrono::duration<double,std::milli>(traceDrawEnd-uiDrawStart).count()*.1;
+        diagnostic::phase(diagnostic::Phase::UiDraw);
+        const auto uiDrawStart=std::chrono::steady_clock::now();
+        if(presentPreview){
+            glViewport(0,0,width,height);
+            glClearColor(.055f,.065f,.08f,1.f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        }
+        const auto traceDrawEnd=std::chrono::steady_clock::now();app.performanceUiDrawMs=app.performanceUiDrawMs*.9+std::chrono::duration<double,std::milli>(traceDrawEnd-uiDrawStart).count()*.1;
         if(benchmarkCheck&&benchui::workspace&&width>0&&height>0){std::vector<std::uint8_t> pixels(static_cast<std::size_t>(width)*height*4);glReadPixels(0,0,width,height,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());std::string error;if(!app.renderer.savePixelsPng(benchui::workspace->reportDir/"workspace.png",width,height,pixels,error)){std::cerr<<error;result=1;}}
-        diagnostic::phase(diagnostic::Phase::Present);const auto swapStart=std::chrono::steady_clock::now();glfwSwapBuffers(window);const auto traceEnd=std::chrono::steady_clock::now();app.performanceSwapMs=app.performanceSwapMs*.9+std::chrono::duration<double,std::milli>(traceEnd-swapStart).count()*.1;
+        updatePresentInterval(app);
+        diagnostic::phase(diagnostic::Phase::Present);
+        const auto swapStart=std::chrono::steady_clock::now();
+        if(presentPreview){glfwSwapBuffers(window);app.lastExportPresent=presentTime;}
+        const auto traceEnd=std::chrono::steady_clock::now();app.performanceSwapMs=app.performanceSwapMs*.9+std::chrono::duration<double,std::milli>(traceEnd-swapStart).count()*.1;
+        if(!app.exportActive&&app.exportProRes){
+            const auto error=closeProResExport(app);app.exportProRes=false;
+            if(!error.empty())app.status="Export failed: "+error;
+        }
+        if(pauseSmokeTest&&renderedFrames==3&&argc>2&&width>0&&height>0){std::vector<std::uint8_t> pixels(static_cast<std::size_t>(width)*height*4);glReadBuffer(GL_FRONT);glReadPixels(0,0,width,height,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());std::string error;if(!app.renderer.savePixelsPng(std::filesystem::u8path(argv[2]),width,height,pixels,error)){std::cerr<<error;result=1;}}
         if(diagnostic::active){
             const auto ms=[](auto d){return std::chrono::duration<double,std::milli>(d).count();};
             traceFrames.add(ms(traceEnd-traceStart),ms(uiBuildStart-traceStart),ms(traceUiEnd-uiBuildStart),ms(uiDrawStart-traceUiEnd),ms(traceDrawEnd-uiDrawStart),ms(traceEnd-swapStart));
@@ -15780,7 +17620,7 @@ const auto path=argc>2?std::filesystem::u8path(argv[2]):std::filesystem::temp_di
                 if(traceBotCount!=app.bots.size()){traceBotCount=app.bots.size();diagnostic::event("BOT COUNT: "+std::to_string(traceBotCount));}
             }
         }
-        if (smokeTest && ++renderedFrames >= (portableSetupCheck?3:1)) {
+        if (smokeTest && ++renderedFrames >= (pauseSmokeTest?6:portableSetupCheck?3:1)) {
             if(portableSetupCheck&&width>0&&height>0){std::vector<std::uint8_t> pixels(static_cast<std::size_t>(width)*height*4);glReadBuffer(GL_FRONT);glReadPixels(0,0,width,height,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());std::string error;if(!app.renderer.savePixelsPng(std::filesystem::u8path(argv[2]),width,height,pixels,error)){std::cerr<<error;result=1;}}
             glfwSetWindowShouldClose(window, true);
         }
@@ -15798,6 +17638,7 @@ const auto path=argc>2?std::filesystem::u8path(argv[2]):std::filesystem::temp_di
     closeProResExport(app);
     benchui::workspace.reset();
     app.renderer.shutdown();
+    app.nativeReShadeRuntime.shutdown();
     app.actionPreviewRenderer.shutdown();
     app.playermodelPreviewRenderer.shutdown();
     ImGui_ImplOpenGL3_Shutdown();

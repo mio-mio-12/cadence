@@ -34,7 +34,20 @@ int main(){int failures{};const auto expect=[&](bool value,const char* message){
   expect(!profile.materials.overrideMetalness,"metalness override must default off");
   expect(profile.viewmodelFovMultiplier==1.f&&!profile.flipViewmodel,"viewmodel projection defaults retain prior appearance");
   profile.viewmodelFovMultiplier=1.25f;profile.flipViewmodel=true;
+  expect(profile.stats.iw4YySmoothingTime==.391f,"IW4 YY default smoothing");
+  for(const auto type:{weapon::Archetype::Rifle,weapon::Archetype::Pistol,weapon::Archetype::Smg,weapon::Archetype::BoltSniper,weapon::Archetype::Lmg}){
+    const auto s=weapon::defaultsFor(type);
+    expect(s.quickDropTime==s.dropTime&&s.quickRaiseTime==s.raiseTime,"quick defaults must match regular timings");
+  }
+  profile.stats.iw4YySmoothingTime=.173f;
+  profile.stats.iw4YyCurve.count=3;
+  profile.stats.iw4YyCurve.points[0]={0,0};
+  profile.stats.iw4YyCurve.points[1]={.35f,.8f};
+  profile.stats.iw4YyCurve.points[2]={1,1};
+  profile.stats.iw4YyCurve.smoothness=.7f;
   expect(profile.sprintBobMultiplier==1.f,"sprint bob default preserves existing behavior");profile.sprintBobMultiplier=.25f;
+  expect(!profile.disableSprintAnimations,"sprint clips enabled by default");profile.disableSprintAnimations=true;
+  expect(profile.sprintBobSpeedMultiplier==1.f,"sprint bob speed default preserves existing behavior");profile.sprintBobSpeedMultiplier=2.5f;
   {
     const auto bad=std::filesystem::temp_directory_path()/"cadence_v139_invalid_metalness.iwweapon";
     for(const auto*value:{"1 2","1 nan","2 .5","1"}){
@@ -48,6 +61,7 @@ int main(){int failures{};const auto expect=[&](bool value,const char* message){
     {std::ofstream f(bad);f<<"IWWEAPON 1\nname old\n";}
     auto legacy=profile;legacy.materials.overrideMetalness=true;std::string error;expect(weapon::load(bad,legacy,error)&&!legacy.materials.overrideMetalness,"legacy profile must retain original material behavior");
     expect(legacy.viewmodelFovMultiplier==1.f&&!legacy.flipViewmodel,"old weapfiles reset projection to neutral defaults");
+    expect(!legacy.overrideWeaponTurning&&legacy.weaponTurningEnabled&&legacy.weaponTurningHipMultiplier==1.f&&legacy.weaponTurningAdsMultiplier==1.f,"old weapfiles inherit global weapon turning");
     for(const auto* value:{"0 0","-1 1","nan 0","1 2","1"}){
       {std::ofstream f(bad);f<<"IWWEAPON 1\nviewmodel_projection "<<value<<'\n';}
       auto unchanged=profile;expect(!weapon::load(bad,unchanged,error),"invalid viewmodel projection rejects load");
@@ -112,11 +126,23 @@ int main(){int failures{};const auto expect=[&](bool value,const char* message){
                     "cast_stage_weapon_profile_test.iwweapon";
   std::string error;
   profile.stats.firstRaiseTime=1.73f;profile.stats.raiseTime=.42f;
+  profile.overrideWeaponTurning=true;profile.weaponTurningEnabled=false;profile.weaponTurningHipMultiplier=.3f;profile.weaponTurningAdsMultiplier=1.7f;
+  profile.stats.firePlaybackScale=1.75f;
+  profile.stats.instantScope=true;profile.stats.grenade=true;
+  profile.stats.disableAds=true;profile.hideCrosshair=false;
+  profile.rigWeaponTransforms["bo2/hands.cast"]={{1,2,3},{4,5,6},1.25f};
   expect(weapon::save(profile, path, error), "profile save failed");
   weapon::Profile loaded;
   expect(weapon::load(path, loaded, error), "profile load failed");
+  expect(loaded.overrideWeaponTurning&&!loaded.weaponTurningEnabled&&loaded.weaponTurningHipMultiplier==.3f&&loaded.weaponTurningAdsMultiplier==1.7f,"isolated turning settings round trip");
+  expect(loaded.stats.disableAds&&loaded.hideCrosshair.has_value()&&!*loaded.hideCrosshair,"ADS and explicit crosshair choices round trip");
+  expect(weapon::rigTransformFor(loaded,"bo2/hands.cast")&&weapon::rigTransformFor(loaded,"bo2/hands.cast")->scale==1.25f&&!weapon::rigTransformFor(loaded,"mwr/hands.cast"),"weapon transform belongs only to selected rig");
+  expect(loaded.stats.firePlaybackScale==1.75f,"fire animation speed round trips");
+  expect(loaded.stats.instantScope&&loaded.stats.grenade,"instant scope and grenade flags round trip");
   expect(loaded.viewmodelFovMultiplier==1.25f&&loaded.flipViewmodel,"viewmodel projection fields round trip");
   expect(loaded.sprintBobMultiplier==.25f,"sprint bob multiplier round trips");
+  expect(loaded.disableSprintAnimations,"sprint animation disable round trips independently of bob");
+  expect(loaded.sprintBobSpeedMultiplier==2.5f,"sprint bob speed multiplier round trips");
   expect(std::abs(loaded.stats.firstRaiseTime-1.73f)<.0001f&&std::abs(loaded.stats.raiseTime-.42f)<.0001f,"first raise and pullout timings must round-trip independently");
   expect(loaded.rigMounts.size()==1&&loaded.rigMounts[0].attachedModel&&loaded.rigMounts[0].parentTag=="tag_scope"&&loaded.rigMounts[0].position.z==3&&loaded.rigMounts[0].attachmentRotationDegrees.y==20&&loaded.rigMounts[0].attachmentScale.y==2,"live attachment transform did not round trip");
   expect(!loaded.stats.canFireWhileRechambering&&std::abs(loaded.stats.rechamberFireUnlock-.3f)<.0001f,"rechamber firing settings did not round-trip");
@@ -131,6 +157,9 @@ int main(){int failures{};const auto expect=[&](bool value,const char* message){
     std::filesystem::remove(oldPath);
   }
   expect(loaded.stats.hideWeaponOnAds,"ADS visibility did not round trip");
+  expect(std::abs(loaded.stats.iw4YySmoothingTime-.173f)<.00001f,"IW4 YY smoothing did not round trip");
+  expect(loaded.stats.iw4YyCurve.count==3&&std::abs(loaded.stats.iw4YyCurve.sample(.35f)-.8f)<.00001f&&loaded.stats.iw4YyCurve.smoothness==.7f,"YY curve did not round trip");
+  expect(loaded.stats.iw4YyCurve.sample(0)==0&&loaded.stats.iw4YyCurve.sample(1)==1,"YY curve endpoints must complete the transition");
   expect(std::abs(loaded.stats.rechamberStartDelay-.12f)<.0001f&&std::abs(loaded.stats.sprintPlaybackScale-.85f)<.0001f,"new timing fields round trip");
   expect(loaded.scopeOverlayImage==profile.scopeOverlayImage&&loaded.stats.recoil.duration==.6f&&loaded.stats.recoil.points[2].y==-.1f&&loaded.stats.recoil.intensity==1.75f,"scope path and response curve round trip");
   {gameplay::view::RecoilSettings shape;gameplay::view::RecoilState a,b;

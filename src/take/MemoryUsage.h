@@ -17,7 +17,9 @@ struct MemoryUsage {
             addPose(s.pose);addPose(s.worldActor.pose);
             payloadBytes+=s.bots.capacity()*sizeof(RecordedActorState)+s.hiddenBones.capacity()*sizeof(std::uint32_t)+
                 s.primaryClip.capacity()+s.torsoClip.capacity()+2+strings(s.worldActor);
-            for(const auto& b:s.bots){addPose(b.pose);payloadBytes+=strings(b);}
+            for(const auto& b:s.bots){addPose(b.pose);payloadBytes+=strings(b)+b.detached.capacity()*sizeof(scene::DetachedAttachment);}
+            payloadBytes+=s.corpses.capacity()*sizeof(Sample::Corpse);
+            for(const auto& b:s.corpses){addPose(b.pose);payloadBytes+=b.detached.capacity()*sizeof(scene::DetachedAttachment);}
         }
     }
     std::size_t estimatedBytes(const Take& take)const{

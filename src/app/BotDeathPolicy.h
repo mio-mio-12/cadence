@@ -17,13 +17,20 @@ struct BotDeathChoice {
     bool sp{},forwardRun{};
 };
 struct BotDeathHistory {
-    std::array<std::string,2> recent;
+    std::array<std::string,4> recent;
     std::uint64_t sequence{};
     std::optional<std::uint64_t> batch;
     std::vector<std::string> batchKeys;
     void beginBatch(std::uint64_t id){if(!batch||*batch!=id){batch=id;batchKeys.clear();}}
     bool excludes(const std::string& key)const{return !key.empty()&&(recent[0]==key||recent[1]==key||std::find(batchKeys.begin(),batchKeys.end(),key)!=batchKeys.end());}
-    void record(std::string key){if(batch&&!key.empty())batchKeys.push_back(key);recent[1]=std::move(recent[0]);recent[0]=std::move(key);}
+    bool inRotation(const std::string& key)const{
+        return !key.empty()&&std::find(recent.begin(),recent.end(),key)!=recent.end();
+    }
+    void record(std::string key){
+        if(batch&&!key.empty())batchKeys.push_back(key);
+        for(std::size_t i=recent.size()-1;i>0;--i)recent[i]=std::move(recent[i-1]);
+        recent[0]=std::move(key);
+    }
 };
 inline std::string deathKey(std::string name){
     std::transform(name.begin(),name.end(),name.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
@@ -37,6 +44,7 @@ inline std::vector<BotDeathChoice> prepareBotDeaths(const scene::CastScene& scen
         const auto& a=scene.animations[i];
         if(a.action!=scene::ActionRole::Death||a.tracks.empty())continue;
         const auto key=deathKey(a.sourceName.empty()?a.name:a.sourceName);
+        if(key.find("generic_stand_idle_death")!=std::string::npos||key.find("deathpose")!=std::string::npos||key.find("death_poses")!=std::string::npos||key.find("hostage")!=std::string::npos||key.find("lowviolence")!=std::string::npos)continue;
         if(a.sourceGame=="eldewrito"&&(key.find("airborne_dead")!=std::string::npos||key.find("landing_dead")!=std::string::npos))continue; // Explicit action-set opt-in; not ordinary standing deaths.
         if(key.find("vertigo")!=std::string::npos||key.find("fall_death")!=std::string::npos||key.find("falling")!=std::string::npos||key.find("vehicle")!=std::string::npos)continue;
         const bool sp=key.starts_with("ai_");
@@ -63,19 +71,41 @@ inline std::optional<std::size_t> selectBotDeath(const std::vector<BotDeathChoic
     const bool random=r.spMode&&gameplay::bot::spOpportunityChance(r.mix,r.actor,sequence,0x44454144);
     const bool boost=gameplay::bot::spOpportunityChance(.10f,r.actor,sequence,0x52554e);
     const auto eligible=[&](const auto& c){return !history.excludes(c.key)&&(!c.sp||r.spMode);};
-    const auto score=[&](const auto& c){return (c.motion==r.motion?50:c.motion==scene::MotionRole::Unknown?8:-8)+(c.stance==r.stance?32:c.stance==scene::Stance::Any?10:-12)+(c.direction==r.direction?36:c.direction==scene::Direction::Any?14:-10)+(c.weapon==r.weapon?22:c.weapon==scene::WeaponClass::Any?8:-5);};
-    bool hasBoost=false,hasOverride=false;int best=std::numeric_limits<int>::min();
+    const auto score=[&](const auto& c){
+        const int direction=r.direction==scene::Direction::Any?0:
+            c.direction==r.direction?36:c.direction==scene::Direction::Any?14:-10;
+        return (c.motion==r.motion?50:c.motion==scene::MotionRole::Unknown?8:-8)+
+            (c.stance==r.stance?32:c.stance==scene::Stance::Any?10:-12)+direction+
+            (c.weapon==r.weapon?22:c.weapon==scene::WeaponClass::Any?8:-5);
+    };
+    const auto fitsRotation=[&](const auto& c){
+        const bool samePosture=c.stance==r.stance||c.stance==scene::Stance::Any||r.stance==scene::Stance::Any;
+        const bool stationaryMatch=r.motion!=scene::MotionRole::Idle||c.motion==scene::MotionRole::Idle||c.motion==scene::MotionRole::Unknown;
+        return samePosture&&stationaryMatch&&!history.inRotation(c.key);
+    };
+    constexpr auto noScore=std::numeric_limits<int>::min();
+    bool hasBoost=false,hasOverride=false;
+    int best=noScore,bestRotation=noScore;
     for(const auto& c:choices)if(eligible(c)){
         hasBoost|=c.forwardRun;
         hasOverride|=std::find(overrides.begin(),overrides.end(),c.key)!=overrides.end();
-        if(!c.sp)best=std::max(best,score(c));
+        if(!c.sp){
+            const int match=score(c);
+            best=std::max(best,match);
+            if(fitsRotation(c))bestRotation=std::max(bestRotation,match);
+        }
     }
+    // Use the broader rotation when there is a compatible alternative.
+    // Strict tolerance, overrides, and the SP random mix retain their policy.
+    const bool rotate=r.tolerance>0&&bestRotation!=noScore;
     const auto accepted=[&](const auto& c){
         if(!eligible(c))return false;
         if(boost&&hasBoost)return c.forwardRun;
         if(random)return true;
         if(hasOverride)return std::find(overrides.begin(),overrides.end(),c.key)!=overrides.end();
-        return !c.sp&&score(c)>=best-static_cast<int>(r.tolerance);
+        if(c.sp)return false;
+        return rotate?fitsRotation(c)&&score(c)>=bestRotation-static_cast<int>(r.tolerance):
+            score(c)>=best-static_cast<int>(r.tolerance);
     };
     std::size_t count=0;for(const auto& c:choices)if(accepted(c))++count;
     // Never violate the two-death exclusion, even for a deficient library.

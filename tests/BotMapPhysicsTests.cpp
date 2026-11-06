@@ -8,8 +8,60 @@ struct Floor {
     scene::Vec3 constrainMove(scene::Vec3,scene::Vec3 p,float,float,float,scene::Vec3* n)const{if(wall&&p.x>30){p.x=30;*n={-1,0,0};}return p;}
     float navigationGroundHeight(float,float,float,float fallback,float)const{return exists?floor:fallback;}
 };
+static void quad(scene::glb::Map& map,scene::Vec3 a,scene::Vec3 b,scene::Vec3 c,scene::Vec3 d){
+    for(auto points:{std::array{a,b,c},std::array{a,c,d}}){scene::glb::CollisionTriangle t;t.a=points[0];t.b=points[1];t.c=points[2];t.normal=scene::normalize(scene::cross(t.b-t.a,t.c-t.a));t.minimum=t.maximum=t.a;
+        for(auto p:points){t.minimum={std::min(t.minimum.x,p.x),std::min(t.minimum.y,p.y),std::min(t.minimum.z,p.z)};t.maximum={std::max(t.maximum.x,p.x),std::max(t.maximum.y,p.y),std::max(t.maximum.z,p.z)};}
+        t.walkable=t.normal.z>=.7f;t.blocking=!t.walkable;map.collision.push_back(t);
+    }
+}
+static void actualMapFootprintChecks(){
+    using namespace gameplay::bot;
+    for(bool offCenter:{false,true}){
+        scene::glb::Map map;quad(map,{-500,-500,0},{500,-500,0},{500,500,0},{-500,500,0});
+        const float y0=offCenter?25.f:-100.f,y1=offCenter?35.f:100.f,x1=offCenter?110.f:300.f;
+        quad(map,{100,y0,10},{x1,y0,10},{x1,y1,10},{100,y1,10});
+        quad(map,{100,y0,0},{100,y0,10},{100,y1,10},{100,y1,0});map.buildCollisionIndex();
+        Actor actor;actor.collisionHalfExtents=offCenter?scene::Vec2{12,43}:scene::Vec2{43,12};actor.standingCollisionHeight=100;
+        actor.grounded=true;actor.spMovingScenario=true;actor.input.forward=95.f/gameplay::iw::kRunSpeed;
+        for(int i=0;i<125;++i){stepOnMap(actor,.008f,1,map);check(actor.position.z>=-.01f);}
+        check(actor.position.x>94&&actor.position.z>9.9f&&actor.grounded);
+        // A descending body cannot snap early onto the same off-center top.
+        actor.position={95,0,50};actor.velocity={0,0,-1};actor.grounded=false;actor.input={};actor.spMovingScenario=false;
+        stepOnMap(actor,.008f,1,map);check(actor.position.z>49&&!actor.grounded);
+        for(int i=0;i<150;++i)stepOnMap(actor,.008f,1,map);
+        check(actor.grounded&&std::abs(actor.position.z-10)<.1f);
+        actor.position={95,0,50};actor.velocity={};actor.grounded=false;
+        for(int i=0;i<150;++i)stepCorpseOnMap(actor,.008f,map);
+        check(actor.grounded&&std::abs(actor.position.z-10)<.1f);
+    }
+    scene::glb::Map ceiling;quad(ceiling,{-200,-200,0},{200,-200,0},{200,200,0},{-200,200,0});
+    quad(ceiling,{-200,-200,110},{200,-200,110},{200,200,110},{-200,200,110});ceiling.buildCollisionIndex();
+    Actor jumper;jumper.collisionHalfExtents={12,43};jumper.standingCollisionHeight=100;jumper.grounded=true;jumper.input.jump=true;
+    bool hitCeiling=false;for(int i=0;i<100;++i){stepOnMap(jumper,.008f,1,ceiling);check(jumper.position.z<=10.1f);hitCeiling|=jumper.position.z>9&&jumper.velocity.z==0;}
+    check(hitCeiling&&jumper.grounded&&std::abs(jumper.position.z)<.1f);
+}
 int main(){
     using namespace gameplay::bot;
+    actualMapFootprintChecks();
+    struct ExtentSpy:Floor {
+        mutable scene::Vec2 used{};mutable float usedHeight{};
+        using Floor::constrainMove;
+        scene::Vec3 constrainMove(scene::Vec3,scene::Vec3 p,scene::Vec2 extents,float height,float,scene::Vec3*)const{used=extents;usedHeight=height;return p;}
+    } extentSpy;
+    Actor rectangular;rectangular.collisionHalfExtents={12,43};rectangular.standingCollisionHeight=210;rectangular.position.z=50;rectangular.grounded=false;
+    stepOnMap(rectangular,.008f,1,extentSpy);check(extentSpy.used.x==12&&extentSpy.used.y==43&&extentSpy.usedHeight==210);
+    extentSpy.used={};stepCorpseOnMap(rectangular,.008f,extentSpy);check(extentSpy.used.x==12&&extentSpy.used.y==43);
+    respawnActor(rectangular,{});check(rectangular.collisionHalfExtents.x==12&&rectangular.collisionHalfExtents.y==43&&rectangular.standingCollisionHeight==210);
+    struct HeightSpy:Floor {
+        mutable float usedHeight{};
+        scene::Vec3 constrainMove(scene::Vec3,scene::Vec3 p,float,float height,float,scene::Vec3*)const{usedHeight=height;return p;}
+    } spy;
+    for(float standing:{100.f,260.f})for(auto stance:{scene::Stance::Stand,scene::Stance::Crouch,scene::Stance::Prone}){
+        Actor sized;sized.standingCollisionHeight=standing;sized.stance=stance;sized.position.z=50;sized.grounded=false;
+        stepOnMap(sized,.008f,1,spy);check(std::abs(spy.usedHeight-collisionHeight(sized))<.001f);
+        stepCorpseOnMap(sized,.008f,spy);check(std::abs(spy.usedHeight-collisionHeight(sized))<.001f);
+        respawnActor(sized,{});check(sized.standingCollisionHeight==standing);
+    }
     struct ExcessStep:Floor {scene::Vec3 constrainMove(scene::Vec3,scene::Vec3 p,float,float,float,scene::Vec3*)const{p.z=100;return p;}} excess;
     Actor limited;limited.grounded=true;limited.input.forward=1;
     for(int i=0;i<125;++i){stepOnMap(limited,.008f,1,excess);check(limited.position.z==0&&limited.grounded);}

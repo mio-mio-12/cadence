@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
 #undef main
@@ -9,7 +8,7 @@ int main(int argc,char** argv)try{
     if(argc!=2){std::cerr<<"output-directory\n";return 2;}
     const std::filesystem::path out=argv[1];std::filesystem::create_directories(out);
     auto owner=std::make_unique<AppState>();auto& app=*owner;std::string error;
-    app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
+    app.defaultSalukiDirectory="exported_files";
     if(!assets::appendScan(app.defaultSalukiDirectory/"bo2"/"models"/"playermodels","bo2",app.assetCatalog,error)){std::cerr<<error;return 3;}
     const auto model=std::find_if(app.assetCatalog.entries.begin(),app.assetCatalog.entries.end(),[](const auto& a){return a.role==assets::Role::PlayerModel;});
     if(model==app.assetCatalog.entries.end())return 4;

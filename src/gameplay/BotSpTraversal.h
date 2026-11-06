@@ -52,20 +52,24 @@ template<class Map> std::optional<scene::Vec3> obviousSpMantle(const Map& map,co
     const scene::Vec3 facing{std::cos(a.yaw),std::sin(a.yaw),0};
     if(scene::dot(direction,facing)<.85f)return {};
     // A local, forward, chest-height step, never an off-route climb or chain.
-    const auto candidate=map.mantleTarget(a.position,direction,scene::course::kPlayerRadius,iw::worldUnits(72),scene::course::kStepHeight,iw::worldUnits(57),iw::worldUnits(28),iw::kJumpHeight+8.f);
+    const auto candidate=map.mantleTarget(a.position,direction,scene::course::kPlayerRadius,collisionHeight(a),scene::course::kStepHeight,iw::worldUnits(57),iw::worldUnits(28),iw::kJumpHeight+8.f);
     if(!candidate||!spFinitePosition(*candidate))return {};
     // Broad footprint ground queries may find a lip while the actor's centre
     // is still outside it. Require actual support under the landing footprint;
     // only advance a short distance along the already intended route.
     std::optional<scene::Vec3> target;
     const float radius=scene::course::kPlayerRadius;
-    for(float advance=0;advance<=2*radius+8&&!target;advance+=8){
+    const auto extents=rectangularCollision(a)?a.collisionHalfExtents:scene::Vec2{radius,radius};
+    const float reach=rectangularCollision(a)?movement::hullReach(extents,direction):radius;
+    for(float advance=0;advance<=2*reach+8&&!target;advance+=8){
         const auto landing=*candidate+direction*advance;
         if(horizontalDistance(a.position,landing)>145.f||horizontalDistance(landing,a.spMoveGoal)>=horizontalDistance(a.position,a.spMoveGoal)-15.f)continue;
         bool supported=true;
         for(int i=-1;i<8;++i){
             const float angle=2*scene::kPi*static_cast<float>(i)/8;
-            const auto p=landing+(i<0?scene::Vec3{}:scene::Vec3{std::cos(angle)*radius,std::sin(angle)*radius,0});
+            auto offset=i<0?scene::Vec3{}:scene::Vec3{std::cos(angle)*radius,std::sin(angle)*radius,0};
+            if(rectangularCollision(a)&&i>=0){constexpr int xs[]{1,1,0,-1,-1,-1,0,1},ys[]{0,1,1,1,0,-1,-1,-1};offset={xs[i]*extents.x,ys[i]*extents.y,0};}
+            const auto p=landing+offset;
             const float floor=map.navigationGroundHeight(p.x,p.y,landing.z+2,-1e9f,0.f);
             if(!std::isfinite(floor)||std::abs(floor-landing.z)>3.f){supported=false;break;}
         }
@@ -75,7 +79,7 @@ template<class Map> std::optional<scene::Vec3> obviousSpMantle(const Map& map,co
     auto previous=a.position;
     for(int i=1;i<=24;++i){
         const auto next=spMantlePosition(a.position,*target,static_cast<float>(i)/24);
-        const auto actual=map.constrainMove(previous,next,scene::course::kPlayerRadius,iw::worldUnits(72),0.f);
+        const auto actual=constrainActorMove(map,a,previous,next,0.f);
         if(!spFinitePosition(actual)||scene::length(actual-next)>1.f)return {};
         previous=next;
     }
@@ -92,7 +96,7 @@ template<class Map> bool clearSpJumpArc(const Map& map,const Actor& a){
     for(int i=1;i<=20;++i){
         const float t=flight*static_cast<float>(i)/20;
         const auto next=a.position+velocity*t-scene::Vec3{0,0,.5f*iw::kGravity*t*t};
-        const auto actual=map.constrainMove(previous,next,scene::course::kPlayerRadius,iw::worldUnits(72),0.f);
+        const auto actual=constrainActorMove(map,a,previous,next,0.f);
         if(!spFinitePosition(actual)||scene::length(actual-next)>1.f)return false;
         previous=next;
     }

@@ -45,6 +45,20 @@ int main(int argc,char** argv){try{
             if(!scene::codm::fitLegacyHands(model,reference,legacy,error))
                 throw std::runtime_error(error);
             check(!model.meshes.empty(),"empty assembled scene");
+            auto donor=scene::buildScene(legacy);
+            if(donor.skeleton.boneByName.contains("b_LeftHand"))check(scene::codm::prepareLegacyNamedHands(donor,legacy,error),"donor normalization failed");
+            check(model.codmRigAdapter&&!model.codmRigAdapter->positionLinks.empty(),"legacy donor still uses proportion fitting");
+            const auto first=model.codmRigAdapter->firstBone;
+            for(size_t i=0;i<donor.skeleton.bones.size();++i)
+                check(model.skeleton.bones[first+i].restGlobal.v==donor.skeleton.bones[i].restGlobal.v,"legacy donor bind proportions changed");
+            size_t donorMesh=0;
+            for(const auto& mesh:model.meshes)if(!mesh.viewmodelWeapon){
+                while(donorMesh<donor.meshes.size()&&donor.meshes[donorMesh].vertices.size()!=mesh.vertices.size())++donorMesh;
+                check(donorMesh<donor.meshes.size(),"donor mesh match missing");
+                const auto& original=donor.meshes[donorMesh++];
+                for(size_t v=0;v<mesh.vertices.size();++v)
+                    check(scene::length(mesh.vertices[v].position-scene::transformPoint(original.modelTransform,original.vertices[v].position))<1e-4f,"legacy donor geometry reshaped");
+            }
             const auto pose=model.samplePose(0,0);
             for(const auto& m:pose)for(float v:m.v)check(std::isfinite(v),"nonfinite fitted pose");
             std::cout<<name<<": native assembly + BO2 fit passed; meshes="<<model.meshes.size()<<"\n";

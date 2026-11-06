@@ -1,7 +1,7 @@
 #pragma once
 
 #include "gameplay/ResponseCurve.h"
-#include "scene/Math3D.h"
+#include "scene/CastScene.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -44,6 +44,7 @@ struct RecordedActorState {
     std::string torsoClip;
     float primaryFrame{};
     float torsoFrame{};
+    std::vector<scene::DetachedAttachment> detached;
 };
 
 struct DollyCameraKeyframe {
@@ -59,6 +60,7 @@ struct DollyCameraPath {
 };
 
 struct Sample {
+    struct Corpse {std::uint32_t id{};std::int32_t modelVariant{};float opacity{1};std::vector<scene::Mat4> pose;std::vector<scene::DetachedAttachment> detached;};
     float time{};
     CameraState camera;
     std::vector<scene::Mat4> pose;
@@ -68,6 +70,7 @@ struct Sample {
     float torsoFrame{};
     RecordedActorState worldActor;
     std::vector<RecordedActorState> bots;
+    std::vector<Corpse> corpses;
     std::vector<std::uint32_t> hiddenBones;
     std::uint8_t weaponSlot{};
     std::uint8_t visibility{};
@@ -135,6 +138,7 @@ struct ActorManifest {
     bool viewmodelCamera{};
     float viewmodelFov{65.0f};
     float viewmodelFovScale{1.0f};
+    std::uint32_t importRevision{1};
 
     [[nodiscard]] bool empty() const{return baseModel.empty();}
 };
@@ -169,6 +173,7 @@ struct Take {
     [[nodiscard]] const Sample* sampleAt(float time) const;
     [[nodiscard]] Sample interpolatedSample(float time,InterpolationRigs rigs={}) const;
     bool trim(float start,float end);
+    void trimTicks(std::size_t first,std::size_t last);
     void clear();
 };
 

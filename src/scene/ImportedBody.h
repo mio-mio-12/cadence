@@ -1,5 +1,6 @@
 #pragma once
 #include "scene/CastScene.h"
+#include "assets/ImportedGamePolicy.h"
 #include <array>
 #include <optional>
 #include <string_view>
@@ -7,7 +8,7 @@
 namespace scene::imported {
 // Anatomical observations, not animation aliases. Different bind frames must
 // still be retargeted; exposing a familiar name to the curve binder is unsafe.
-enum class BodyFamily { None, Halo, GoldSrc, Source, Cso2 };
+enum class BodyFamily { None, Halo, GoldSrc, Source, Cso2, DirtyBomb, BlackSquad, Source2 };
 struct BodyLayout {
     BodyFamily family{BodyFamily::None};
     int pelvis{-1}, spine{-1}, head{-1};
@@ -18,7 +19,10 @@ struct BodyLayout {
 };
 inline int nativeBodyBone(const Skeleton& s,std::string_view name){
     const auto found=s.boneByName.find(std::string(name));
-    return found!=s.boneByName.end()&&found->second<s.bones.size()?static_cast<int>(found->second):-1;
+    if(found!=s.boneByName.end()&&found->second<s.bones.size())return static_cast<int>(found->second);
+    // GITS uses Bip01_* in animation rigs and Bip01 * in mesh rigs.
+    std::string alternate(name);std::replace(alternate.begin(),alternate.end(),' ','_');
+    const auto other=s.boneByName.find(alternate);return other!=s.boneByName.end()&&other->second<s.bones.size()?static_cast<int>(other->second):-1;
 }
 inline BodyLayout bodyLayout(const Skeleton& s){
     BodyLayout b;
@@ -29,6 +33,19 @@ inline BodyLayout bodyLayout(const Skeleton& s){
         auto forward=cross(left,Vec3{0,0,1});if(length(forward)>.001f)layout.authoredForward=normalize(forward);
     };
     std::string prefix,separator;
+    if(has("pelvis")&&has("spine_0")&&has("head_0")&&has("leg_upper_L")&&has("leg_upper_R")){
+        b.family=BodyFamily::Source2;b.pelvis=nativeBodyBone(s,"pelvis");b.spine=nativeBodyBone(s,"spine_0");b.head=nativeBodyBone(s,"head_0");
+        for(int side=0;side<2;++side){const std::string p=side?"_R":"_L";
+            b.shoulder[side]=nativeBodyBone(s,"arm_upper"+p);b.elbow[side]=nativeBodyBone(s,"arm_lower"+p);b.hand[side]=nativeBodyBone(s,"hand"+p);
+            b.thigh[side]=nativeBodyBone(s,"leg_upper"+p);b.knee[side]=nativeBodyBone(s,"leg_lower"+p);b.foot[side]=nativeBodyBone(s,"ankle"+p);
+        }facing(b);return b;
+    }
+    if(has("SkelBone_Pelvis")||has("b_Transform")){
+        const bool db=has("SkelBone_Pelvis");b.family=db?BodyFamily::DirtyBomb:BodyFamily::BlackSquad;prefix=db?"SkelBone_":"b_";
+        b.pelvis=nativeBodyBone(s,prefix+(db?"Pelvis":"Transform"));b.spine=nativeBodyBone(s,prefix+"Spine");b.head=nativeBodyBone(s,prefix+"Head");
+        for(int side=0;side<2;++side){const auto p=prefix+(side?"R_":"L_");b.shoulder[side]=nativeBodyBone(s,p+"UpperArm");b.elbow[side]=nativeBodyBone(s,p+"Forearm");b.hand[side]=nativeBodyBone(s,p+"Hand");b.thigh[side]=nativeBodyBone(s,p+"Thigh");b.knee[side]=nativeBodyBone(s,p+"Calf");b.foot[side]=nativeBodyBone(s,p+"Foot");}
+        facing(b);return b;
+    }
     if(has("pelvis")&&has("l_thigh")&&has("r_thigh")&&has("spine")&&has("head")){
         b.family=BodyFamily::Halo;b.pelvis=nativeBodyBone(s,"pelvis");b.spine=nativeBodyBone(s,"spine");b.head=nativeBodyBone(s,"head");
         for(int side=0;side<2;++side){const std::string p=side?"r_":"l_";
@@ -48,6 +65,18 @@ inline BodyLayout bodyLayout(const Skeleton& s){
     facing(b);return b;
 }
 inline bool sourceBodyFamily(BodyFamily family){return family==BodyFamily::Source||family==BodyFamily::GoldSrc||family==BodyFamily::Cso2;}
+// A native/retargeted pose remains in its model's authored frame. AI yaw is
+// +X-forward; compensate once at presentation, never in animation channels.
+// CoD's unclassified canonical bodies already use +X and remain unchanged.
+inline float bodyPresentationYaw(const Skeleton& skeleton){
+    const auto layout=bodyLayout(skeleton);if(!layout)return 0.f;
+    const auto forward=layout.authoredForward;
+    if(!std::isfinite(forward.x)||!std::isfinite(forward.y)||forward.x*forward.x+forward.y*forward.y<1e-8f)return 0.f;
+    return -std::atan2(forward.y,forward.x);
+}
+inline bool bipedBodyFamily(BodyFamily family){return sourceBodyFamily(family)||family==BodyFamily::DirtyBomb||family==BodyFamily::BlackSquad;}
+inline std::string bodyFingerPrefix(BodyFamily family){return family==BodyFamily::DirtyBomb?"SkelBone_":family==BodyFamily::BlackSquad?"b_":family==BodyFamily::Source?"ValveBiped.Bip01_":family==BodyFamily::Cso2?"CSO2_BipM ":"Bip01 ";}
+inline std::string bodyFingerSeparator(BodyFamily family){return family==BodyFamily::Source||family==BodyFamily::DirtyBomb||family==BodyFamily::BlackSquad?"_":" ";}
 inline bool sharedBodyBindCompatible(const Skeleton& a,const Skeleton& b){
     if(a.bones.size()!=b.bones.size())return false;
     for(std::size_t i=0;i<a.bones.size();++i){const auto& x=a.bones[i];const auto& y=b.bones[i];
@@ -80,11 +109,26 @@ inline bool sharedBodyAssemblyCompatible(const CastScene& a,const CastScene& b){
     const auto family=bodyLayout(a.skeleton).family;
     return family!=BodyFamily::None&&family==bodyLayout(b.skeleton).family&&checkDirection(a,b)&&checkDirection(b,a);
 }
+// Compare only the incoming body's deform ancestry. An assembled target may
+// already contain weapons and other variants; those must not force a new bind.
+inline bool bodyNeedsIndependentBind(const Skeleton& target,const CastScene& source){
+    std::vector<bool> required(source.skeleton.bones.size());
+    for(const auto& mesh:source.meshes)if(mesh.skinned)for(const auto& v:mesh.vertices)for(std::size_t k=0;k<v.weights.size();++k)if(v.weights[k]>0){
+        auto b=static_cast<int>(v.bones[k]);for(std::size_t depth=0;depth<required.size()&&b>=0&&static_cast<std::size_t>(b)<required.size();++depth){if(required[b])break;required[b]=true;b=source.skeleton.bones[b].parent;}
+    }
+    for(std::size_t i=0;i<required.size();++i)if(required[i]){
+        const auto& b=source.skeleton.bones[i];const auto index=nativeBodyBone(target,b.name);if(index<0)return true;const auto& t=target.bones[index];
+        if((b.parent<0)!=(t.parent<0))return true;
+        if(b.parent>=0&&source.skeleton.bones[b.parent].name!=target.bones[t.parent].name)return true;
+        for(std::size_t k=0;k<16;++k)if(!std::isfinite(b.restGlobal.v[k])||!std::isfinite(t.restGlobal.v[k])||std::abs(b.restGlobal.v[k]-t.restGlobal.v[k])>1e-4f||std::abs(b.inverseBind.v[k]-t.inverseBind.v[k])>1e-4f)return true;
+    }return false;
+}
 // Full-body only. Source-family CAST exports retain inches and -Y facing,
 // unlike their +X-normalized viewmodels. Cadence/CoD world bodies use cm/+X.
 inline bool normalizeSourceBody(CastScene& s){
-    if(!sourceBodyFamily(bodyLayout(s.skeleton).family)||s.importedTranslationScale!=1.f)return false;
-    constexpr float scale=2.54f;const auto q=fromEulerRadians({0,0,kPi*.5f});const auto basis=rotation(q),inverseBasis=inverseAffine(basis);
+    const bool source2=bodyLayout(s.skeleton).family==BodyFamily::Source2;
+    if((!sourceBodyFamily(bodyLayout(s.skeleton).family)&&!source2)||s.importedTranslationScale!=1.f)return false;
+    constexpr float scale=2.54f;const auto q=fromEulerRadians({0,0,source2?0.f:kPi*.5f});const auto basis=rotation(q),inverseBasis=inverseAffine(basis);
     for(auto& mesh:s.meshes){for(auto& v:mesh.vertices){v.position=transformPoint(basis,v.position*scale);v.normal=transformPoint(basis,v.normal);}for(int k=12;k<=14;++k)mesh.modelTransform.v[k]*=scale;mesh.modelTransform=basis*mesh.modelTransform*inverseBasis;}
     for(auto& bone:s.skeleton.bones){bone.restLocal.position=bone.restLocal.position*scale;bone.absoluteTranslationOffset=bone.absoluteTranslationOffset*scale;
         for(int k=12;k<=14;++k)bone.restGlobal.v[k]*=scale;bone.restGlobal=basis*bone.restGlobal;bone.inverseBind=inverseAffine(bone.restGlobal);
@@ -95,17 +139,24 @@ inline bool normalizeSourceBody(CastScene& s){
 // foreign CoD clips. Exported animation roots already face +X (unlike their
 // -Y model bind); applying the model basis again turns movement sideways.
 inline void normalizeSourceBodyAnimations(CastScene& s,std::size_t first){
-    if(!sourceBodyFamily(bodyLayout(s.skeleton).family)||std::abs(s.importedTranslationScale-2.54f)>.0001f)return;
+    if((!sourceBodyFamily(bodyLayout(s.skeleton).family)&&bodyLayout(s.skeleton).family!=BodyFamily::Source2)||std::abs(s.importedTranslationScale-2.54f)>.0001f)return;
     constexpr float scale=2.54f;
     const auto layout=bodyLayout(s.skeleton);
     const int goldRoot=layout.family==BodyFamily::GoldSrc?nativeBodyBone(s.skeleton,"Bip01"):-1;
     const float rootHeight=goldRoot>=0?s.skeleton.bones[goldRoot].restLocal.position.z:0.f;
     for(std::size_t a=first;a<s.animations.size();++a){if(s.animations[a].coldWarWorldPose)continue;
+        // GoldSrc player animations are relative to the entity hull centre.
+        // PM_Duck lowers that centre by 18 native units (standing mins -36,
+        // duck mins -18). Cadence's actor origin stays at the feet, so restore
+        // the posture's origin here, not the standing origin for every clip.
+        // ValveSoftware/halflife pm_shared/pm_shared.c, PM_Duck. This changes
+        // root placement only: no limb lengths, scales or rotations are fitted.
+        const float postureHeight=rootHeight-(goldRoot>=0&&s.animations[a].stance==Stance::Crouch?18.f*scale:0.f);
         for(auto& track:s.animations[a].tracks)if(track.property==TrackProperty::TranslationX||track.property==TrackProperty::TranslationY||track.property==TrackProperty::TranslationZ){
             // GoldSrc animation roots are relative to the model's standing
             // root elevation. Separate exported helper roots share that origin.
             const bool restoreHeight=goldRoot>=0&&track.boneIndex<s.skeleton.bones.size()&&s.skeleton.bones[track.boneIndex].parent<0&&track.property==TrackProperty::TranslationZ&&track.mode==TrackMode::Absolute;
-            for(auto& value:track.scalarValues)value=value*scale+(restoreHeight?rootHeight:0.f);
+            for(auto& value:track.scalarValues)value=value*scale+(restoreHeight?postureHeight:0.f);
         }
     }
 }
@@ -117,13 +168,48 @@ inline std::vector<bool> nativeBodyTorsoMask(const Skeleton& s){
             if(p==layout.spine){result[b]=true;break;}p=s.bones[p].parent;}}
     return result;
 }
+inline bool classifyDewBodyAnimation(Animation& clip){
+    const auto semantic=assets::imported::dewBodySemantic(clip.sourceName,clip.name);
+    if(semantic.empty())return false;
+    classifyAnimationName(semantic,clip);
+    // The native graph exports omit lo on gait cycles. Runtime stops a
+    // non-looping clip at its final frame; known locomotion must cycle.
+    if(clip.action==ActionRole::None&&(clip.motion==MotionRole::Idle||clip.motion==MotionRole::Walk||clip.motion==MotionRole::Run))clip.looping=true;
+    if(clip.action!=ActionRole::None){clip.motion=MotionRole::Unknown;clip.looping=false;}
+    return true;
+}
+inline bool usesNativeHoldingTorso(std::string_view game){return game=="cs1.6"||game=="cz"||game=="cscz"||game=="cso2";}
+inline void classifyNativeGaitLayer(const Skeleton& skeleton,Animation& clip){
+    if(clip.sourceGame!="cso2"||clip.domain!=AnimationDomain::PlayerBody||clip.action!=ActionRole::None||
+       (clip.motion!=MotionRole::Idle&&clip.motion!=MotionRole::Walk&&clip.motion!=MotionRole::Run))return;
+    const auto layout=bodyLayout(skeleton);if(layout.family!=BodyFamily::Cso2)return;
+    for(const auto& track:clip.tracks)for(int side=0;side<2;++side)
+        if(static_cast<int>(track.boneIndex)==layout.thigh[side]||static_cast<int>(track.boneIndex)==layout.knee[side]||static_cast<int>(track.boneIndex)==layout.foot[side])return;
+    // Some normalized pb_ clips are weapon-posture layers, not complete gaits.
+    // Inspect the native channels before dense retarget support obscures ownership.
+    if(!clip.tracks.empty())clip.domain=AnimationDomain::PlayerTorso;
+}
+inline MotionRole holdingTorsoMotion(std::string_view game,MotionRole base){return game=="cso2"?base:MotionRole::Idle;}
+inline bool isNativeHoldingTorso(const Animation& clip){
+    if(clip.sourceGame=="cso2")return clip.domain==AnimationDomain::PlayerTorso&&clip.action==ActionRole::None&&(clip.motion==MotionRole::Idle||clip.motion==MotionRole::Walk||clip.motion==MotionRole::Run);
+    const auto native=assets::imported::nativeBodyAction(clip.sourceGame,clip.sourceName);
+    return native&&native->semantic.ends_with("_idle")&&clip.domain==AnimationDomain::PlayerTorso&&clip.action==ActionRole::None;
+}
 inline bool classifySourceBodyAnimation(Animation& clip){
     auto name=clip.sourceName;for(auto& c:name)c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    // Retain sourceName for replay/editor identity, classify only the label.
+    const auto native=assets::imported::nativeBodyAction(clip.sourceGame,name);
+    if(native)name=native->semantic;
     if(const auto slash=name.find_last_of("/\\");slash!=std::string::npos)name.erase(0,slash+1);
     if(name.ends_with(".cast"))name.resize(name.size()-5);
     if(!name.starts_with("pb_")&&!name.starts_with("pt_"))return false;
     if(const auto suffix=name.rfind("_clip");suffix!=std::string::npos&&suffix+5<name.size()&&std::all_of(name.begin()+suffix+5,name.end(),[](char c){return c>='0'&&c<='9';}))name.resize(suffix);
     classifyAnimationName(name,clip);
+    if(native&&native->semantic.ends_with("_idle")){
+        clip.domain=AnimationDomain::PlayerTorso;clip.action=ActionRole::None;
+        clip.motion=MotionRole::Idle;clip.looping=true;clip.contextual=false;
+        return true;
+    }
     const auto has=[&](std::string_view token){return name.find("_"+std::string(token)+"_")!=std::string::npos||name.ends_with("_"+std::string(token));};
     if(has("death")){clip.domain=AnimationDomain::PlayerBody;clip.action=ActionRole::Death;clip.motion=MotionRole::Unknown;clip.looping=false;}
     else for(const auto& action:{std::pair{"reload",ActionRole::Reload},std::pair{"fire",ActionRole::Fire},std::pair{"melee",ActionRole::Melee},std::pair{"flinch",ActionRole::Flinch},std::pair{"aim",ActionRole::Aim}})if(has(action.first)){
@@ -134,6 +220,9 @@ inline bool classifySourceBodyAnimation(Animation& clip){
 // Socket aliases are resolved on demand only. Never insert these names into
 // boneByCanonicalName: that would let unrelated CoD local curves bind directly.
 inline std::optional<std::size_t> nativeSocket(const Skeleton& s,std::string_view semantic){
+    if(bodyLayout(s).family==BodyFamily::Source2&&(semantic=="tag_weapon_right"||semantic=="tag_weapon_left")){
+        const auto i=nativeBodyBone(s,semantic=="tag_weapon_right"?"hand_R":"hand_L");if(i>=0)return static_cast<std::size_t>(i);
+    }
     std::string_view name;
     if(semantic=="tag_weapon_right")name="dew2cast_socket__right_hand__0";
     else if(semantic=="tag_weapon_left")name="dew2cast_socket__left_hand__0";

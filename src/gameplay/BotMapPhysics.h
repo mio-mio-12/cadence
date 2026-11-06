@@ -1,7 +1,17 @@
 #pragma once
 #include "gameplay/BotActor.h"
+#include "gameplay/PlayerMapMovement.h"
 
 namespace gameplay::bot {
+template<class Map> bool usesFootprintSupport(const Actor& actor,const Map& map){
+    if constexpr(requires {static_cast<const scene::glb::Map&>(map);})return rectangularCollision(actor);
+    return false;
+}
+template<class Map> std::optional<float> footprintSupport(const Actor& actor,const Map& map,scene::Vec3 position,float distance){
+    if constexpr(requires {static_cast<const scene::glb::Map&>(map);})
+        return movement::playerSupport(static_cast<const scene::glb::Map&>(map),position,actor.collisionHalfExtents,collisionHeight(actor),distance);
+    return {};
+}
 // Corpses cannot step onto overhead lips or snap to the legacy ground fallback.
 // Keep the ordinary living-bot/player traversal policy independent.
 template<class Map> void stepCorpseOnMap(Actor& actor,float delta,const Map& map){
@@ -12,11 +22,12 @@ template<class Map> void stepCorpseOnMap(Actor& actor,float delta,const Map& map
         const auto old=actor.position;
         actor.velocity.z-=iw::kGravity*dt;
         const auto proposed=old+actor.velocity*dt;
-        auto resolved=map.constrainMove(old,proposed,scene::course::kPlayerRadius,iw::worldUnits(72),0.f,nullptr);
+        auto resolved=constrainActorMove(map,actor,old,proposed,0.f,nullptr);
         if(resolved.z>std::max(old.z,proposed.z)+.1f)resolved={old.x,old.y,proposed.z};
         // Only a floor actually crossed during this step may arrest a fall.
-        resolved.z=proposed.z;
-        const float ground=map.navigationGroundHeight(resolved.x,resolved.y,std::max(old.z,proposed.z)+.1f-45.f,noGround,scene::course::kPlayerRadius*.55f);
+        const bool fullFootprint=usesFootprintSupport(actor,map);
+        if(!fullFootprint)resolved.z=proposed.z;
+        const float ground=fullFootprint?footprintSupport(actor,map,resolved,.1f).value_or(noGround):map.navigationGroundHeight(resolved.x,resolved.y,std::max(old.z,proposed.z)+.1f-45.f,noGround,scene::course::kPlayerRadius*.55f);
         if(ground>noGround*.5f&&actor.velocity.z<=0&&old.z>=ground-.1f&&resolved.z<=ground+.1f){resolved.z=ground;actor.velocity={};actor.grounded=true;}
         actor.position=resolved;
     }
@@ -25,7 +36,7 @@ template<class Map> void stepCorpseOnMap(Actor& actor,float delta,const Map& map
 // Separate entry point leaves Classic's movement behavior unchanged.
 template<class Map> void stepOnMap(Actor& actor,float delta,float moveScale,const Map& map){
     constexpr float tick=1.0f/125.0f,radius=scene::course::kPlayerRadius;
-    const float height=iw::worldUnits(actor.stance==scene::Stance::Stand?72:actor.stance==scene::Stance::Crouch?40:20);
+    const float height=collisionHeight(actor);
     constexpr float stepHeight=scene::course::kStepHeight;
     constexpr float noGround=-1.e20f;
     actor.fixedPresentationThisUpdate=true;actor.physicsDeltaThisUpdate=0;
@@ -54,27 +65,30 @@ template<class Map> void stepOnMap(Actor& actor,float delta,float moveScale,cons
         // The legacy map solver adds 25% step tolerance. Keep real ascent at
         // the configured step height here, and disallow airborne auto-stepping.
         const auto proposed=old+actor.velocity*tick;
-        actor.position=map.constrainMove(old,proposed,radius,height,wasGrounded?stepHeight/1.25f:0.f,&contact);
+        actor.position=constrainActorMove(map,actor,old,proposed,wasGrounded?stepHeight/1.25f:0.f,&contact);
         // Legacy constrainMove has an additional ground-query allowance and
         // can propose an ascent taller than the real step limit. Such a rise
         // must be an explicit mantle, never an invisible auto-step onto a sill.
         if(actor.position.z>old.z+(wasGrounded?stepHeight:std::max(0.f,proposed.z-old.z))+.1f){
-            actor.position=map.constrainMove(old,proposed,radius,height,0.f,&contact);
+            actor.position=constrainActorMove(map,actor,old,proposed,0.f,&contact);
             if(actor.position.z>old.z+(wasGrounded?stepHeight:std::max(0.f,proposed.z-old.z))+.1f)actor.position={old.x,old.y,proposed.z};
         }
         // Never let a step candidate teleport a falling body down to a ledge.
-        if(actor.position.z<proposed.z)actor.position.z=proposed.z;
+        if(!rectangularCollision(actor)&&actor.position.z<proposed.z)actor.position.z=proposed.z;
+        if(rectangularCollision(actor)&&contact.z<-.05f&&actor.velocity.z>0)actor.velocity.z=0;
         // The map query adds a historical 45-unit ceiling allowance. Cancel
         // that allowance so an overlaid lip above a falling body's feet cannot
         // hide the lower floor that the body actually crosses this tick.
         const float groundCeiling=wasGrounded?old.z+stepHeight:std::max(old.z,actor.position.z)+.1f;
-        const float ground=map.navigationGroundHeight(actor.position.x,actor.position.y,groundCeiling-45.f,noGround,radius*.55f);
+        const bool fullFootprint=usesFootprintSupport(actor,map);
+        const float supportDistance=wasGrounded&&actor.velocity.z<=0?stepHeight:.1f;
+        const float ground=fullFootprint?footprintSupport(actor,map,actor.position,supportDistance).value_or(noGround):map.navigationGroundHeight(actor.position.x,actor.position.y,groundCeiling-45.f,noGround,radius*.55f);
         const bool hasGround=ground>noGround*.5f;
         // Steering arcs and reaction travel can deviate from a validated path.
         // Do not walk off unsupported ground; deliberate jumps remain airborne
         // and short, supported route drops are allowed.
         if(wasGrounded&&(!hasGround||ground<old.z-iw::worldUnits(128))){
-            const float oldGround=map.navigationGroundHeight(old.x,old.y,old.z+.1f-45.f,noGround,radius*.55f);
+            const float oldGround=fullFootprint?footprintSupport(actor,map,old,.1f).value_or(noGround):map.navigationGroundHeight(old.x,old.y,old.z+.1f-45.f,noGround,radius*.55f);
             if(oldGround>noGround*.5f&&std::abs(oldGround-old.z)<=2.f){
                 actor.position=old;actor.velocity={};actor.grounded=true;actor.groundGrace=.12f;continue;
             }
@@ -82,7 +96,8 @@ template<class Map> void stepOnMap(Actor& actor,float delta,float moveScale,cons
         const bool landing=hasGround&&actor.velocity.z<=0&&old.z>=ground-.1f&&actor.position.z<=ground+.1f;
         const bool stepping=hasGround&&wasGrounded&&ground>=old.z&&ground-old.z<=stepHeight+.1f&&actor.position.z<=ground+.1f;
         const bool supported=hasGround&&wasGrounded&&actor.velocity.z<=0&&std::abs(old.z-ground)<=3.f&&actor.position.z<=ground+3.f;
-        actor.grounded=landing||stepping||supported;
+        const bool footprintStepDown=fullFootprint&&hasGround&&wasGrounded&&actor.velocity.z<=0&&actor.position.z-ground<=stepHeight+.1f;
+        actor.grounded=landing||stepping||supported||footprintStepDown;
         if(actor.grounded){actor.position.z=ground;actor.velocity.z=0;actor.groundGrace=.12f;}else actor.groundGrace=std::max(0.f,actor.groundGrace-tick);
         if(scene::length(contact)>0.1f){contact.z=0;const float n=scene::length(contact);if(n>.1f){contact=contact/n;const float into=scene::dot(actor.velocity,contact);if(into<0)actor.velocity=actor.velocity-contact*into;}}
     }

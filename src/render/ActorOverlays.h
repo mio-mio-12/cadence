@@ -22,7 +22,7 @@ struct ActorOverlaySettings {
   for(auto* c:{&visible,&hidden,&edge,&motion,&hit,&box})for(auto* x:{&c->x,&c->y,&c->z,&c->w})clamp(*x,0,1,1);
  }
 };
-struct ActorOverlayInput {std::uint64_t id{};float health{100};bool airborne{},sliding{};};
+struct ActorOverlayInput {std::uint64_t id{};float health{100};bool airborne{},sliding{},exclude{};};
 struct ActorTrailSample {double time{};scene::Vec3 root{};bool airborne{},sliding{};std::vector<scene::Mat4> pose;};
 struct ActorTrailState {
  std::deque<ActorTrailSample> samples;

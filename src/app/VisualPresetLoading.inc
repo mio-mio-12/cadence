@@ -1,6 +1,15 @@
 // Resource uploads are deferred until the entire settings stream is valid.
 struct VisualPresetResources {bool sky{},lut{},impactSurface{},impactBot{},weaponFx{},visualImages{};};
 void copyVisualPresetSettings(AppState& to,const AppState& from){
+    to.nativeReShade=from.nativeReShade;
+    to.killer7Deaths=from.killer7Deaths;
+    to.heavenSmileKeepDeathAnimations=from.heavenSmileKeepDeathAnimations;
+    to.heavenSmileColor=from.heavenSmileColor;
+    to.heavenSmileBloodStreams=from.heavenSmileBloodStreams;
+    to.experimentalWeaponTurning=from.experimentalWeaponTurning;
+    to.weaponTurningHipMultiplier=from.weaponTurningHipMultiplier;
+    to.weaponTurningAdsMultiplier=from.weaponTurningAdsMultiplier;
+    to.weaponTurn={};
     map_alphaValues(to)=map_alphaValues(from);
     hitmarker_shapeValues(to)=hitmarker_shapeValues(from);
     hitmarker_colorsValues(to)=hitmarker_colorsValues(from);
@@ -49,6 +58,7 @@ void copyVisualPresetSettings(AppState& to,const AppState& from){
     to.boostFallback=from.boostFallback;
     to.bulletTrailTexturePath=from.bulletTrailTexturePath;
     to.cameraControls=from.cameraControls;
+    to.metalShader=from.metalShader;
     to.csgoCrosshairHorizontalSpacing=from.csgoCrosshairHorizontalSpacing;
     to.csgoCrosshairMarkLength=from.csgoCrosshairMarkLength;
     to.csgoCrosshairMarkOffset=from.csgoCrosshairMarkOffset;
@@ -180,13 +190,16 @@ void copyVisualPresetSettings(AppState& to,const AppState& from){
     to.weaponCubemapBlur=from.weaponCubemapBlur;
     to.worldCubemapMultiplier=from.worldCubemapMultiplier;
     crosshairValues(to)=crosshairValues(from);
+    to.crosshairHideWhileAds=from.crosshairHideWhileAds;
     actorOverlayValues(to)=actorOverlayValues(from);
     weapon_flashValues(to)=weapon_flashValues(from);
     weapon_smokeValues(to)=weapon_smokeValues(from);
     weapon_trailsValues(to)=weapon_trailsValues(from);
 }
-bool parseVisualPreset(AppState& app,std::istream& in,VisualPresetResources& resources){std::string signature,key;int version{};if(!(in>>signature>>version)||signature!="CASTVISUAL"||version<1||version>5)return false;app.weaponSunMultiplier=app.weaponAmbientMultiplier=1.f;app.rain={};app.weather={};app.wet={};app.muzzleLight={};app.actorOverlays={};app.cameraControls={};app.volumetric={};app.dayNight={};app.nightSky={};app.hbao={};app.dof={};app.viewmodelCubemapMultiplier=app.worldCubemapMultiplier=1.f;while(true){if(in.fail())return false;if(in.eof())break;in>>std::ws;if(in.eof())break;if(!(in>>key))return false;if(key=="crosshair"){if(!readVisualValues(in,crosshairValues(app)))return false;continue;}
+bool parseVisualPreset(AppState& app,std::istream& in,VisualPresetResources& resources){std::string signature,key;int version{};if(!(in>>signature>>version)||signature!="CASTVISUAL"||version<1||version>5)return false;app.nativeReShade={};app.metalShader={};app.weaponSunMultiplier=app.weaponAmbientMultiplier=1.f;app.rain={};app.weather={};app.wet={};app.muzzleLight={};app.actorOverlays={};app.cameraControls={};app.volumetric={};app.dayNight={};app.nightSky={};app.hbao={};app.dof={};app.viewmodelCubemapMultiplier=app.worldCubemapMultiplier=1.f;while(true){if(in.fail())return false;if(in.eof())break;in>>std::ws;if(in.eof())break;if(!(in>>key))return false;if(key=="crosshair"){if(!readVisualValues(in,crosshairValues(app)))return false;continue;}
 bool extended=false,valid=true;
+if(key=="reshade_native"){if(!(in>>app.nativeReShade.enabled>>std::quoted(app.nativeReShade.preset)))return false;app.nativeReShade.preset=std::filesystem::path(app.nativeReShade.preset).filename().string();continue;}
+if(key=="crosshair_hide_ads"){if(!(in>>app.crosshairHideWhileAds))return false;continue;}
 forEachExtendedVisualGroup(app,[&](const char* name,auto values){if(key==name){extended=true;valid=readVisualValues(in,values);}});
 if(extended){if(!valid)return false;continue;}
 if(key=="visual_images"){
@@ -212,6 +225,9 @@ if(key=="muzzle_light_v1"){if(!(in>>app.muzzleLight))return false;continue;}
 if(key=="star_rotation"){if(!(in>>app.dayNight.starAutoRotate>>app.dayNight.starRotationSpeed))return false;continue;}
 if(key=="day_night"){if(!(in>>app.dayNight))return false;continue;}
 if(key=="actor_overlays"){if(!readVisualValues(in,actorOverlayValues(app)))return false;app.actorOverlays.sanitize();continue;}
+if(key=="weapon_turning"){if(!(in>>app.experimentalWeaponTurning>>app.weaponTurningHipMultiplier>>app.weaponTurningAdsMultiplier)||!std::isfinite(app.weaponTurningHipMultiplier)||!std::isfinite(app.weaponTurningAdsMultiplier))return false;continue;}
+if(key=="heaven_smile"){if(!(in>>app.killer7Deaths>>app.heavenSmileKeepDeathAnimations>>app.heavenSmileColor.x>>app.heavenSmileColor.y>>app.heavenSmileColor.z)||!std::isfinite(app.heavenSmileColor.x)||!std::isfinite(app.heavenSmileColor.y)||!std::isfinite(app.heavenSmileColor.z))return false;continue;}
+if(key=="heaven_smile_streams"){if(!(in>>app.heavenSmileBloodStreams))return false;continue;}
 if(key=="weapon_flash"){if(!readVisualValues(in,weapon_flashValues(app)))return false;continue;}
 if(key=="weapon_smoke"){if(!readVisualValues(in,weapon_smokeValues(app)))return false;continue;}
 if(key=="weapon_trails"){if(!readVisualValues(in,weapon_trailsValues(app)))return false;continue;}if(key=="weapon_fx_images"){
@@ -230,8 +246,7 @@ bool applyVisualPresetSettings(AppState& app,const AppState& settings,const Visu
     if(resources.sky){
         const auto& sky=staged->environmentPath;
         if(sky.empty())app.renderer.clearEnvironment();
-        else {std::string error;const bool ok=lowerText(sky.extension().string())==".iwi"?
-            app.renderer.setT6SkyboxIwi(sky,error):app.renderer.setEnvironmentPanorama(sky,error);
+        else {std::string error;const bool ok=app.renderer.setEnvironmentPanorama(sky,error);
             if(!ok)return false;}
     }
     copyVisualPresetSettings(app,*staged);
@@ -276,6 +291,7 @@ bool applyVisualPresetSettings(AppState& app,const AppState& settings,const Visu
 bool loadVisualPreset(AppState& app,const std::filesystem::path& path){
     std::ifstream in(path);if(!in)return false;
     auto staged=std::make_unique<AppState>();copyVisualPresetSettings(*staged,app);
+    staged->crosshairHideWhileAds=true; // Legacy files use the default, not the previous preset's override.
     VisualPresetResources resources;
     if(!parseVisualPreset(*staged,in,resources))return false;
     return applyVisualPresetSettings(app,*staged,resources);

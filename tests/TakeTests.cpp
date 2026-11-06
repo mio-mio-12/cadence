@@ -1,6 +1,7 @@
 #include "take/Take.h"
 #include "take/DollyCamera.h"
 #include "take/PoseInterpolation.h"
+#include "take/TrimHistory.h"
 
 #include <cmath>
 #include <filesystem>
@@ -123,6 +124,13 @@ int main(){
     failures+=!expect(restored.samples[0].pose[0].v==neutral.samples[0].pose[0].v,"neutral poses round-trip unchanged");
     restored.clear();failures+=!expect(!restored.neutralGunPosition,"clear resets pose semantics");
     failures+=!expect(take::save(original,path,error)&&take::load(path,restored,error)&&!restored.neutralGunPosition,"legacy poses retain baked-mount semantics");
+    auto revised=original;revised.actor.baseModel="exports/dirtybomb/models/hands.cast";
+    failures+=!expect(take::save(revised,path,error)&&fileVersion()==17,"revised import conventions use v17");
+    failures+=!expect(take::load(path,restored,error)&&restored.actor.importRevision==1&&!restored.neutralGunPosition,"v17 retains import and baked pose conventions independently");
+    revised.neutralGunPosition=true;
+    failures+=!expect(take::save(revised,path,error)&&take::load(path,restored,error)&&restored.neutralGunPosition,"v17 neutral mount round trip");
+    revised.actor.importRevision=0;
+    failures+=!expect(take::save(revised,path,error)&&fileVersion()==16&&take::load(path,restored,error)&&restored.actor.importRevision==0,"legacy import convention survives resaving");
     std::filesystem::resize_file(path,40);
     failures+=!expect(!take::load(path,restored,error),"truncated new-format take rejected");
     visible.samples[0].visibility=255;
@@ -131,6 +139,23 @@ int main(){
     failures+=!expect(!take::save(assembled,path,error),"invalid bot mesh variant rejected");
     auto invalid=three;invalid.samples.back().weaponSlot=3;
     failures+=!expect(!take::save(invalid,path,error)&&three.bonesForSlot(3)==0,"out-of-range slots rejected instead of clamped");
+    {
+        take::Take edited;edited.sampleRate=60;
+        for(int i=0;i<8;++i){take::Sample s;s.time=float(i)/60;s.weaponSlot=i%3;s.pose.push_back(scene::translation({float(i),0,0}));edited.samples.push_back(std::move(s));}
+        // Duplicate timestamps are legal in legacy takes; trim uses indices,
+        // not a float search that would retain the adjoining duplicate.
+        edited.samples[1].time=edited.samples[2].time;
+        take::ShotEvent shot;shot.time=edited.samples[1].time;edited.shots.push_back(shot);
+        edited.dollyCamera.push_back({1});edited.cameraPaths.push_back({"path",{{2},{6}}});
+        const auto initial=edited;const auto* retained=edited.samples[2].pose.data();
+        take::TrimHistory history;
+        failures+=!expect(!history.apply(edited,0,7)&&!history.apply(edited,5,4)&&history.empty(),"no-op and inverted tick trims rejected");
+        failures+=!expect(history.apply(edited,2,6)&&edited.samples.size()==5&&edited.samples.front().pose.data()==retained&&edited.samples.front().time==0&&history.removedTicks()==3,"tick trim uses inclusive indices and moves poses");
+        failures+=!expect(history.apply(edited,1,1)&&edited.samples.size()==1&&history.removedTicks()==7,"trim to one tick");
+        failures+=!expect(history.undo(edited)&&history.undo(edited)&&history.empty()&&edited.samples.size()==8&&edited.samples[2].pose.data()==retained,"multiple undo restores original poses without copying");
+        for(std::size_t i=0;i<edited.samples.size();++i)failures+=!expect(edited.samples[i].time==initial.samples[i].time&&edited.samples[i].weaponSlot==initial.samples[i].weaponSlot,"undo preserves exact timestamps and slot indices");
+        failures+=!expect(edited.shots.size()==1&&edited.shots[0].time==shot.time&&edited.dollyCamera[0].tick==1&&edited.cameraPaths[0].keyframes.size()==2,"undo restores shots and camera tracks");
+    }
     std::filesystem::remove(path,ignored);
     if(!failures)std::cout<<"All take tests passed.\n";return failures?1:0;
 }

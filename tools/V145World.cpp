@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #include "scene/CodmWorldWeapon.h"
 #include "scene/PointBlankNative.h"
 #include "app/WorldWeaponAssembly.h"
@@ -9,7 +8,7 @@
 #include <iostream>
 #include <fstream>
 int main(){
- const std::filesystem::path root=cadence::local_assets::exportPath(""),out="diagnostics/v145";
+ const std::filesystem::path root="exported_files",out="diagnostics/v145";
  std::filesystem::create_directories(out);std::ofstream log(out/"world-models.txt");
  auto bo=scene::buildScene(cast::Document::load(root/"bo2/models/playermodels/isa/c_usa_mp_isa_assault_fb/c_usa_mp_isa_assault_fb_LOD0.cast"));
  auto pb=scene::buildScene(cast::Document::load(root/"pointblank/models/playermodels/SWAT/playermode_SWAT_Male_fb/playermode_SWAT_Male_fb.cast"));

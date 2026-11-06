@@ -9,6 +9,16 @@ bool near(Vec3 a,Vec3 b){return length(a-b)<.001f;}
 }
 int main(int argc,char** argv){int failures{};const auto check=[&](bool ok,const char* m){if(!ok){std::cerr<<m<<'\n';++failures;}};
     auto donor=hand(translation({10,20,100})),target=hand(translation({-30,40,150})*rotation(fromEulerRadians({.2f,.3f,1.f})));
+    {auto aliased=target;aliased.boneByName.clear();
+     for(size_t i=0;i<aliased.bones.size();++i){auto& b=aliased.bones[i];aliased.boneByCanonicalName[b.name]=i;b.name="native_body_"+std::to_string(i);aliased.boneByName[b.name]=i;}
+     const auto before=aliased.boneByCanonicalName;
+     const auto expected=imported::world_grip::palmFrame(target,imported::world_grip::restPose(target));
+     const auto actual=imported::world_grip::palmFrame(aliased,imported::world_grip::restPose(aliased));
+     check(expected&&actual&&expected->v==actual->v,"native body semantic palm gives same world grip frame");
+     check(before==aliased.boneByCanonicalName,"world grip lookup leaves aliases unchanged");
+     aliased.boneByCanonicalName["j_missing"]=aliased.bones.size();
+     check(imported::world_grip::bone(aliased,{"j_missing"})==-1,"out of range world grip alias rejected");
+    }
     CastScene world;add(world.skeleton,"tag_weapon",{2,0,0});
     CastScene view;view.skeleton=donor;
     Mesh gun;gun.name="weapon/test";gun.vertices.resize(3);gun.indices={0,1,2};
@@ -56,6 +66,33 @@ int main(int argc,char** argv){int failures{};const auto check=[&](bool ok,const
         check(std::abs(length(transformPoint(m,{20,20,100})-transformPoint(m,{10,20,100}))-25.4f)<.001f,"placeholder units applied once");}
     std::string error;auto mount=imported::world_grip::fromNativeSocket("bo2",world,donor,imported::world_grip::restPose(donor),target,error);
     {
+        Skeleton legacy;add(legacy,"j_wrist_ri",{20,-47,112});add(legacy,"tag_weapon_right",{27,-72,99});
+        auto recipient=target;
+        const auto complete=[](Skeleton& rig){
+            for(const char* name:{"j_mainroot","j_spinelower","j_head","j_shoulder_le","j_shoulder_ri","j_elbow_le","j_elbow_ri","j_wrist_le","j_hip_le","j_hip_ri","j_knee_le","j_knee_ri","j_ankle_le","j_ankle_ri"})add(rig,name,{});
+            for(size_t i=0;i<rig.bones.size();++i)rig.boneByCanonicalName[rig.bones[i].name]=i;
+        };
+        complete(legacy);complete(recipient);
+        const auto animated=translation({3,8,-2})*rotation(fromEulerRadians({.1f,.4f,-.7f}));
+        auto pose=imported::world_grip::restPose(legacy);for(auto& p:pose)p=animated*p;
+        const auto converted=imported::world_grip::fromNativeSocket("mw",world,legacy,pose,recipient,error);
+        check(converted.has_value(),"fingerless CoD body keeps its authored wrist/socket registration");
+        if(converted){
+            auto reference=legacy.bones[0].restGlobal;
+            for(int k:{12,13,14})reference.v[k]=recipient.bones[0].restGlobal.v[k];
+            const auto expected=reference*inverseAffine(pose[0])*pose[1]*inverseAffine(world.skeleton.bones[0].restGlobal);
+            const auto actual=recipient.bones[converted->bone].restGlobal*converted->transform;
+            for(size_t k=0;k<16;++k)check(std::abs(expected.v[k]-actual.v[k])<.001f,"fingerless socket follows body retarget wrist basis without arbitrary offsets");
+        }
+        legacy.boneByCanonicalName.erase("j_head");
+        check(!imported::world_grip::fromNativeSocket("mw",world,legacy,pose,recipient,error),"incomplete fingerless rig still rejected");
+    }
+    for(const auto game:{"mw","mw3","mwr","ghosts","aw","bo2_sp"}){
+        const auto converted=imported::world_grip::fromNativeSocket(game,world,donor,imported::world_grip::restPose(donor),target,error);
+        check(converted.has_value(),"CoD world socket conventions support imported target hands");
+        if(converted&&mount)for(int k=0;k<16;++k)check(std::abs(converted->transform.v[k]-mount->transform.v[k])<.001f,"same authored CoD sockets have same conversion without weapon-specific offsets");
+    }
+    {
         CastScene rifle;
         add(rifle.skeleton,"cs_hand_L.palm",{3,2,0});
         add(rifle.skeleton,"cs_hand_R.palm",{13,0,1});
@@ -75,6 +112,10 @@ int main(int argc,char** argv){int failures{};const auto check=[&](bool ok,const
             check(std::abs(length(support-trigger)-length(Vec3{10,-2,1})*2.54f)<.001f,"grip alignment preserves physical units");
         }
         const auto convention=imported::world_grip::deriveViewHoldConvention(held,heldPose);
+        {auto withMuzzle=originalRifle;withMuzzle.muzzleAnchors.push_back({2,{1,2,3},0});
+         const auto unchanged=imported::world_grip::fromViewHold(withMuzzle,sourcePose,held,2.54f,&held,heldPose,true);
+         check(unchanged&&mount&&unchanged->transform.v==mount->transform.v,"muzzle metadata cannot turn a body attachment socket into a barrel frame");
+         check(withMuzzle.muzzleAnchors.size()==1,"grip registration retains muzzle anchor for effects");}
         check(convention.has_value(),"compact hold convention derivable");
         if(convention)for(bool barrel:{false,true})for(bool rear:{false,true}){
             auto legacy=originalRifle,compact=originalRifle;if(barrel){legacy.muzzleAnchors.push_back({2,{},0});compact.muzzleAnchors=legacy.muzzleAnchors;}
@@ -85,6 +126,10 @@ int main(int argc,char** argv){int failures{};const auto check=[&](bool ok,const
         }
     }
     check(mount.has_value(),"native donor socket gives a mount");
+    {auto partial=target;partial.boneByName.erase("j_mid_ri_1");partial.boneByName.erase("j_pinky_ri_1");
+     const auto partialMount=imported::world_grip::fromNativeSocket("ghosts",world,donor,imported::world_grip::restPose(donor),partial,error);
+     bool same=mount&&partialMount;if(same)for(int k=0;k<16;++k)same=same&&std::abs(mount->transform.v[k]-partialMount->transform.v[k])<.001f;
+     check(same,"missing target palm landmarks preserve native mount for identical shared anatomy");}
     if(mount){const auto combined=target.bones[mount->bone].restGlobal*mount->transform;check(near(transformPoint(combined,{2,0,0}),transformPoint(target.bones.back().restGlobal,{})),"weapon socket matches anatomically transferred target socket");check(std::abs(length(transformPoint(combined,{12,0,0})-transformPoint(combined,{2,0,0}))-10)<.001f,"target body never resizes world weapon");}
     check(!imported::world_grip::fromNativeSocket("cs2",world,donor,imported::world_grip::restPose(donor),target,error),"CS2 is excluded");
     {

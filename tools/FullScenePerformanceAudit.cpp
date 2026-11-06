@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceProductionMain
 #include "../src/app/main.cpp"
 #undef main
@@ -21,7 +20,7 @@ int main(int argc,char** argv)try{
     ImGui_ImplGlfw_InitForOpenGL(window,true);ImGui_ImplOpenGL3_Init("#version 330");
     auto owner=std::make_unique<AppState>();auto& app=*owner;std::string error;app.window=window;
     CHECK(app.renderer.initialize(error));app.renderer.setGpuPassProfiling(profilePasses);
-    app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
+    app.defaultSalukiDirectory="exported_files";
     for(auto game:{"bo2","csnz","cso2"})CHECK(assets::appendScan(app.defaultSalukiDirectory/game,game,app.assetCatalog,error));
     const auto find=[&](std::string_view game,std::string_view name){for(std::size_t i=0;i<app.assetCatalog.entries.size();++i){const auto& a=app.assetCatalog.entries[i];if(a.game==game&&a.name==name)return i;}return SIZE_MAX;};
     CHECK(cadence::loadout_defaults::applyBo2TestingDefaults(app.assetCatalog,app.classPrimaryAsset,app.classSecondaryAsset,app.classViewhandsOverride,app.classFaction));

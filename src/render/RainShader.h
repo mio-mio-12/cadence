@@ -30,6 +30,8 @@ uniform vec2 uGustTime;
 uniform float uTurbulence,uSwirlSize,uSwirlRate,uGust,uGustRate,uMistAmount,uMistSize;
 uniform float uMistTime;
 uniform bool uWallMist;
+uniform bool uRainFast;
+uniform bool uCombineMist;
 out vec2 vUV;out vec3 vWorld;out float vAlpha;out float vAge;out float vSeed;
 flat out int vMode;
 const vec2 corners[6]=vec2[6](vec2(-1,-1),vec2(1,-1),vec2(1,1),vec2(-1,-1),vec2(1,1),vec2(-1,1));
@@ -58,6 +60,7 @@ vec3 trajectory(vec4 b,float z,float secondsBack){
 }
 void main(){
     int particle=gl_VertexID/6,group=particle/16,lane=group/uRainLayers,layer=group%uRainLayers,drop=particle%16;
+    if(uCombineMist&&drop==15){vAlpha=0.;vUV=vec2(0);vWorld=vec3(0);vAge=0.;vSeed=0.;vMode=3;gl_Position=vec4(2,2,2,1);return;}
     vec4 b=texelFetch(uLanes,ivec2(lane%256,(lane/256)*2),0);
     vec4 n=texelFetch(uLanes,ivec2(lane%256,(lane/256)*2+1),0);
     if(layer>0){b.w=hash(b.w*971.+float(layer)*13.17);if(drop>=12){vAlpha=0.;vUV=vec2(0);vWorld=vec3(0);vAge=0.;vSeed=0.;vMode=0;gl_Position=vec4(2,2,2,1);return;}}
@@ -85,6 +88,9 @@ void main(){
     if(dot(n.xyz,vec3(uSlope.xy,-1))>0.)n.xyz=-n.xyz;
     vUV=corners[gl_VertexID%6];vMode=drop<12?0:drop<14?drop-11:3;vSeed=b.w;
     float seed=hash(b.w*900.+float(drop));vAlpha=seed<max(0.,uDensity-float(layer))?1.:0.;vAge=0.;
+    // Density rejection is constant across all six vertices. Do not clip
+    // individual corners based on distance/contact fades later in the shader.
+    if(uRainFast&&vAlpha==0.){vWorld=vec3(0);gl_Position=vec4(2,2,2,1);return;}
     vec3 velocity=vec3(uSlope.xy,-1)*uSpeed;
     vec3 p;
     if(vMode==0){
@@ -142,6 +148,8 @@ uniform sampler2D uRainBackground;
 uniform vec4 uSplashDetail,uRefraction;
 uniform vec3 uAerosol;
 uniform bool uRefractive;
+uniform bool uRainFast;
+uniform bool uCombineMist;
 uniform vec2 uViewport,uRange;
 uniform vec3 uCamera,uTint,uLight,uSun,uFogColor;
 uniform float uOpacity,uNearFade,uSoftness,uBrightness,uFogStart,uFogHalf,uFogOpacity;
@@ -153,7 +161,12 @@ out vec4 color;
 float linear(float d){return uRange.x*uRange.y/max(.00001,uRange.y-d*(uRange.y-uRange.x));}
 float noise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);vec4 h=fract(sin(vec4(dot(i,vec2(127.1,311.7)),dot(i+vec2(1,0),vec2(127.1,311.7)),dot(i+vec2(0,1),vec2(127.1,311.7)),dot(i+vec2(1,1),vec2(127.1,311.7))))*43758.5453);return mix(mix(h.x,h.y,f.x),mix(h.z,h.w,f.x),f.y);}
 void main(){
+    // Evaluate the footprint before divergent rejection. Unresolved aerosol
+    // grain contributes exactly zero, so its procedural noise can be skipped.
+    vec2 grainUV=vUV*uAerosol.x+vec2(vSeed*71.,vAge*13.);
+    float resolved=1.-smoothstep(.4,1.5,max(length(dFdx(grainUV)),length(dFdy(grainUV))));
     if(vAlpha<.00001)discard;
+    if(uRainFast&&vMode==3&&dot(vUV,vUV)>=1.)discard;
     float d=texture(uDepth,gl_FragCoord.xy/uViewport).r;
     if(uForeground&&d<.0400001)discard;
     float gap=linear(d)-linear(gl_FragCoord.z);if(gap<0.)discard;
@@ -175,10 +188,10 @@ void main(){
         vec2 q=vUV*3.+vec2(vSeed*47.,vAge*2.);
         float detail=noise(q)*.6+noise(q*2.13+13.)*.3+noise(q*4.37)*.1;
         alpha*=pow(max(0.,1.-dot(vUV,vUV)),2.)*smoothstep(.15,.7,detail);
-        vec2 grainUV=vUV*uAerosol.x+vec2(vSeed*71.,vAge*13.);
-        float grain=clamp((noise(grainUV)-.5)*uAerosol.z+.5,0.,1.);
-        float resolved=1.-smoothstep(.4,1.5,max(length(dFdx(grainUV)),length(dFdy(grainUV))));
-        alpha*=mix(1.,grain,uAerosol.y*resolved);
+        if(!uRainFast||uAerosol.y*resolved!=0.){
+            float grain=clamp((noise(grainUV)-.5)*uAerosol.z+.5,0.,1.);
+            alpha*=mix(1.,grain,uAerosol.y*resolved);
+        }
     }
     if(alpha<.0001)discard;
     float glint=pow(max(0.,dot(normalize(uCamera-vWorld),-uSun)),8.);
@@ -194,7 +207,11 @@ void main(){
         refracted+=(texture(uRainBackground,target+vec2(blur.x,0)).rgb+texture(uRainBackground,target-vec2(blur.x,0)).rgb+texture(uRainBackground,target+vec2(0,blur.y)).rgb+texture(uRainBackground,target-vec2(0,blur.y)).rgb)*.15;
         radiance=mix(radiance,refracted,clamp(uRefraction.x,0.,1.));
     }
-    alpha=clamp(alpha,0.,.85);color=vec4(radiance*alpha,alpha);
+    alpha=clamp(alpha,0.,.85);
+    // Cards 14 and 15 have identical impact, shape, grain and radiance. Their
+    // consecutive premultiplied-over blends are a single a*(2-a) blend.
+    if(uCombineMist&&vMode==3)alpha=alpha*(2.-alpha);
+    color=vec4(radiance*alpha,alpha);
 }
 )GLSL";
 }

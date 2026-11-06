@@ -1,4 +1,3 @@
-#include "assets/LocalAssetPaths.h"
 #define main cadenceApplicationMain
 #include "../src/app/main.cpp"
 #undef main
@@ -13,7 +12,7 @@ int main(int argc,char** argv){
     auto* window=glfwCreateWindow(640,480,"Loading audit",nullptr,nullptr);if(!window)return 2;
     glfwMakeContextCurrent(window);glfwSwapInterval(0);
     auto state=std::make_unique<AppState>();auto& app=*state;std::string error;
-    app.window=window;app.defaultSalukiDirectory=cadence::local_assets::exportPath("");
+    app.window=window;app.defaultSalukiDirectory="exported_files";
     if(!app.renderer.initialize(error))return 3;
     if(argc>2&&std::string(argv[2])=="default"){
         const std::string game=argc>3?argv[3]:"bo2";

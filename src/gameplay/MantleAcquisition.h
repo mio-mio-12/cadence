@@ -3,6 +3,7 @@
 #include "scene/TestCourse.h"
 
 namespace gameplay::mantle {
+inline movement::Trace sweepRounded(const scene::glb::Map& map,scene::Vec3 start,scene::Vec3 end,scene::Vec2 halfExtents,float height,std::vector<std::uint32_t>* =nullptr){return movement::sweep(map,start,end,halfExtents,height);}
 inline scene::Vec3 closestOnTriangle(scene::Vec3 p,scene::Vec3 a,scene::Vec3 b,scene::Vec3 c){
     const auto ab=b-a,ac=c-a,ap=p-a;const float d1=scene::dot(ab,ap),d2=scene::dot(ac,ap);if(d1<=0&&d2<=0)return a;
     const auto bp=p-b;const float d3=scene::dot(ab,bp),d4=scene::dot(ac,bp);if(d3>=0&&d4<=d3)return b;
@@ -59,23 +60,24 @@ inline movement::Trace sweepRounded(const scene::glb::Map& map,scene::Vec3 start
 }
 // Conservative fallback for lips/sloped lids: lift above the entire hull
 // footprint before crossing the face. Two straight sweeps validate this path.
-inline std::optional<Trajectory> findClimb(const scene::glb::Map& map,scene::Vec3 start,scene::Vec3 forward,
-    float radius,float height,float step,float maximum,float reach,float minimum,float rate=1.f,bool boxHull=false){
+template<class Hull> inline std::optional<Trajectory> findClimb(const scene::glb::Map& map,scene::Vec3 start,scene::Vec3 forward,
+    Hull radius,float height,float step,float maximum,float reach,float minimum,float rate=1.f,bool boxHull=false){
     forward.z=0;if(scene::length(forward)<.5f)return {};forward=scene::normalize(forward);
+    const float frontExtent=movement::hullReach(radius,forward);const auto extents=movement::horizontalExtents(radius);
     std::vector<std::uint32_t> sweepScratch;
     const auto sweep=[&](scene::Vec3 a,scene::Vec3 b){return boxHull?movement::sweep(map,a,b,radius,height):sweepRounded(map,a,b,radius,height,&sweepScratch);};
-    const auto obstruction=sweep(start,start+forward*(radius+reach));
+    const auto obstruction=sweep(start,start+forward*(frontExtent+reach));
     if(obstruction.startSolid||obstruction.fraction>=1)return {};
     // groundHeight's historical 45-unit ceiling tolerance is accounted for
     // here rather than accidentally querying above the allowed mantle height.
     const float ceiling=start.z+maximum-45.f;
-    for(float distance=radius+8;distance<=radius+reach+.01f;distance+=8){
+    for(float distance=frontExtent+8;distance<=frontExtent+reach+.01f;distance+=8){
         auto target=start+forward*distance;
         const float center=map.groundHeight(target.x,target.y,ceiling,-1e9f);
         if(center<start.z+minimum||center>start.z+maximum)continue;
         float top=center;bool supported=true;
         for(int y=-1;y<=1&&supported;++y)for(int x=-1;x<=1;++x){
-            const float z=map.groundHeight(target.x+x*radius,target.y+y*radius,ceiling,-1e9f);
+            const float z=map.groundHeight(target.x+x*extents.x,target.y+y*extents.y,ceiling,-1e9f);
             if(z>center+step){supported=false;break;}top=std::max(top,z);
         }
         if(!supported||top>start.z+maximum)continue;
@@ -93,11 +95,11 @@ inline std::optional<Trajectory> findClimb(const scene::glb::Map& map,scene::Vec
 }
 // Replay a navigation link to its exact supported endpoint. Reacquiring a
 // nearby ledge at execution time can land beside, rather than on, that link.
-inline std::optional<Trajectory> findClimbTo(const scene::glb::Map& map,scene::Vec3 start,scene::Vec3 target,
-    float radius,float height,float step,float maximum,float reach,float minimum){
+template<class Hull> inline std::optional<Trajectory> findClimbTo(const scene::glb::Map& map,scene::Vec3 start,scene::Vec3 target,
+    Hull radius,float height,float step,float maximum,float reach,float minimum){
     auto direction=target-start;direction.z=0;
     const float distance=scene::length(direction),rise=target.z-start.z;
-    if(distance<1.f||distance>radius+reach||rise<minimum||rise>maximum)return {};
+    if(distance<1.f||distance>movement::hullReach(radius,direction/std::max(1.f,distance))+reach||rise<minimum||rise>maximum)return {};
     direction=direction/distance;target.z+=.04f;
     for(float clearance=0;clearance<=step+8;clearance+=8){
         const float apex=target.z+clearance;if(apex>start.z+maximum+.05f)break;

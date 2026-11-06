@@ -1,8 +1,14 @@
 #include "PreparedTexture.h"
 #include "TexturePixels.h"
 #include "DdsLoader.h"
+#include "DdsColorSpace.h"
+#include "StreamingDds.h"
 #include <array>
 #include <limits>
+#include <mutex>
+#include <unordered_map>
+#include <memory>
+#include <optional>
 #ifdef _WIN32
 #define NOMINMAX
 #include <Windows.h>
@@ -13,6 +19,10 @@
 
 namespace render::texture {
 namespace {
+struct CachedTexture {std::shared_ptr<const Prepared> pixels;std::filesystem::file_time_type stamp;std::uintmax_t size;};
+std::mutex cacheMutex;
+std::unordered_map<std::wstring,CachedTexture> preparedCache;
+std::wstring cacheKey(const Request& r){return r.path.lexically_normal().wstring()+L"|"+std::to_wstring(r.forceOpaque)+L"|"+std::to_wstring(r.compress)+L"|"+std::to_wstring(r.srgb)+L"|"+std::to_wstring(r.maxDimension)+L"|"+std::to_wstring(r.compressedUpload)+L"|"+std::to_wstring(r.independentChannels);}
 bool usefulAlpha(const std::vector<std::uint8_t>& pixels){
     std::uint8_t low=255,high=0;std::size_t nonOpaque{};const auto count=pixels.size()/4;
     for(std::size_t i=0;i<count;++i){const auto a=pixels[i*4+3];low=std::min(low,a);high=std::max(high,a);if(a<250)++nonOpaque;}
@@ -29,11 +39,17 @@ void forceAlpha(std::vector<std::uint8_t>& bytes){for(std::size_t i=3;i<bytes.si
 }
 
 Prepared prepare(const Request& r) noexcept {try{
+    std::optional<CachedTexture> cached;
+    {std::lock_guard lock(cacheMutex);const auto it=preparedCache.find(cacheKey(r));if(it!=preparedCache.end())cached=it->second;}
+    if(cached){std::error_code ec;const auto stamp=std::filesystem::last_write_time(r.path,ec);const auto size=std::filesystem::file_size(r.path,ec);
+        if(!ec&&cached->stamp==stamp&&cached->size==size&&cached->pixels->width<=r.maxGpuDimension&&cached->pixels->height<=r.maxGpuDimension)return *cached->pixels;}
 #ifdef _WIN32
     if(r.path.empty()||r.maxDimension<=0||r.maxGpuDimension<=0)return {};
     std::error_code error;const auto fileBytes=std::filesystem::file_size(r.path,error);
-    if(error||fileBytes>32ull*1024*1024)return {}; // do not queue large encoded files
+    if(error)return {};
     Prepared out;const auto ext=r.path.extension();
+    if((ext==L".dds"||ext==L".DDS")&&prepareRgbDds(r,out))return out;
+    if(fileBytes>32ull*1024*1024)return {}; // other decoders retain their allocation bounds
     if(ext==L".webp"){
         std::ifstream input(r.path,std::ios::binary);std::vector<std::uint8_t> encoded(static_cast<std::size_t>(fileBytes));
         if(!input.read(reinterpret_cast<char*>(encoded.data()),static_cast<std::streamsize>(encoded.size())))return {};
@@ -69,16 +85,17 @@ Prepared prepare(const Request& r) noexcept {try{
         if(dds::loadFile(r.path,image,ddsError)&&image.width<=static_cast<unsigned>(r.maxGpuDimension)&&image.height<=static_cast<unsigned>(r.maxGpuDimension)){
             out.width=static_cast<int>(image.width);out.height=static_cast<int>(image.height);
             out.usefulAlpha=image.hasUsefulAlpha;out.mipmaps=!image.isCompressed;
-            // Preserve DDS's authored format and existing forceOpaque/sRGB
-            // behavior; this performance change does not reinterpret DDS data.
+            // Preserve encoded pixels and forceOpaque behavior; honor the
+            // material role's sRGB request in the GPU upload format.
             if(image.isCompressed&&r.compressedUpload&&image.glInternalFormat){
-                out.compressed=true;out.internalFormat=image.glInternalFormat;
+                out.compressed=true;out.internalFormat=ddsUploadInternalFormat(image,r.srgb);
                 image.data.resize(image.topMipByteSize);out.bytes=std::move(image.data);
             }else if(dds::decompressTopMipToRgba(image,out.bytes)){
                 downscaleRgba(out.bytes,out.width,out.height,r.maxDimension);out.internalFormat=internal(r,image.hasUsefulAlpha);
             }else if(!image.isCompressed&&!image.data.empty()){
                 out.bytes=std::move(image.data);downscaleRgba(out.bytes,out.width,out.height,r.maxDimension);
-                out.internalFormat=r.compress?internal(r,image.hasUsefulAlpha):(image.glInternalFormat?image.glInternalFormat:0x8058);
+                const auto ddsInternal=ddsUploadInternalFormat(image,r.srgb);
+                out.internalFormat=r.compress?internal(r,image.hasUsefulAlpha):(ddsInternal?ddsInternal:0x8058);
                 out.format=image.glFormat?image.glFormat:0x1908;out.type=image.glType?image.glType:0x1401;
             }else return {};
             out.ready=true;return out;
@@ -99,7 +116,7 @@ Prepared prepare(const Request& r) noexcept {try{
     UINT width{},height{};if(FAILED(converter->GetSize(&width,&height))||!fits(width,height,fileBytes)||width>static_cast<UINT>(r.maxGpuDimension)||height>static_cast<UINT>(r.maxGpuDimension))return {};
     UINT targetWidth=width,targetHeight=height;
     while(targetWidth>static_cast<UINT>(r.maxDimension)||targetHeight>static_cast<UINT>(r.maxDimension)){targetWidth=std::max(1u,targetWidth/2);targetHeight=std::max(1u,targetHeight/2);}
-    if(!r.forceOpaque&&(targetWidth!=width||targetHeight!=height)){
+    if(!r.forceOpaque&&!r.independentChannels&&(targetWidth!=width||targetHeight!=height)){
         ComPtr<IWICBitmapScaler> scaler;
         if(SUCCEEDED(factory->CreateBitmapScaler(&scaler))&&SUCCEEDED(scaler->Initialize(frame.Get(),targetWidth,targetHeight,WICBitmapInterpolationModeLinear))){
             converter=nullptr;
@@ -112,11 +129,19 @@ Prepared prepare(const Request& r) noexcept {try{
     out.bytes.resize(byteCount);
     if(FAILED(converter->CopyPixels(nullptr,static_cast<UINT>(stride),static_cast<UINT>(byteCount),out.bytes.data())))return {};
     out.width=static_cast<int>(width);out.height=static_cast<int>(height);
-    if(r.forceOpaque){forceAlpha(out.bytes);downscaleRgba(out.bytes,out.width,out.height,r.maxDimension);}
+    if(r.forceOpaque)forceAlpha(out.bytes);
+    if(r.forceOpaque||r.independentChannels)downscaleRgba(out.bytes,out.width,out.height,r.maxDimension);
     out.usefulAlpha=!r.forceOpaque&&usefulAlpha(out.bytes);out.internalFormat=internal(r,out.usefulAlpha);
     out.unpackOne=false;out.ready=true;return out;
 #else
     (void)r;return {};
 #endif
 }catch(...){return {};}}
+std::size_t preload(const Request& r){
+    std::error_code ec;const auto stamp=std::filesystem::last_write_time(r.path,ec);if(ec)return 0;const auto size=std::filesystem::file_size(r.path,ec);if(ec)return 0;
+    auto prepared=std::make_shared<Prepared>(prepare(r));if(!prepared->ready)return 0;
+    if(std::filesystem::last_write_time(r.path,ec)!=stamp||ec||std::filesystem::file_size(r.path,ec)!=size||ec)return 0;
+    const auto bytes=sizeof(Prepared)+prepared->bytes.capacity();std::lock_guard lock(cacheMutex);preparedCache.insert_or_assign(cacheKey(r),CachedTexture{std::move(prepared),stamp,size});return bytes;
+}
+void releasePreload(const Request& r){std::shared_ptr<const Prepared> old;{std::lock_guard lock(cacheMutex);auto it=preparedCache.find(cacheKey(r));if(it!=preparedCache.end()){old=std::move(it->second.pixels);preparedCache.erase(it);}}}
 }
